@@ -2,12 +2,11 @@ import { Command } from 'commander';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { collectCandidateFilesDetailed, MAX_CANDIDATE_FILES } from '../utils/files.ts';
-import { readStdinText } from '../utils/io.ts';
+import { parseStdinList, readStdinText } from '../utils/io.ts';
 import { resolveConfig } from '../config.ts';
 import { createEmbedding, getCacheEntryCount } from '../services/embeddings.ts';
-import { rankMatches } from '../services/match.ts';
-import { buildDocumentProfile, type DocumentProfile } from '../services/document-profile.ts';
-import type { EmbeddingBackend } from '../services/embedding-types.ts';
+import { rankMatches, type RankedMatchCandidate } from '../services/match.ts';
+import { buildDocumentProfile } from '../services/document-profile.ts';
 
 export function registerMatchCommand(program: Command): void {
     program
@@ -44,22 +43,9 @@ export function registerMatchCommand(program: Command): void {
             }
         ) => {
             const rootOptions = program.opts();
-            let candidatesFromStdin: string[] | undefined;
-            if (options.candidatesFromStdin) {
-                const stdinText = await readStdinText();
-                if (stdinText) {
-                    try {
-                        const parsed = JSON.parse(stdinText);
-                        if (Array.isArray(parsed)) {
-                            candidatesFromStdin = parsed.map((value) => String(value).trim()).filter(Boolean);
-                        } else {
-                            candidatesFromStdin = stdinText.split('\n').map((line) => line.trim()).filter(Boolean);
-                        }
-                    } catch {
-                        candidatesFromStdin = stdinText.split('\n').map((line) => line.trim()).filter(Boolean);
-                    }
-                }
-            }
+            const candidatesFromStdin = options.candidatesFromStdin
+                ? parseStdinList(await readStdinText())
+                : undefined;
             const config = await resolveConfig(
                 {
                     config: rootOptions.config,
@@ -85,10 +71,11 @@ export function registerMatchCommand(program: Command): void {
             );
 
             const changedPath = path.resolve(process.cwd(), file);
-            const changedText = await fs.readFile(changedPath, 'utf8');
-            const diffText = options.diffFile
-                ? await fs.readFile(path.resolve(process.cwd(), options.diffFile), 'utf8')
-                : undefined;
+            const diffPath = options.diffFile ? path.resolve(process.cwd(), options.diffFile) : undefined;
+            const [changedText, diffText] = await Promise.all([
+                fs.readFile(changedPath, 'utf8'),
+                diffPath ? fs.readFile(diffPath, 'utf8') : Promise.resolve(undefined),
+            ]);
             const sourceProfile = buildDocumentProfile(changedPath, changedText, process.cwd(), diffText);
 
             const sourceEmbedding = await createEmbedding({
@@ -107,15 +94,7 @@ export function registerMatchCommand(program: Command): void {
             );
             const candidateFiles = candidateResult.files;
 
-            const ranked: Array<{
-                file: string;
-                vector: number[];
-                preview: string;
-                profile: DocumentProfile;
-                embeddingBackend?: EmbeddingBackend;
-                cacheHit?: boolean;
-                fallbackReason?: string;
-            }> = [];
+            const ranked: RankedMatchCandidate[] = [];
             for (const candidatePath of candidateFiles) {
                 if (path.resolve(candidatePath) === changedPath) {
                     continue;

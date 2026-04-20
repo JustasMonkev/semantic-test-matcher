@@ -31,8 +31,7 @@ export function registerEmbedCommand(program: Command): void {
                 },
             );
 
-            const stdinText = await readStdinText();
-            const finalText = (text || stdinText || '').trim();
+            const finalText = (text || await readStdinText()).trim();
             if (!finalText) {
                 console.error('No input text provided. Pass an argument or pipe text via stdin.');
                 process.exitCode = 1;

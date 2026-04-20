@@ -54,10 +54,6 @@ export function createPatternMatcher(
     };
 }
 
-export function matchesAny(patterns: string[] | undefined, candidate: string, emptyResult = true): boolean {
-    return createPatternMatcher(patterns, emptyResult)(candidate);
-}
-
 export function isParentPath(base: string, target: string): boolean {
     const relative = path.relative(base, target);
     return !relative.startsWith('..') && !path.isAbsolute(relative);

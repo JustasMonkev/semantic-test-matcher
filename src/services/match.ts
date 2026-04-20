@@ -1,6 +1,6 @@
 import type { DocumentProfile } from './document-profile.ts';
 import type { EmbeddingBackend } from './embedding-types.ts';
-import { normalizeVector, overlapCoefficient, uniqueTokens } from './text-utils.ts';
+import { diceCoefficient, normalizeVector, overlapCoefficient, uniqueTokens } from './text-utils.ts';
 
 export interface MatchCandidate {
     file: string;
@@ -49,23 +49,7 @@ export interface RankedMatchCandidate {
     fallbackReason?: string;
 }
 
-function diceCoefficient(left: string[], right: string[]): number {
-    const leftTokens = uniqueTokens(left);
-    const rightTokens = new Set(uniqueTokens(right));
-
-    if (!leftTokens.length || !rightTokens.size) {
-        return 0;
-    }
-
-    let shared = 0;
-    for (const token of leftTokens) {
-        if (rightTokens.has(token)) {
-            shared += 1;
-        }
-    }
-
-    return (shared * 2) / (leftTokens.length + rightTokens.size);
-}
+const ANCHOR_KEYWORD_PATTERN = /(testid|codegen|browsername|dotenv|toollist|mcp|selector|config|timeout|internal|attr)/i;
 
 function tokenWeight(token: string): number {
     let weight = 1;
@@ -82,7 +66,7 @@ function tokenWeight(token: string): number {
         weight += 0.35;
     }
 
-    if (/(testid|codegen|browsername|dotenv|toollist|mcp|selector|config|timeout|internal|attr)/i.test(token)) {
+    if (ANCHOR_KEYWORD_PATTERN.test(token)) {
         weight += 0.5;
     }
 

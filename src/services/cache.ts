@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
+import { isDebug } from '../utils/io.ts';
 import type { EmbeddingBackend } from './embedding-types.ts';
 
 export interface CachedEmbedding {
@@ -26,7 +27,7 @@ function sanitizeKey(input: string): string {
 }
 
 function debugCache(message: string): void {
-    if (process.env.RBT_DEBUG === '1') {
+    if (isDebug()) {
         console.warn(`Cache: ${message}`);
     }
 }
@@ -155,13 +156,13 @@ export async function readCachedEmbedding(
 ): Promise<{ vector: number[]; backend: EmbeddingBackend; fallbackReason?: string } | null> {
     const cache = await loadCache(filePath);
     const hit = cache[buildCacheKey(provider, model, text)];
-    if (!hit) {
+    if (!hit || !hit.backend) {
         return null;
     }
 
     return {
         vector: hit.vector,
-        backend: hit.backend ?? (provider === 'hf' ? 'hf' : 'cache-unknown'),
+        backend: hit.backend,
         fallbackReason: hit.fallbackReason,
     };
 }

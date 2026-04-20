@@ -12,3 +12,25 @@ export async function readStdinText(): Promise<string> {
     });
 }
 
+export function isDebug(): boolean {
+    return process.env.RBT_DEBUG === '1';
+}
+
+export function parseStdinList(raw: string): string[] {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+        return [];
+    }
+
+    try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+            return parsed.map((value) => String(value).trim()).filter(Boolean);
+        }
+    } catch {
+        // Fall through: stdin isn't JSON, parse as newline-separated list.
+    }
+
+    return trimmed.split('\n').map((line) => line.trim()).filter(Boolean);
+}
+

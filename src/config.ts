@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { isParentPath } from './utils/patterns.ts';
 
 export type EmbeddingProvider = 'hf' | 'ollama';
 
@@ -34,6 +35,7 @@ export interface RuntimeConfig {
     quiet: boolean;
     verbose: boolean;
     match: MatchDefaults;
+    configFile?: string;
 }
 
 export interface RootOptions {
@@ -160,11 +162,6 @@ function isLoopbackHost(value: string): boolean {
     }
 }
 
-function isWithinWorkspace(targetPath: string, workspace: string): boolean {
-    const relativePath = path.relative(workspace, targetPath);
-    return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
-}
-
 async function resolveRealPath(targetPath: string): Promise<string> {
     let current = path.resolve(targetPath);
     const suffix: string[] = [];
@@ -190,16 +187,15 @@ async function resolveRealPath(targetPath: string): Promise<string> {
 }
 
 async function isWorkspaceContainedPath(targetPath: string, workspace: string): Promise<boolean> {
-    if (!isWithinWorkspace(targetPath, workspace)) {
-        return false;
-    }
-
-    return isWithinWorkspace(await resolveRealPath(targetPath), workspace);
+    return isParentPath(workspace, targetPath) &&
+        isParentPath(workspace, await resolveRealPath(targetPath));
 }
 
-type LoadedConfig =
-    | { config: AppConfig; autoDiscovered: boolean }
-    | { config: AppConfig; autoDiscovered: false };
+export interface LoadedConfig {
+    config: AppConfig;
+    autoDiscovered: boolean;
+    filePath?: string;
+}
 
 export async function loadConfig(configPath?: string): Promise<LoadedConfig> {
     const candidates = configPath
@@ -215,6 +211,7 @@ export async function loadConfig(configPath?: string): Promise<LoadedConfig> {
             return {
                 config: parseJsonConfig(raw, candidate.filePath),
                 autoDiscovered: candidate.autoDiscovered,
+                filePath: candidate.filePath,
             };
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -231,7 +228,7 @@ export async function resolveConfig(
     commandOptions: MatchCommandOptions,
     cwd: string = process.cwd()
 ): Promise<RuntimeConfig> {
-    const { config: fileConfig, autoDiscovered } = await loadConfig(rootOptions.config);
+    const { config: fileConfig, autoDiscovered, filePath: configFile } = await loadConfig(rootOptions.config);
     const resolvedWorkspace = path.resolve(cwd);
     const resolvedProvider = parseProvider(
         commandOptions.provider ??
@@ -275,21 +272,21 @@ export async function resolveConfig(
         throw new Error('Auto-discovered repo config cannot set ollamaHost to a non-loopback address.');
     }
 
-    const configuredTopK = firstFiniteNumber(
+    const resolvedTopK = firstFiniteNumber(
         commandOptions.topK,
         process.env.RBT_TOP_K,
         process.env.RBT_MATCH_TOP_K,
         fileConfig.match?.topK,
         DEFAULT_CONFIG.match!.topK
-    ) ?? DEFAULT_CONFIG.match!.topK;
+)!;
 
-    const configuredThreshold = firstFiniteNumber(
+    const resolvedThreshold = firstFiniteNumber(
         commandOptions.threshold,
         process.env.RBT_THRESHOLD,
         process.env.RBT_MATCH_THRESHOLD,
         fileConfig.match?.threshold,
         DEFAULT_CONFIG.match!.threshold
-    ) ?? DEFAULT_CONFIG.match!.threshold;
+)!;
 
     const configuredMinScore = firstFiniteNumber(
         commandOptions.minScore,
@@ -298,19 +295,8 @@ export async function resolveConfig(
         fileConfig.match?.minScore
     );
 
-    const effectiveThreshold = configuredThreshold ?? DEFAULT_CONFIG.match!.threshold!;
-    const effectiveTopK = configuredTopK ?? DEFAULT_CONFIG.match!.topK!;
-
-    const minScore = clamp(
-        configuredMinScore ?? effectiveThreshold,
-        0,
-        1
-    );
-    const topK = Math.max(1, Math.floor(clamp(
-        effectiveTopK,
-        1,
-        1000
-    )));
+    const minScore = clamp(configuredMinScore ?? resolvedThreshold, 0, 1);
+    const topK = Math.max(1, Math.floor(clamp(resolvedTopK, 1, 1000)));
 
     const resolvedCacheDir = commandOptions.cacheDir ??
         rootOptions.cacheDir ??
@@ -362,11 +348,12 @@ export async function resolveConfig(
         verbose: resolvedVerbose,
         match: {
             topK,
-            threshold: clamp(effectiveThreshold, 0, 1),
+            threshold: clamp(resolvedThreshold, 0, 1),
             minScore,
             candidatePaths,
             includePatterns,
             excludePatterns
         },
+        configFile,
     };
 }

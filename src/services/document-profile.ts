@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { tokenizeText, uniqueTokens } from './text-utils.ts';
+import { canonicalizeToken, tokenizeText, uniqueTokens } from './text-utils.ts';
 
 export type DocumentKind = 'source' | 'test' | 'fixture' | 'unknown';
 
@@ -9,7 +9,6 @@ export interface DocumentProfile {
     basename: string;
     basenameTokens: string[];
     stemTokens: string[];
-    pathTokens: string[];
     pathFamilyTokens: string[];
     phraseTokens: string[];
     rareAnchorTokens: string[];
@@ -177,27 +176,6 @@ function collectTestNames(text: string): string[] {
     return uniqueTokens(names);
 }
 
-function normalizeLooseToken(token: string): string | null {
-    const normalized = token.toLowerCase().replace(/[^a-z0-9]+/g, '');
-    if (!normalized || normalized.length < 2 || /^\d+$/.test(normalized)) {
-        return null;
-    }
-
-    if (normalized.endsWith('ies') && normalized.length > 4) {
-        return `${normalized.slice(0, -3)}y`;
-    }
-
-    if (normalized.endsWith('es') && normalized.length > 4) {
-        return normalized.slice(0, -2);
-    }
-
-    if (normalized.endsWith('s') && normalized.length > 3 && !normalized.endsWith('ss')) {
-        return normalized.slice(0, -1);
-    }
-
-    return normalized;
-}
-
 function collectStemTokens(basename: string): string[] {
     const stem = basename
         .replace(/\.[^.]+$/u, '')
@@ -208,7 +186,7 @@ function collectStemTokens(basename: string): string[] {
             .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
             .replace(/[_./\\-]+/g, ' ')
             .split(/\s+/)
-            .map((token) => normalizeLooseToken(token))
+            .map((token) => canonicalizeToken(token, { skipStopWords: true }))
             .filter((token): token is string => Boolean(token))
     );
 }
@@ -326,7 +304,7 @@ function collectPathSegments(value: string): string[] {
         .replace(/\\/g, '/')
         .split('/')
         .flatMap((segment) => segment.split(/[._-]+/))
-        .map((segment) => normalizeLooseToken(segment))
+        .map((segment) => canonicalizeToken(segment, { skipStopWords: true }))
         .filter((segment): segment is string => Boolean(segment));
 
     return uniqueTokens(segments.filter((segment) => !GENERIC_PATH_SEGMENTS.has(segment)));
@@ -546,7 +524,6 @@ export function buildDocumentProfile(
     const basename = path.basename(absolutePath);
     const basenameTokens = tokenizeText(basename);
     const stemTokens = collectStemTokens(basename);
-    const pathTokens = tokenizeText(relativePath);
     const pathFamilyTokens = collectPathFamilyTokens(relativePath, text);
     const changedLines = collectChangedLines(diffText);
     const phraseTokens = collectPhraseTokens(text, relativePath);
@@ -586,7 +563,6 @@ export function buildDocumentProfile(
         basename,
         basenameTokens,
         stemTokens,
-        pathTokens,
         pathFamilyTokens,
         phraseTokens,
         rareAnchorTokens,

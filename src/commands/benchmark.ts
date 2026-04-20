@@ -75,7 +75,11 @@ function getExpectedTop1(entry: BenchmarkCase): string | undefined {
 }
 
 function getExpectedTop3(entry: BenchmarkCase): string[] {
-    return entry.expectedTop3?.length ? entry.expectedTop3 : (getExpectedTop1(entry) ? [getExpectedTop1(entry)!] : []);
+    if (entry.expectedTop3?.length) {
+        return entry.expectedTop3;
+    }
+    const top1 = getExpectedTop1(entry);
+    return top1 ? [top1] : [];
 }
 
 function getObservedRanks(matches: Array<{ file: string }>, expectedFiles: string[]): Record<string, number | null> {
@@ -167,9 +171,6 @@ export function registerBenchmarkCommand(program: Command): void {
                     quiet: rootOptions.quiet,
                 },
                 {
-                    threshold: undefined,
-                    topK: undefined,
-                    minScore: undefined,
                     candidates: options.candidates,
                     includeFile: options.includeFile,
                     excludeFile: options.excludeFile,

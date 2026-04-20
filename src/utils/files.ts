@@ -148,12 +148,3 @@ export async function collectCandidateFilesDetailed(
     };
 }
 
-export async function collectCandidateFiles(
-    seeds: string[],
-    includes: string[],
-    excludes: string[],
-    cwd: string
-): Promise<string[]> {
-    const { files } = await collectCandidateFilesDetailed(seeds, includes, excludes, cwd);
-    return files;
-}

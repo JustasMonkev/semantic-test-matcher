@@ -2,12 +2,11 @@ export type EmbeddingBackend =
     | 'hf'
     | 'ollama-embeddings'
     | 'ollama-generate'
-    | 'local-text-vector'
-    | 'cache-unknown';
+    | 'local-text-vector';
 
 export interface LiveEmbeddingResult {
     vector: number[];
-    backend: Exclude<EmbeddingBackend, 'cache-unknown'>;
+    backend: EmbeddingBackend;
     fallbackReason?: string;
 }
 

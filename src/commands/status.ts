@@ -1,6 +1,4 @@
 import { Command } from 'commander';
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import { resolveConfig } from '../config.ts';
 import { getCacheEntryCount } from '../services/embeddings.ts';
 
@@ -21,37 +19,11 @@ export function registerStatusCommand(program: Command): void {
                     verbose: rootOptions.verbose,
                     quiet: rootOptions.quiet,
                 },
-                {
-                    threshold: undefined,
-                    topK: undefined,
-                    minScore: undefined,
-                    candidates: undefined,
-                    includeFile: undefined,
-                    excludeFile: undefined,
-                    provider: undefined,
-                    model: undefined,
-                    cacheDir: undefined,
-                    json: undefined,
-                }
+                {}
             );
 
             const cacheEntries = await getCacheEntryCount(config.cacheDir);
-            const defaultConfigPath = path.join(process.cwd(), '.rbt', 'config.json');
-            const defaultAltConfigPath = path.join(process.cwd(), '.rbtconfig');
-            const checkedPath = rootOptions.config || defaultConfigPath;
-            let configFileStatus = 'missing';
-            try {
-                await fs.access(checkedPath);
-                configFileStatus = 'present';
-            } catch {
-                configFileStatus = 'missing';
-                try {
-                    await fs.access(defaultAltConfigPath);
-                    configFileStatus = 'present';
-                } catch {
-                    configFileStatus = 'missing';
-                }
-            }
+            const configFileStatus = config.configFile ? 'present' : 'missing';
 
             if (options.json) {
                 console.log(
@@ -62,7 +34,7 @@ export function registerStatusCommand(program: Command): void {
                         cacheDir: config.cacheDir,
                         cacheEntries,
                         match: config.match,
-                        resolvedConfigFile: rootOptions.config ?? 'auto',
+                        resolvedConfigFile: config.configFile ?? 'auto',
                         hasConfig: configFileStatus,
                     })
                 );

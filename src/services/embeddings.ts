@@ -1,12 +1,13 @@
 import { createEmbeddingProvider } from './embedding-provider.ts';
 import { isStableEmbeddingBackend, type EmbeddingResult } from './embedding-types.ts';
 import {
+    getCacheFile,
     loadCache,
     readCachedEmbedding,
     writeCachedEmbedding,
 } from './cache.ts';
 import type { EmbeddingProvider } from '../config.ts';
-import { getCacheFile } from './cache.ts';
+import { isDebug } from '../utils/io.ts';
 
 export interface CreateEmbeddingOptions {
     text: string;
@@ -62,8 +63,7 @@ export async function createEmbedding({
                 embedding.fallbackReason
             );
         } catch (error) {
-            // Cache is non-critical. Continue without failing the command.
-            if (process.env.RBT_DEBUG === '1') {
+            if (isDebug()) {
                 console.warn(`Cache write failed: ${(error as Error).message}`);
             }
         }

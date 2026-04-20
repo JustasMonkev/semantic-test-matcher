@@ -117,17 +117,13 @@ function splitIntoParts(value: string): string[] {
         .filter(Boolean);
 }
 
-function canonicalizeToken(token: string): string | null {
+export function canonicalizeToken(token: string, options?: { skipStopWords?: boolean }): string | null {
     const normalized = token.toLowerCase().replace(/[^a-z0-9]+/g, '');
-    if (!normalized || normalized.length < 2) {
+    if (!normalized || normalized.length < 2 || /^\d+$/.test(normalized)) {
         return null;
     }
 
-    if (/^\d+$/.test(normalized)) {
-        return null;
-    }
-
-    if (STOP_WORDS.has(normalized)) {
+    if (!options?.skipStopWords && STOP_WORDS.has(normalized)) {
         return null;
     }
 
@@ -175,6 +171,16 @@ export function normalizeVector(vector: number[]): number[] {
     return vector.map((component) => component / divisor);
 }
 
+function sharedTokenCount(leftTokens: string[], rightTokens: Set<string>): number {
+    let shared = 0;
+    for (const token of leftTokens) {
+        if (rightTokens.has(token)) {
+            shared += 1;
+        }
+    }
+    return shared;
+}
+
 export function overlapCoefficient(left: string[], right: string[]): number {
     const leftTokens = uniqueTokens(left);
     const rightTokens = new Set(uniqueTokens(right));
@@ -183,14 +189,18 @@ export function overlapCoefficient(left: string[], right: string[]): number {
         return 0;
     }
 
-    let shared = 0;
-    for (const token of leftTokens) {
-        if (rightTokens.has(token)) {
-            shared += 1;
-        }
+    return sharedTokenCount(leftTokens, rightTokens) / Math.min(leftTokens.length, rightTokens.size);
+}
+
+export function diceCoefficient(left: string[], right: string[]): number {
+    const leftTokens = uniqueTokens(left);
+    const rightTokens = new Set(uniqueTokens(right));
+
+    if (!leftTokens.length || !rightTokens.size) {
+        return 0;
     }
 
-    return shared / Math.min(leftTokens.length, rightTokens.size);
+    return (sharedTokenCount(leftTokens, rightTokens) * 2) / (leftTokens.length + rightTokens.size);
 }
 
 function hashToken(token: string): number {

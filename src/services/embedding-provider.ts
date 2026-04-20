@@ -1,14 +1,13 @@
 import { pipeline } from '@huggingface/transformers';
 import type { EmbeddingProvider } from '../config.ts';
+import { isDebug } from '../utils/io.ts';
 import type { LiveEmbeddingResult } from './embedding-types.ts';
-import { textToVector } from './text-vector.ts';
+import { textToVector } from './text-utils.ts';
 
 export interface EmbeddingProviderConfig {
     model: string;
     ollamaHost: string;
 }
-
-const pipelineCache = new Map<string, any>();
 
 function isNumericVector(value: unknown): value is number[] {
     return Array.isArray(value) && value.every((item) => typeof item === 'number' && Number.isFinite(item));
@@ -170,25 +169,23 @@ class StubHuggingFaceEmbeddingProvider implements EmbeddingProviderClient {
     }
 }
 
+type FeatureExtractionPipeline = (text: string) => Promise<unknown>;
+
 class HuggingFaceEmbeddingProvider implements EmbeddingProviderClient {
-    private model: string;
-    private pipelineCacheKey: string;
+    private static readonly pipelineCache = new Map<string, FeatureExtractionPipeline>();
 
-    constructor(model: string) {
-        this.model = model;
-        this.pipelineCacheKey = `hf:${model}`;
-    }
+    constructor(private readonly model: string) {}
 
-    private async getPipeline() {
-        const existing = pipelineCache.get(this.pipelineCacheKey);
-        if (existing) {
-            return existing;
+    private async getPipeline(): Promise<FeatureExtractionPipeline> {
+        const cached = HuggingFaceEmbeddingProvider.pipelineCache.get(this.model);
+        if (cached) {
+            return cached;
         }
 
         const extractor = await pipeline('feature-extraction', this.model, {
             dtype: 'fp32',
-        });
-        pipelineCache.set(this.pipelineCacheKey, extractor);
+        }) as unknown as FeatureExtractionPipeline;
+        HuggingFaceEmbeddingProvider.pipelineCache.set(this.model, extractor);
         return extractor;
     }
 
@@ -234,7 +231,7 @@ class OllamaEmbeddingProvider implements EmbeddingProviderClient {
             };
         } catch (error) {
             embeddingError = error as Error;
-            if (process.env.RBT_DEBUG === '1') {
+            if (isDebug()) {
                 console.warn(
                     `Ollama embeddings failed for ${this.model}; falling back to semantic digest: ${embeddingError.message}`
                 );
@@ -249,7 +246,7 @@ class OllamaEmbeddingProvider implements EmbeddingProviderClient {
                 fallbackReason: `ollama embeddings failed: ${embeddingError?.message || 'unknown error'}`,
             };
         } catch (fallbackError) {
-            if (process.env.RBT_DEBUG === '1') {
+            if (isDebug()) {
                 console.warn(
                     `Ollama semantic digest fallback failed for ${this.model}; using local vectorizer: ${(fallbackError as Error).message}`
                 );
