@@ -159,6 +159,8 @@ Useful flags:
 - `--provider <hf|ollama>`
 - `--model <model>`
 - `--cache-dir <path>`
+- `--use-llm-summary` (PageIndex-style intent summaries, see below)
+- `--summary-model <model>` (Ollama model for intent summaries, default `llama3.1`)
 - `--json`
 
 How matching works:
@@ -168,6 +170,36 @@ How matching works:
 3. Each profile is embedded with the selected provider.
 4. `rankMatches` blends embedding similarity with structural overlap.
 5. Results are filtered by threshold and truncated to `topK`.
+
+#### PageIndex-style intent summaries (`--use-llm-summary`)
+
+By default, the matcher embeds a structured `embeddingText` block (path,
+exports, imports, anchors, semantic signals, etc.). With
+`--use-llm-summary`, each file is first sent to a local Ollama model that
+writes a short intent paragraph describing what the file does, and that
+paragraph is embedded instead.
+
+This mirrors the idea behind
+[PageIndex](https://github.com/VectifyAI/PageIndex): trade noisy token soup
+for a focused, LLM-written description of intent. It can lift recall when
+two files share little vocabulary but the same purpose.
+
+Trade-offs:
+
+- requires a running Ollama instance (uses `ollamaHost`)
+- first run pays an LLM call per file; summaries are cached at
+  `.rbt/cache/summaries.json` keyed by host + model + path + content
+- on Ollama failure, falls back to the structured `profile.summary`
+
+Example:
+
+```bash
+node dist/cli.js match prompts-idea/src/price-engine.ts \
+  --candidates prompts-idea/tests \
+  --use-llm-summary \
+  --summary-model llama3.1 \
+  --json
+```
 
 ### `status`
 

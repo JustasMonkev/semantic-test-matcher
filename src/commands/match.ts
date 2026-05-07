@@ -7,6 +7,7 @@ import { resolveConfig } from '../config.ts';
 import { createEmbedding, getCacheEntryCount } from '../services/embeddings.ts';
 import { rankMatches, type RankedMatchCandidate } from '../services/match.ts';
 import { buildDocumentProfile } from '../services/document-profile.ts';
+import { getIntentSummary } from '../services/summary.ts';
 
 export function registerMatchCommand(program: Command): void {
     program
@@ -24,6 +25,8 @@ export function registerMatchCommand(program: Command): void {
         .option('--model <model>', 'Embedding model for selected provider')
         .option('--cache-dir <path>', 'Directory used to cache embeddings')
         .option('--diff-file <path>', 'Unified diff file used to enrich change-aware matching')
+        .option('--use-llm-summary', 'Embed Ollama-generated intent summaries instead of structured profile text (PageIndex-style)')
+        .option('--summary-model <model>', 'Ollama model used for intent summaries (default: llama3.1)')
         .option('--json', 'Print machine-readable output')
         .action(async (
             file: string,
@@ -38,6 +41,8 @@ export function registerMatchCommand(program: Command): void {
                 model?: string;
                 cacheDir?: string;
                 diffFile?: string;
+                useLlmSummary?: boolean;
+                summaryModel?: string;
                 json?: boolean;
                 candidatesFromStdin?: boolean;
             }
@@ -78,8 +83,42 @@ export function registerMatchCommand(program: Command): void {
             ]);
             const sourceProfile = buildDocumentProfile(changedPath, changedText, process.cwd(), diffText);
 
+            const useLlmSummary = Boolean(options.useLlmSummary);
+            const summaryModel = options.summaryModel ?? 'llama3.1';
+            const summaryDiagnostics: {
+                model: string;
+                cacheHits: number;
+                generated: number;
+                fallbacks: number;
+            } = { model: summaryModel, cacheHits: 0, generated: 0, fallbacks: 0 };
+
+            const trackSummary = (cacheHit: boolean, fallbackReason?: string): void => {
+                if (fallbackReason) {
+                    summaryDiagnostics.fallbacks += 1;
+                    return;
+                }
+                if (cacheHit) {
+                    summaryDiagnostics.cacheHits += 1;
+                } else {
+                    summaryDiagnostics.generated += 1;
+                }
+            };
+
+            let sourceEmbeddingText = sourceProfile.embeddingText;
+            if (useLlmSummary) {
+                const summary = await getIntentSummary({
+                    profile: sourceProfile,
+                    fileText: changedText,
+                    cacheDir: config.cacheDir,
+                    ollamaHost: config.ollamaHost,
+                    summaryModel,
+                });
+                trackSummary(summary.cacheHit, summary.fallbackReason);
+                sourceEmbeddingText = summary.summary;
+            }
+
             const sourceEmbedding = await createEmbedding({
-                text: sourceProfile.embeddingText,
+                text: sourceEmbeddingText,
                 provider: config.provider,
                 model: config.model,
                 cacheDir: config.cacheDir,
@@ -102,8 +141,22 @@ export function registerMatchCommand(program: Command): void {
 
                 const candidateText = await fs.readFile(candidatePath, 'utf8');
                 const candidateProfile = buildDocumentProfile(candidatePath, candidateText, process.cwd());
+
+                let candidateEmbeddingText = candidateProfile.embeddingText;
+                if (useLlmSummary) {
+                    const summary = await getIntentSummary({
+                        profile: candidateProfile,
+                        fileText: candidateText,
+                        cacheDir: config.cacheDir,
+                        ollamaHost: config.ollamaHost,
+                        summaryModel,
+                    });
+                    trackSummary(summary.cacheHit, summary.fallbackReason);
+                    candidateEmbeddingText = summary.summary;
+                }
+
                 const candidateEmbedding = await createEmbedding({
-                    text: candidateProfile.embeddingText,
+                    text: candidateEmbeddingText,
                     provider: config.provider,
                     model: config.model,
                     cacheDir: config.cacheDir,
@@ -151,6 +204,8 @@ export function registerMatchCommand(program: Command): void {
                         candidateFallbackCount,
                         cacheEntries,
                         candidateLimitReached: candidateResult.truncated,
+                        useLlmSummary,
+                        summary: useLlmSummary ? summaryDiagnostics : undefined,
                         results: topMatches,
                     })
                 );
@@ -172,6 +227,11 @@ export function registerMatchCommand(program: Command): void {
                 }
                 if (candidateResult.truncated) {
                     console.log(`Candidate scan truncated at ${MAX_CANDIDATE_FILES} files`);
+                }
+                if (useLlmSummary) {
+                    console.log(
+                        `Intent summaries via ${summaryDiagnostics.model}: ${summaryDiagnostics.generated} generated, ${summaryDiagnostics.cacheHits} cached${summaryDiagnostics.fallbacks ? `, ${summaryDiagnostics.fallbacks} fallbacks` : ''}`
+                    );
                 }
             }
 
