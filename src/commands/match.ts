@@ -3,10 +3,13 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { collectCandidateFilesDetailed, MAX_CANDIDATE_FILES } from '../utils/files.ts';
 import { parseStdinList, readStdinText } from '../utils/io.ts';
+import { mapWithConcurrency } from '../utils/async.ts';
 import { resolveConfig } from '../config.ts';
-import { createEmbedding, getCacheEntryCount } from '../services/embeddings.ts';
+import { EmbeddingSession, getCacheEntryCount } from '../services/embeddings.ts';
 import { rankMatches, type RankedMatchCandidate } from '../services/match.ts';
 import { buildDocumentProfile } from '../services/document-profile.ts';
+
+const EMBED_CONCURRENCY = 8;
 
 export function registerMatchCommand(program: Command): void {
     program
@@ -78,13 +81,14 @@ export function registerMatchCommand(program: Command): void {
             ]);
             const sourceProfile = buildDocumentProfile(changedPath, changedText, process.cwd(), diffText);
 
-            const sourceEmbedding = await createEmbedding({
-                text: sourceProfile.embeddingText,
+            const embeddingSession = new EmbeddingSession({
                 provider: config.provider,
                 model: config.model,
                 cacheDir: config.cacheDir,
                 ollamaHost: config.ollamaHost,
             });
+
+            const sourceEmbedding = await embeddingSession.embed(sourceProfile.embeddingText);
 
             const candidateResult = await collectCandidateFilesDetailed(
                 config.match.candidatePaths,
@@ -92,34 +96,31 @@ export function registerMatchCommand(program: Command): void {
                 config.match.excludePatterns,
                 process.cwd()
             );
-            const candidateFiles = candidateResult.files;
+            const candidateFiles = candidateResult.files.filter(
+                (candidatePath) => path.resolve(candidatePath) !== changedPath
+            );
 
-            const ranked: RankedMatchCandidate[] = [];
-            for (const candidatePath of candidateFiles) {
-                if (path.resolve(candidatePath) === changedPath) {
-                    continue;
+            const ranked: RankedMatchCandidate[] = await mapWithConcurrency(
+                candidateFiles,
+                EMBED_CONCURRENCY,
+                async (candidatePath) => {
+                    const candidateText = await fs.readFile(candidatePath, 'utf8');
+                    const candidateProfile = buildDocumentProfile(candidatePath, candidateText, process.cwd());
+                    const candidateEmbedding = await embeddingSession.embed(candidateProfile.embeddingText);
+
+                    return {
+                        file: path.relative(process.cwd(), candidatePath),
+                        vector: candidateEmbedding.vector,
+                        preview: candidateProfile.preview,
+                        profile: candidateProfile,
+                        embeddingBackend: candidateEmbedding.backend,
+                        cacheHit: candidateEmbedding.cacheHit,
+                        fallbackReason: candidateEmbedding.fallbackReason,
+                    };
                 }
+            );
 
-                const candidateText = await fs.readFile(candidatePath, 'utf8');
-                const candidateProfile = buildDocumentProfile(candidatePath, candidateText, process.cwd());
-                const candidateEmbedding = await createEmbedding({
-                    text: candidateProfile.embeddingText,
-                    provider: config.provider,
-                    model: config.model,
-                    cacheDir: config.cacheDir,
-                    ollamaHost: config.ollamaHost,
-                });
-
-                ranked.push({
-                    file: path.relative(process.cwd(), candidatePath),
-                    vector: candidateEmbedding.vector,
-                    preview: candidateProfile.preview,
-                    profile: candidateProfile,
-                    embeddingBackend: candidateEmbedding.backend,
-                    cacheHit: candidateEmbedding.cacheHit,
-                    fallbackReason: candidateEmbedding.fallbackReason,
-                });
-            }
+            await embeddingSession.flush();
 
             const matches = rankMatches(
                 { profile: sourceProfile, vector: sourceEmbedding.vector },

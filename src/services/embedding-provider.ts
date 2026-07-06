@@ -172,21 +172,28 @@ class StubHuggingFaceEmbeddingProvider implements EmbeddingProviderClient {
 type FeatureExtractionPipeline = (text: string) => Promise<unknown>;
 
 class HuggingFaceEmbeddingProvider implements EmbeddingProviderClient {
-    private static readonly pipelineCache = new Map<string, FeatureExtractionPipeline>();
+    // Caches the promise (not the resolved pipeline) so concurrent first
+    // calls share a single model load instead of racing to create duplicates.
+    private static readonly pipelineCache = new Map<string, Promise<FeatureExtractionPipeline>>();
 
-    constructor(private readonly model: string) {}
+    private readonly model: string;
 
-    private async getPipeline(): Promise<FeatureExtractionPipeline> {
-        const cached = HuggingFaceEmbeddingProvider.pipelineCache.get(this.model);
-        if (cached) {
-            return cached;
+    constructor(model: string) {
+        this.model = model;
+    }
+
+    private getPipeline(): Promise<FeatureExtractionPipeline> {
+        let cached = HuggingFaceEmbeddingProvider.pipelineCache.get(this.model);
+        if (!cached) {
+            cached = pipeline('feature-extraction', this.model, {
+                dtype: 'fp32',
+            }) as unknown as Promise<FeatureExtractionPipeline>;
+            cached.catch(() => {
+                HuggingFaceEmbeddingProvider.pipelineCache.delete(this.model);
+            });
+            HuggingFaceEmbeddingProvider.pipelineCache.set(this.model, cached);
         }
-
-        const extractor = await pipeline('feature-extraction', this.model, {
-            dtype: 'fp32',
-        }) as unknown as FeatureExtractionPipeline;
-        HuggingFaceEmbeddingProvider.pipelineCache.set(this.model, extractor);
-        return extractor;
+        return cached;
     }
 
     async embed(text: string): Promise<LiveEmbeddingResult> {

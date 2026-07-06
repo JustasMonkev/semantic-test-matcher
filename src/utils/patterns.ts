@@ -23,8 +23,15 @@ export function normalizePattern(pattern: string): RegExp {
             const char = anchored[index];
             const next = anchored[index + 1];
             if (char === '*' && next === '*') {
-                regex += '.*';
-                index += 1;
+                if (anchored[index + 2] === '/') {
+                    // "**/" matches zero or more whole directories, so
+                    // "**/foo.ts" also matches a root-level "foo.ts".
+                    regex += '(?:.*/)?';
+                    index += 2;
+                } else {
+                    regex += '.*';
+                    index += 1;
+                }
             } else if (char === '*') {
                 regex += '[^/]*';
             } else if (char === '?') {

@@ -2,11 +2,14 @@ import { Command } from 'commander';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { resolveConfig } from '../config.ts';
-import { createEmbedding } from '../services/embeddings.ts';
+import { EmbeddingSession } from '../services/embeddings.ts';
 import { buildDocumentProfile, type DocumentProfile } from '../services/document-profile.ts';
 import type { EmbeddingBackend } from '../services/embedding-types.ts';
 import { rankMatches } from '../services/match.ts';
 import { collectCandidateFilesDetailed } from '../utils/files.ts';
+import { mapWithConcurrency } from '../utils/async.ts';
+
+const EMBED_CONCURRENCY = 8;
 
 interface BenchmarkCase {
     source: string;
@@ -106,23 +109,15 @@ async function loadBenchmarkCases(filePath: string): Promise<BenchmarkCase[]> {
 
 async function prepareCandidates(
     candidateFiles: string[],
-    config: Awaited<ReturnType<typeof resolveConfig>>,
+    session: EmbeddingSession,
     cwd: string
 ): Promise<PreparedCandidate[]> {
-    const prepared: PreparedCandidate[] = [];
-
-    for (const candidatePath of candidateFiles) {
+    return mapWithConcurrency(candidateFiles, EMBED_CONCURRENCY, async (candidatePath) => {
         const candidateText = await fs.readFile(candidatePath, 'utf8');
         const candidateProfile = buildDocumentProfile(candidatePath, candidateText, cwd);
-        const candidateVector = await createEmbedding({
-            text: candidateProfile.embeddingText,
-            provider: config.provider,
-            model: config.model,
-            cacheDir: config.cacheDir,
-            ollamaHost: config.ollamaHost,
-        });
+        const candidateVector = await session.embed(candidateProfile.embeddingText);
 
-        prepared.push({
+        return {
             file: normalizeRelativePath(path.relative(cwd, candidatePath)),
             vector: candidateVector.vector,
             preview: candidateProfile.preview,
@@ -130,10 +125,8 @@ async function prepareCandidates(
             embeddingBackend: candidateVector.backend,
             cacheHit: candidateVector.cacheHit,
             fallbackReason: candidateVector.fallbackReason,
-        });
-    }
-
-    return prepared;
+        };
+    });
 }
 
 export function registerBenchmarkCommand(program: Command): void {
@@ -190,7 +183,13 @@ export function registerBenchmarkCommand(program: Command): void {
                 config.match.excludePatterns,
                 cwd
             );
-            const preparedCandidates = await prepareCandidates(candidateResult.files, config, cwd);
+            const embeddingSession = new EmbeddingSession({
+                provider: config.provider,
+                model: config.model,
+                cacheDir: config.cacheDir,
+                ollamaHost: config.ollamaHost,
+            });
+            const preparedCandidates = await prepareCandidates(candidateResult.files, embeddingSession, cwd);
 
             let top1Hits = 0;
             let top1Total = 0;
@@ -205,13 +204,7 @@ export function registerBenchmarkCommand(program: Command): void {
                 const sourcePath = path.resolve(cwd, entry.source);
                 const sourceText = await fs.readFile(sourcePath, 'utf8');
                 const sourceProfile = buildDocumentProfile(sourcePath, sourceText, cwd, entry.diffText);
-                const sourceVector = await createEmbedding({
-                    text: sourceProfile.embeddingText,
-                    provider: config.provider,
-                    model: config.model,
-                    cacheDir: config.cacheDir,
-                    ollamaHost: config.ollamaHost,
-                });
+                const sourceVector = await embeddingSession.embed(sourceProfile.embeddingText);
                 sourceEmbeddings.push({
                     backend: sourceVector.backend,
                     cacheHit: sourceVector.cacheHit,
@@ -269,6 +262,8 @@ export function registerBenchmarkCommand(program: Command): void {
                     });
                 }
             }
+
+            await embeddingSession.flush();
 
             const embeddingSummary = summarizeEmbeddingBackends(sourceEmbeddings, preparedCandidates);
             const summary = {
