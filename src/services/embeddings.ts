@@ -1,16 +1,17 @@
-import { createEmbeddingProvider } from './embedding-provider.ts';
+import { createEmbeddingProvider, type EmbeddingProviderClient } from './embedding-provider.ts';
 import { isStableEmbeddingBackend, type EmbeddingResult } from './embedding-types.ts';
 import {
+    buildCacheKey,
     getCacheFile,
     loadCache,
-    readCachedEmbedding,
-    writeCachedEmbedding,
+    writeCachedEmbeddings,
+    type CachedEmbedding,
+    type EmbeddingCache,
 } from './cache.ts';
 import type { EmbeddingProvider } from '../config.ts';
 import { isDebug } from '../utils/io.ts';
 
-export interface CreateEmbeddingOptions {
-    text: string;
+export interface EmbeddingSessionOptions {
     provider: EmbeddingProvider;
     model: string;
     cacheDir: string;
@@ -18,63 +19,104 @@ export interface CreateEmbeddingOptions {
     skipCache?: boolean;
 }
 
-export async function createEmbedding({
-    text,
-    provider,
-    model,
-    cacheDir,
-    ollamaHost,
-    skipCache,
-}: CreateEmbeddingOptions): Promise<EmbeddingResult> {
-    if (provider === 'ollama' && !model) {
-        throw new Error('Ollama model is required when using --provider ollama');
-    }
+export interface CreateEmbeddingOptions extends EmbeddingSessionOptions {
+    text: string;
+}
 
-    const cacheFile = getCacheFile(cacheDir);
+/**
+ * Embeds texts against a single provider/model/cache configuration.
+ *
+ * The on-disk cache is read once per session and new embeddings are buffered
+ * in memory, so callers embedding many documents pay for one cache read and
+ * one locked cache write (on flush) instead of one of each per document.
+ */
+export class EmbeddingSession {
+    private cachePromise?: Promise<EmbeddingCache>;
+    private pending: EmbeddingCache = {};
+    private providerClient?: EmbeddingProviderClient;
+    private readonly options: EmbeddingSessionOptions;
+    private readonly cacheFile: string;
 
-    if (!skipCache) {
-        const cached = await readCachedEmbedding(cacheFile, provider, model, text);
-        if (cached && isStableEmbeddingBackend(cached.backend)) {
-            return {
-                vector: cached.vector,
-                backend: cached.backend,
-                cacheHit: true,
-                fallbackReason: cached.fallbackReason,
-            };
+    constructor(options: EmbeddingSessionOptions) {
+        if (options.provider === 'ollama' && !options.model) {
+            throw new Error('Ollama model is required when using --provider ollama');
         }
+        this.options = options;
+        this.cacheFile = getCacheFile(options.cacheDir);
     }
 
-    const embeddingProvider = createEmbeddingProvider(provider, {
-        model,
-        ollamaHost,
-    });
+    private getCache(): Promise<EmbeddingCache> {
+        this.cachePromise ??= loadCache(this.cacheFile).catch((error) => {
+            if (isDebug()) {
+                console.warn(`Cache read failed: ${(error as Error).message}`);
+            }
+            return {};
+        });
+        return this.cachePromise;
+    }
 
-    const embedding = await embeddingProvider.embed(text);
+    async embed(text: string): Promise<EmbeddingResult> {
+        const { provider, model, ollamaHost, skipCache } = this.options;
+        const key = buildCacheKey(provider, model, text);
 
-    if (!skipCache && isStableEmbeddingBackend(embedding.backend)) {
-        try {
-            await writeCachedEmbedding(
-                cacheFile,
+        if (!skipCache) {
+            const cache = await this.getCache();
+            const hit = this.pending[key] ?? cache[key];
+            if (hit?.backend && isStableEmbeddingBackend(hit.backend)) {
+                return {
+                    vector: hit.vector,
+                    backend: hit.backend,
+                    cacheHit: true,
+                    fallbackReason: hit.fallbackReason,
+                };
+            }
+        }
+
+        this.providerClient ??= createEmbeddingProvider(provider, { model, ollamaHost });
+        const embedding = await this.providerClient.embed(text);
+
+        if (!skipCache && isStableEmbeddingBackend(embedding.backend)) {
+            const entry: CachedEmbedding = {
+                createdAt: new Date().toISOString(),
                 provider,
                 model,
-                text,
-                embedding.vector,
-                embedding.backend,
-                embedding.fallbackReason
-            );
+                vector: embedding.vector,
+                backend: embedding.backend,
+                fallbackReason: embedding.fallbackReason,
+            };
+            this.pending[key] = entry;
+        }
+
+        return {
+            vector: embedding.vector,
+            backend: embedding.backend,
+            cacheHit: false,
+            fallbackReason: embedding.fallbackReason,
+        };
+    }
+
+    /** Persists buffered embeddings in a single locked cache write. Best-effort. */
+    async flush(): Promise<void> {
+        if (!Object.keys(this.pending).length) {
+            return;
+        }
+
+        try {
+            await writeCachedEmbeddings(this.cacheFile, this.pending);
+            this.pending = {};
         } catch (error) {
             if (isDebug()) {
                 console.warn(`Cache write failed: ${(error as Error).message}`);
             }
         }
     }
+}
 
-    return {
-        vector: embedding.vector,
-        backend: embedding.backend,
-        cacheHit: false,
-        fallbackReason: embedding.fallbackReason,
-    };
+export async function createEmbedding({ text, ...options }: CreateEmbeddingOptions): Promise<EmbeddingResult> {
+    const session = new EmbeddingSession(options);
+    const result = await session.embed(text);
+    await session.flush();
+    return result;
 }
 
 export async function getCacheEntryCount(cacheDir: string): Promise<number> {

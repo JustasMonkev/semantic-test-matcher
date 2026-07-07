@@ -94,12 +94,16 @@ function firstFiniteNumber(...values: Array<unknown>): number | undefined {
 }
 
 function parseProvider(value?: string): EmbeddingProvider {
-    if (!value) {
+    const normalized = (value || '').trim().toLowerCase();
+    if (!normalized) {
         return 'hf';
     }
 
-    const normalized = value.trim().toLowerCase();
-    return normalized === 'ollama' ? 'ollama' : 'hf';
+    if (normalized === 'hf' || normalized === 'ollama') {
+        return normalized;
+    }
+
+    throw new Error(`Invalid provider "${value}". Expected "hf" or "ollama".`);
 }
 
 function parseBoolean(value: unknown, fallback = false): boolean {
@@ -119,10 +123,15 @@ function parseBoolean(value: unknown, fallback = false): boolean {
 
 function parseLogLevel(value?: string): LogLevel {
     const normalized = (value || '').trim().toLowerCase();
-    if (normalized === 'debug' || normalized === 'warn' || normalized === 'error') {
+    if (!normalized) {
+        return 'info';
+    }
+
+    if (normalized === 'debug' || normalized === 'info' || normalized === 'warn' || normalized === 'error') {
         return normalized;
     }
-    return 'info';
+
+    throw new Error(`Invalid log level "${value}". Expected "debug", "info", "warn", or "error".`);
 }
 
 function mergeArrays(left: string[] = [], right: string[] = []): string[] {

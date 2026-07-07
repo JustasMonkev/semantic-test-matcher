@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { registerCommands } from './commands/index.ts';
+import { isDebug } from './utils/io.ts';
 
 const program = new Command();
 
@@ -23,4 +24,14 @@ program
 
 registerCommands(program);
 
-await program.parseAsync(process.argv);
+try {
+    await program.parseAsync(process.argv);
+} catch (error) {
+    const err = error as Error;
+    if (isDebug() && err.stack) {
+        console.error(err.stack);
+    } else {
+        console.error(`Error: ${err.message ?? String(error)}`);
+    }
+    process.exitCode = 1;
+}

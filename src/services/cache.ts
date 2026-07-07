@@ -167,6 +167,24 @@ export async function readCachedEmbedding(
     };
 }
 
+export async function writeCachedEmbeddings(
+    filePath: string,
+    entries: EmbeddingCache
+): Promise<void> {
+    if (!Object.keys(entries).length) {
+        return;
+    }
+
+    const lock = await acquireCacheLock(filePath);
+    try {
+        const cache = await loadCache(filePath);
+        Object.assign(cache, entries);
+        await persistCache(filePath, cache);
+    } finally {
+        await releaseCacheLock(lock.lockPath, lock.handle);
+    }
+}
+
 export async function writeCachedEmbedding(
     filePath: string,
     provider: string,
@@ -176,22 +194,16 @@ export async function writeCachedEmbedding(
     backend: EmbeddingBackend,
     fallbackReason?: string
 ): Promise<void> {
-    const lock = await acquireCacheLock(filePath);
-    try {
-        const cache = await loadCache(filePath);
-        const key = buildCacheKey(provider, model, text);
-        cache[key] = {
+    await writeCachedEmbeddings(filePath, {
+        [buildCacheKey(provider, model, text)]: {
             createdAt: new Date().toISOString(),
             provider,
             model,
             vector,
             backend,
             fallbackReason,
-        };
-        await persistCache(filePath, cache);
-    } finally {
-        await releaseCacheLock(lock.lockPath, lock.handle);
-    }
+        },
+    });
 }
 
 export function getCacheFile(cacheDirectory: string): string {
