@@ -148,39 +148,55 @@ export function buildCacheKey(provider: string, model: string, text: string): st
     return sanitizeKey(`${provider}|${model}|${normalized}`);
 }
 
-export async function readCachedEmbedding(
-    filePath: string,
-    provider: string,
-    model: string,
-    text: string
-): Promise<{ vector: number[]; backend: EmbeddingBackend; fallbackReason?: string } | null> {
-    const cache = await loadCache(filePath);
-    const hit = cache[buildCacheKey(provider, model, text)];
-    if (!hit || !hit.backend) {
-        return null;
-    }
-
-    return {
-        vector: hit.vector,
-        backend: hit.backend,
-        fallbackReason: hit.fallbackReason,
-    };
+export function getCacheFile(cacheDirectory: string): string {
+    return path.join(cacheDirectory, 'embeddings.json');
 }
 
-export async function writeCachedEmbedding(
-    filePath: string,
-    provider: string,
-    model: string,
-    text: string,
-    vector: number[],
-    backend: EmbeddingBackend,
-    fallbackReason?: string
-): Promise<void> {
-    const lock = await acquireCacheLock(filePath);
-    try {
-        const cache = await loadCache(filePath);
+/**
+ * In-memory view of the embedding cache for a single command run.
+ *
+ * Reads load the cache file once and are served from memory afterwards;
+ * writes are buffered and merged into the on-disk cache in a single locked,
+ * atomic flush. This replaces the previous behavior of re-reading and fully
+ * rewriting the cache file for every embedding, which was O(N^2) I/O across
+ * N candidates.
+ */
+export class EmbeddingCacheStore {
+    private cache: EmbeddingCache | null = null;
+    private readonly pending = new Map<string, CachedEmbedding>();
+    private readonly filePath: string;
+
+    constructor(filePath: string) {
+        this.filePath = filePath;
+    }
+
+    private async ensureLoaded(): Promise<EmbeddingCache> {
+        if (!this.cache) {
+            this.cache = await loadCache(this.filePath);
+        }
+        return this.cache;
+    }
+
+    async get(provider: string, model: string, text: string): Promise<CachedEmbedding | null> {
         const key = buildCacheKey(provider, model, text);
-        cache[key] = {
+        const pending = this.pending.get(key);
+        if (pending) {
+            return pending;
+        }
+        const cache = await this.ensureLoaded();
+        return cache[key] ?? null;
+    }
+
+    set(
+        provider: string,
+        model: string,
+        text: string,
+        vector: number[],
+        backend: EmbeddingBackend,
+        fallbackReason?: string
+    ): void {
+        const key = buildCacheKey(provider, model, text);
+        const entry: CachedEmbedding = {
             createdAt: new Date().toISOString(),
             provider,
             model,
@@ -188,12 +204,37 @@ export async function writeCachedEmbedding(
             backend,
             fallbackReason,
         };
-        await persistCache(filePath, cache);
-    } finally {
-        await releaseCacheLock(lock.lockPath, lock.handle);
+        this.pending.set(key, entry);
+        if (this.cache) {
+            this.cache[key] = entry;
+        }
     }
-}
 
-export function getCacheFile(cacheDirectory: string): string {
-    return path.join(cacheDirectory, 'embeddings.json');
+    async entryCount(): Promise<number> {
+        const cache = await this.ensureLoaded();
+        return Object.keys(cache).length;
+    }
+
+    /**
+     * Merge buffered writes into the on-disk cache under the cross-process
+     * lock. Entries written by concurrent processes since load are preserved.
+     */
+    async flush(): Promise<void> {
+        if (!this.pending.size) {
+            return;
+        }
+
+        const lock = await acquireCacheLock(this.filePath);
+        try {
+            const onDisk = await loadCache(this.filePath);
+            for (const [key, entry] of this.pending) {
+                onDisk[key] = entry;
+            }
+            await persistCache(this.filePath, onDisk);
+            this.cache = onDisk;
+            this.pending.clear();
+        } finally {
+            await releaseCacheLock(lock.lockPath, lock.handle);
+        }
+    }
 }

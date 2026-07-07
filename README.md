@@ -241,9 +241,13 @@ Environment variables used by the resolver include:
 - `RBT_MATCH_THRESHOLD`
 - `RBT_MIN_SCORE`
 - `RBT_MATCH_MIN_SCORE`
+- `RBT_EMBED_CONCURRENCY`
+- `RBT_DEBUG`
 - `OLLAMA_HOST`
 - `OLLAMA_MODEL`
 - `RBT_OLLAMA_MODEL`
+
+`RBT_EMBED_CONCURRENCY` overrides how many candidate files are profiled and embedded in parallel (default: 8 for `hf`, 4 for `ollama`). `RBT_DEBUG=1` enables full stack traces and diagnostic warnings.
 
 ## Providers and Caching
 
@@ -257,11 +261,14 @@ Environment variables used by the resolver include:
 
 - uses the configured `OLLAMA_HOST` or `ollamaHost`
 - prefers `/api/embeddings`
+- transient failures (timeouts, network errors, 429/5xx) are retried up to 3 times with exponential backoff
 - falls back to an Ollama-generated semantic digest and then to a local text vectorizer if needed
 
 ### Cache
 
 - embeddings are cached under `.rbt/cache` by default
+- during `match` and `benchmark`, the cache file is loaded once and new entries are merged back in a single atomic, lock-protected flush at the end of the run (entries written concurrently by other processes are preserved)
+- new embeddings computed before a failure are still flushed, so interrupted runs make durable progress
 - cache writes are best-effort and do not fail the command if they break
 - `status` reports the current cache entry count
 

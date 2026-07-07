@@ -96,7 +96,29 @@ function sanitizeOllamaVector(vector: unknown): number[] {
     return numeric;
 }
 
-async function requestOllamaJson(
+export class OllamaHttpError extends Error {
+    readonly status: number;
+
+    constructor(message: string, status: number) {
+        super(message);
+        this.name = 'OllamaHttpError';
+        this.status = status;
+    }
+}
+
+const OLLAMA_MAX_ATTEMPTS = 3;
+const OLLAMA_RETRY_BASE_MS = 250;
+
+function isRetryableOllamaError(error: unknown): boolean {
+    if (error instanceof OllamaHttpError) {
+        return error.status >= 500 || error.status === 429;
+    }
+    // Timeouts (AbortError) and network-level failures (fetch throws
+    // TypeError) are transient; anything else is treated as permanent.
+    return error instanceof Error && (error.name === 'AbortError' || error.name === 'TypeError');
+}
+
+async function requestOllamaJsonOnce(
     host: string,
     endpoint: string,
     body: object,
@@ -117,13 +139,43 @@ async function requestOllamaJson(
 
         if (!response.ok) {
             const details = await response.text();
-            throw new Error(`Ollama error ${response.status}: ${details}`);
+            throw new OllamaHttpError(`Ollama error ${response.status}: ${details}`, response.status);
         }
 
         return await response.json();
     } finally {
         clearTimeout(timeout);
     }
+}
+
+export async function requestOllamaJson(
+    host: string,
+    endpoint: string,
+    body: object,
+    timeoutMs: number
+): Promise<any> {
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= OLLAMA_MAX_ATTEMPTS; attempt += 1) {
+        try {
+            return await requestOllamaJsonOnce(host, endpoint, body, timeoutMs);
+        } catch (error) {
+            lastError = error;
+            if (attempt === OLLAMA_MAX_ATTEMPTS || !isRetryableOllamaError(error)) {
+                throw error;
+            }
+
+            const delayMs = OLLAMA_RETRY_BASE_MS * (2 ** (attempt - 1));
+            if (isDebug()) {
+                console.warn(
+                    `Ollama request to ${endpoint} failed (attempt ${attempt}/${OLLAMA_MAX_ATTEMPTS}), retrying in ${delayMs}ms: ${(error as Error).message}`
+                );
+            }
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+    }
+
+    throw lastError;
 }
 
 async function ollamaSemanticDigest(model: string, host: string, text: string): Promise<string> {
@@ -172,21 +224,28 @@ class StubHuggingFaceEmbeddingProvider implements EmbeddingProviderClient {
 type FeatureExtractionPipeline = (text: string) => Promise<unknown>;
 
 class HuggingFaceEmbeddingProvider implements EmbeddingProviderClient {
-    private static readonly pipelineCache = new Map<string, FeatureExtractionPipeline>();
+    // Caches the in-flight promise (not the resolved pipeline) so concurrent
+    // first calls share one model load instead of each starting their own.
+    private static readonly pipelineCache = new Map<string, Promise<FeatureExtractionPipeline>>();
 
-    constructor(private readonly model: string) {}
+    private readonly model: string;
 
-    private async getPipeline(): Promise<FeatureExtractionPipeline> {
-        const cached = HuggingFaceEmbeddingProvider.pipelineCache.get(this.model);
-        if (cached) {
-            return cached;
+    constructor(model: string) {
+        this.model = model;
+    }
+
+    private getPipeline(): Promise<FeatureExtractionPipeline> {
+        let cached = HuggingFaceEmbeddingProvider.pipelineCache.get(this.model);
+        if (!cached) {
+            cached = pipeline('feature-extraction', this.model, {
+                dtype: 'fp32',
+            }) as unknown as Promise<FeatureExtractionPipeline>;
+            HuggingFaceEmbeddingProvider.pipelineCache.set(this.model, cached);
+            cached.catch(() => {
+                HuggingFaceEmbeddingProvider.pipelineCache.delete(this.model);
+            });
         }
-
-        const extractor = await pipeline('feature-extraction', this.model, {
-            dtype: 'fp32',
-        }) as unknown as FeatureExtractionPipeline;
-        HuggingFaceEmbeddingProvider.pipelineCache.set(this.model, extractor);
-        return extractor;
+        return cached;
     }
 
     async embed(text: string): Promise<LiveEmbeddingResult> {

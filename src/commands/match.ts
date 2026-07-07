@@ -3,10 +3,24 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { collectCandidateFilesDetailed, MAX_CANDIDATE_FILES } from '../utils/files.ts';
 import { parseStdinList, readStdinText } from '../utils/io.ts';
+import { mapWithConcurrency } from '../utils/concurrency.ts';
+import { createProgressReporter } from '../utils/progress.ts';
 import { resolveConfig } from '../config.ts';
-import { createEmbedding, getCacheEntryCount } from '../services/embeddings.ts';
+import { EmbeddingSession, resolveEmbedConcurrency } from '../services/embeddings.ts';
+import type { EmbeddingResult } from '../services/embedding-types.ts';
 import { rankMatches, type RankedMatchCandidate } from '../services/match.ts';
 import { buildDocumentProfile } from '../services/document-profile.ts';
+
+async function readRequiredFile(filePath: string, label: string): Promise<string> {
+    try {
+        return await fs.readFile(filePath, 'utf8');
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            throw new Error(`${label} not found: ${filePath}`);
+        }
+        throw error;
+    }
+}
 
 export function registerMatchCommand(program: Command): void {
     program
@@ -70,16 +84,16 @@ export function registerMatchCommand(program: Command): void {
                 },
             );
 
+            const startedAt = Date.now();
             const changedPath = path.resolve(process.cwd(), file);
             const diffPath = options.diffFile ? path.resolve(process.cwd(), options.diffFile) : undefined;
             const [changedText, diffText] = await Promise.all([
-                fs.readFile(changedPath, 'utf8'),
-                diffPath ? fs.readFile(diffPath, 'utf8') : Promise.resolve(undefined),
+                readRequiredFile(changedPath, 'Changed file'),
+                diffPath ? readRequiredFile(diffPath, 'Diff file') : Promise.resolve(undefined),
             ]);
             const sourceProfile = buildDocumentProfile(changedPath, changedText, process.cwd(), diffText);
 
-            const sourceEmbedding = await createEmbedding({
-                text: sourceProfile.embeddingText,
+            const session = new EmbeddingSession({
                 provider: config.provider,
                 model: config.model,
                 cacheDir: config.cacheDir,
@@ -92,33 +106,46 @@ export function registerMatchCommand(program: Command): void {
                 config.match.excludePatterns,
                 process.cwd()
             );
-            const candidateFiles = candidateResult.files;
+            const candidateFiles = candidateResult.files.filter(
+                (candidatePath) => path.resolve(candidatePath) !== changedPath
+            );
 
-            const ranked: RankedMatchCandidate[] = [];
-            for (const candidatePath of candidateFiles) {
-                if (path.resolve(candidatePath) === changedPath) {
-                    continue;
-                }
+            if (!candidateFiles.length && !options.json && !config.quiet) {
+                console.log(`No candidate files found in: ${config.match.candidatePaths.join(', ')}`);
+                console.log('Pass --candidates <paths...> or set match.candidatePaths in the config file.');
+            }
 
-                const candidateText = await fs.readFile(candidatePath, 'utf8');
-                const candidateProfile = buildDocumentProfile(candidatePath, candidateText, process.cwd());
-                const candidateEmbedding = await createEmbedding({
-                    text: candidateProfile.embeddingText,
-                    provider: config.provider,
-                    model: config.model,
-                    cacheDir: config.cacheDir,
-                    ollamaHost: config.ollamaHost,
-                });
+            const showProgress = !options.json && !config.quiet;
+            const progress = createProgressReporter('Embedding candidates', candidateFiles.length + 1, showProgress);
+            let sourceEmbedding: EmbeddingResult;
+            let ranked: RankedMatchCandidate[];
+            try {
+                sourceEmbedding = await session.embed(sourceProfile.embeddingText);
+                progress.tick();
 
-                ranked.push({
-                    file: path.relative(process.cwd(), candidatePath),
-                    vector: candidateEmbedding.vector,
-                    preview: candidateProfile.preview,
-                    profile: candidateProfile,
-                    embeddingBackend: candidateEmbedding.backend,
-                    cacheHit: candidateEmbedding.cacheHit,
-                    fallbackReason: candidateEmbedding.fallbackReason,
-                });
+                ranked = await mapWithConcurrency(
+                    candidateFiles,
+                    resolveEmbedConcurrency(config.provider),
+                    async (candidatePath) => {
+                        const candidateText = await fs.readFile(candidatePath, 'utf8');
+                        const candidateProfile = buildDocumentProfile(candidatePath, candidateText, process.cwd());
+                        const candidateEmbedding = await session.embed(candidateProfile.embeddingText);
+                        progress.tick();
+
+                        return {
+                            file: path.relative(process.cwd(), candidatePath),
+                            vector: candidateEmbedding.vector,
+                            preview: candidateProfile.preview,
+                            profile: candidateProfile,
+                            embeddingBackend: candidateEmbedding.backend,
+                            cacheHit: candidateEmbedding.cacheHit,
+                            fallbackReason: candidateEmbedding.fallbackReason,
+                        };
+                    }
+                );
+            } finally {
+                progress.done();
+                await session.flush();
             }
 
             const matches = rankMatches(
@@ -127,7 +154,8 @@ export function registerMatchCommand(program: Command): void {
             );
             const filtered = matches.filter((entry) => entry.score >= config.match.minScore);
             const topMatches = filtered.slice(0, config.match.topK);
-            const cacheEntries = await getCacheEntryCount(config.cacheDir);
+            const cacheEntries = await session.cacheEntryCount();
+            const elapsedMs = Date.now() - startedAt;
             const candidateBackends = [...new Set(ranked.map((entry) => entry.embeddingBackend).filter(Boolean))];
             const candidateFallbackCount = ranked.filter((entry) => Boolean(entry.fallbackReason)).length;
 
@@ -151,6 +179,7 @@ export function registerMatchCommand(program: Command): void {
                         candidateFallbackCount,
                         cacheEntries,
                         candidateLimitReached: candidateResult.truncated,
+                        elapsedMs,
                         results: topMatches,
                     })
                 );
@@ -158,8 +187,10 @@ export function registerMatchCommand(program: Command): void {
             }
 
             if (!config.quiet) {
+                const cacheHits = ranked.filter((entry) => entry.cacheHit).length + (sourceEmbedding.cacheHit ? 1 : 0);
                 console.log(
-                    `Matched ${topMatches.length}/${matches.length} candidates for ${path.relative(process.cwd(), changedPath)}`
+                    `Matched ${topMatches.length}/${matches.length} candidates for ${path.relative(process.cwd(), changedPath)} ` +
+                    `in ${(elapsedMs / 1000).toFixed(1)}s (${cacheHits}/${ranked.length + 1} embeddings cached)`
                 );
                 if (config.provider === 'ollama' || sourceEmbedding.backend !== 'hf' || candidateFallbackCount > 0) {
                     console.log(`Source embedding backend: ${sourceEmbedding.backend}${sourceEmbedding.cacheHit ? ' (cache)' : ''}`);

@@ -10,6 +10,7 @@
     "dev": "node --watch --experimental-strip-types src/cli.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/cli.js",
+    "test": "node --experimental-strip-types --test \"src/**/*.test.ts\"",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

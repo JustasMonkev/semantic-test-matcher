@@ -2,11 +2,13 @@ import { Command } from 'commander';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { resolveConfig } from '../config.ts';
-import { createEmbedding } from '../services/embeddings.ts';
+import { EmbeddingSession, resolveEmbedConcurrency } from '../services/embeddings.ts';
 import { buildDocumentProfile, type DocumentProfile } from '../services/document-profile.ts';
 import type { EmbeddingBackend } from '../services/embedding-types.ts';
 import { rankMatches } from '../services/match.ts';
 import { collectCandidateFilesDetailed } from '../utils/files.ts';
+import { mapWithConcurrency } from '../utils/concurrency.ts';
+import { createProgressReporter, type ProgressReporter } from '../utils/progress.ts';
 
 interface BenchmarkCase {
     source: string;
@@ -106,23 +108,18 @@ async function loadBenchmarkCases(filePath: string): Promise<BenchmarkCase[]> {
 
 async function prepareCandidates(
     candidateFiles: string[],
-    config: Awaited<ReturnType<typeof resolveConfig>>,
+    session: EmbeddingSession,
+    concurrency: number,
+    progress: ProgressReporter,
     cwd: string
 ): Promise<PreparedCandidate[]> {
-    const prepared: PreparedCandidate[] = [];
-
-    for (const candidatePath of candidateFiles) {
+    return mapWithConcurrency(candidateFiles, concurrency, async (candidatePath) => {
         const candidateText = await fs.readFile(candidatePath, 'utf8');
         const candidateProfile = buildDocumentProfile(candidatePath, candidateText, cwd);
-        const candidateVector = await createEmbedding({
-            text: candidateProfile.embeddingText,
-            provider: config.provider,
-            model: config.model,
-            cacheDir: config.cacheDir,
-            ollamaHost: config.ollamaHost,
-        });
+        const candidateVector = await session.embed(candidateProfile.embeddingText);
+        progress.tick();
 
-        prepared.push({
+        return {
             file: normalizeRelativePath(path.relative(cwd, candidatePath)),
             vector: candidateVector.vector,
             preview: candidateProfile.preview,
@@ -130,10 +127,8 @@ async function prepareCandidates(
             embeddingBackend: candidateVector.backend,
             cacheHit: candidateVector.cacheHit,
             fallbackReason: candidateVector.fallbackReason,
-        });
-    }
-
-    return prepared;
+        };
+    });
 }
 
 export function registerBenchmarkCommand(program: Command): void {
@@ -190,7 +185,20 @@ export function registerBenchmarkCommand(program: Command): void {
                 config.match.excludePatterns,
                 cwd
             );
-            const preparedCandidates = await prepareCandidates(candidateResult.files, config, cwd);
+
+            const session = new EmbeddingSession({
+                provider: config.provider,
+                model: config.model,
+                cacheDir: config.cacheDir,
+                ollamaHost: config.ollamaHost,
+            });
+            const showProgress = !options.json && !config.quiet;
+            const progress = createProgressReporter(
+                'Embedding',
+                candidateResult.files.length + cases.length,
+                showProgress
+            );
+            let preparedCandidates: PreparedCandidate[];
 
             let top1Hits = 0;
             let top1Total = 0;
@@ -201,73 +209,81 @@ export function registerBenchmarkCommand(program: Command): void {
             const misses: BenchmarkMiss[] = [];
             const sourceEmbeddings: Array<{ backend: EmbeddingBackend; cacheHit: boolean; fallbackReason?: string }> = [];
 
-            for (const entry of cases) {
-                const sourcePath = path.resolve(cwd, entry.source);
-                const sourceText = await fs.readFile(sourcePath, 'utf8');
-                const sourceProfile = buildDocumentProfile(sourcePath, sourceText, cwd, entry.diffText);
-                const sourceVector = await createEmbedding({
-                    text: sourceProfile.embeddingText,
-                    provider: config.provider,
-                    model: config.model,
-                    cacheDir: config.cacheDir,
-                    ollamaHost: config.ollamaHost,
-                });
-                sourceEmbeddings.push({
-                    backend: sourceVector.backend,
-                    cacheHit: sourceVector.cacheHit,
-                    fallbackReason: sourceVector.fallbackReason,
-                });
-
-                const matches = rankMatches(
-                    { profile: sourceProfile, vector: sourceVector.vector },
-                    preparedCandidates.filter((candidate) => path.resolve(cwd, candidate.file) !== sourcePath)
+            try {
+                preparedCandidates = await prepareCandidates(
+                    candidateResult.files,
+                    session,
+                    resolveEmbedConcurrency(config.provider),
+                    progress,
+                    cwd
                 );
-                const topThree = matches.slice(0, 3);
-                const topTen = matches.slice(0, 10);
-                const failedChecks: string[] = [];
 
-                const expectedTop1 = getExpectedTop1(entry);
-                if (expectedTop1) {
-                    top1Total += 1;
-                    if ((matches[0]?.file ?? '') === expectedTop1) {
-                        top1Hits += 1;
-                    } else {
-                        failedChecks.push('top1');
-                    }
-                }
-
-                const expectedTop3 = getExpectedTop3(entry);
-                if (expectedTop3.length) {
-                    top3Total += 1;
-                    if (topThree.some((match) => expectedTop3.includes(match.file))) {
-                        top3Hits += 1;
-                    } else {
-                        failedChecks.push('top3');
-                    }
-                }
-
-                const expectedTop10Includes = entry.expectedTop10Includes ?? [];
-                if (expectedTop10Includes.length) {
-                    top10IncludeTotal += 1;
-                    if (expectedTop10Includes.every((file) => topTen.some((match) => match.file === file))) {
-                        top10IncludeHits += 1;
-                    } else {
-                        failedChecks.push('top10Includes');
-                    }
-                }
-
-                if (failedChecks.length) {
-                    const expectedFiles = uniqueExpectedFiles(expectedTop1, expectedTop3, expectedTop10Includes);
-                    misses.push({
-                        source: entry.source,
-                        failedChecks,
-                        expectedTop1,
-                        expectedTop3: expectedTop3.length ? expectedTop3 : undefined,
-                        expectedTop10Includes: expectedTop10Includes.length ? expectedTop10Includes : undefined,
-                        observedTop10: topTen.map((match) => match.file),
-                        observedRanks: getObservedRanks(matches, expectedFiles),
+                for (const entry of cases) {
+                    const sourcePath = path.resolve(cwd, entry.source);
+                    const sourceText = await fs.readFile(sourcePath, 'utf8');
+                    const sourceProfile = buildDocumentProfile(sourcePath, sourceText, cwd, entry.diffText);
+                    const sourceVector = await session.embed(sourceProfile.embeddingText);
+                    progress.tick();
+                    sourceEmbeddings.push({
+                        backend: sourceVector.backend,
+                        cacheHit: sourceVector.cacheHit,
+                        fallbackReason: sourceVector.fallbackReason,
                     });
+
+                    const matches = rankMatches(
+                        { profile: sourceProfile, vector: sourceVector.vector },
+                        preparedCandidates.filter((candidate) => path.resolve(cwd, candidate.file) !== sourcePath)
+                    );
+                    const topThree = matches.slice(0, 3);
+                    const topTen = matches.slice(0, 10);
+                    const failedChecks: string[] = [];
+
+                    const expectedTop1 = getExpectedTop1(entry);
+                    if (expectedTop1) {
+                        top1Total += 1;
+                        if ((matches[0]?.file ?? '') === expectedTop1) {
+                            top1Hits += 1;
+                        } else {
+                            failedChecks.push('top1');
+                        }
+                    }
+
+                    const expectedTop3 = getExpectedTop3(entry);
+                    if (expectedTop3.length) {
+                        top3Total += 1;
+                        if (topThree.some((match) => expectedTop3.includes(match.file))) {
+                            top3Hits += 1;
+                        } else {
+                            failedChecks.push('top3');
+                        }
+                    }
+
+                    const expectedTop10Includes = entry.expectedTop10Includes ?? [];
+                    if (expectedTop10Includes.length) {
+                        top10IncludeTotal += 1;
+                        if (expectedTop10Includes.every((file) => topTen.some((match) => match.file === file))) {
+                            top10IncludeHits += 1;
+                        } else {
+                            failedChecks.push('top10Includes');
+                        }
+                    }
+
+                    if (failedChecks.length) {
+                        const expectedFiles = uniqueExpectedFiles(expectedTop1, expectedTop3, expectedTop10Includes);
+                        misses.push({
+                            source: entry.source,
+                            failedChecks,
+                            expectedTop1,
+                            expectedTop3: expectedTop3.length ? expectedTop3 : undefined,
+                            expectedTop10Includes: expectedTop10Includes.length ? expectedTop10Includes : undefined,
+                            observedTop10: topTen.map((match) => match.file),
+                            observedRanks: getObservedRanks(matches, expectedFiles),
+                        });
+                    }
                 }
+            } finally {
+                progress.done();
+                await session.flush();
             }
 
             const embeddingSummary = summarizeEmbeddingBackends(sourceEmbeddings, preparedCandidates);
