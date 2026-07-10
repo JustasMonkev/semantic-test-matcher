@@ -5,7 +5,7 @@
 The matching flow combines:
 
 - document profiling from file paths and code structure
-- embeddings from Hugging Face or Ollama
+- local GGUF embeddings through `node-llama-cpp`
 - a local embedding cache
 - score blending for semantic and structural signals
 
@@ -15,7 +15,7 @@ The matching flow combines:
 - `rbt embed [text]` generates an embedding for text or stdin
 - `rbt status` shows the resolved runtime configuration
 - `rbt completion [bash|zsh]` prints a shell completion script
-- supports `hf` and `ollama` embedding providers
+- runs embeddings in-process with no cloud service or local daemon
 - caches embeddings in `.rbt/cache` by default
 - accepts candidate file lists from CLI flags, config, or stdin
 
@@ -40,10 +40,7 @@ flowchart TD
     F2 --> G
 
     G --> H["Cache layer<br/>src/services/cache.ts"]
-    G --> I["Provider factory<br/>src/services/embedding-provider.ts"]
-    I --> I1["Hugging Face transformers"]
-    I --> I2["Ollama embeddings"]
-    I2 --> I3["Fallback digest / local vectorizer"]
+    G --> I["Local inference<br/>node-llama-cpp + GGUF"]
 
     G --> J["Vectors"]
     J --> K["Ranking engine<br/>src/services/match.ts"]
@@ -69,6 +66,10 @@ flowchart TD
 npm install
 npm run build
 ```
+
+Place an embedding-capable GGUF model at
+`models/embeddinggemma-300M-Q4_0.gguf`, or pass its local path with `--model`.
+Model inference is fully local.
 
 Run the compiled CLI:
 
@@ -125,8 +126,7 @@ printf "coupon validation" | node dist/cli.js embed --json
 
 Useful flags:
 
-- `--provider <hf|ollama>`
-- `--model <model>`
+- `--model <path-to-gguf>`
 - `--cache-dir <path>`
 - `--json`
 
@@ -156,8 +156,7 @@ Useful flags:
 - `--include-file <glob...>`
 - `--exclude-file <glob...>`
 - `--candidates-from-stdin`
-- `--provider <hf|ollama>`
-- `--model <model>`
+- `--model <path-to-gguf>`
 - `--cache-dir <path>`
 - `--json`
 
@@ -165,7 +164,7 @@ How matching works:
 
 1. The changed file is read and converted into a `DocumentProfile`.
 2. Candidate files are collected from configured paths or stdin.
-3. Each profile is embedded with the selected provider.
+3. Each profile is embedded locally with the configured GGUF model.
 4. `rankMatches` blends embedding similarity with structural overlap.
 5. Results are filtered by threshold and truncated to `topK`.
 
@@ -206,9 +205,7 @@ Example config:
 
 ```json
 {
-  "provider": "hf",
-  "model": "Xenova/all-MiniLM-L6-v2",
-  "ollamaHost": "http://127.0.0.1:11434",
+  "model": "models/embeddinggemma-300M-Q4_0.gguf",
   "cacheDir": ".rbt/cache",
   "logLevel": "info",
   "match": {
@@ -229,7 +226,6 @@ Example config:
 
 Environment variables used by the resolver include:
 
-- `RBT_PROVIDER`
 - `RBT_MODEL`
 - `RBT_CACHE_DIR`
 - `RBT_LOG_LEVEL`
@@ -241,23 +237,13 @@ Environment variables used by the resolver include:
 - `RBT_MATCH_THRESHOLD`
 - `RBT_MIN_SCORE`
 - `RBT_MATCH_MIN_SCORE`
-- `OLLAMA_HOST`
-- `OLLAMA_MODEL`
-- `RBT_OLLAMA_MODEL`
 
-## Providers and Caching
+## Local Embeddings and Caching
 
-### Hugging Face
-
-- default provider
-- uses `@huggingface/transformers`
-- the first run may download model assets, depending on the selected model and local cache state
-
-### Ollama
-
-- uses the configured `OLLAMA_HOST` or `ollamaHost`
-- prefers `/api/embeddings`
-- falls back to an Ollama-generated semantic digest and then to a local text vectorizer if needed
+- uses `node-llama-cpp` with an embedding-capable local GGUF file
+- defaults to `models/embeddinggemma-300M-Q4_0.gguf`
+- applies EmbeddingGemma's `sentence similarity` prompt for semantic matching
+- does not call a cloud API or require a local model server
 
 ### Cache
 

@@ -6,7 +6,6 @@ import path from 'node:path';
 import { clamp, resolveConfig } from '../src/config.ts';
 
 const MANAGED_ENV_VARS = [
-    'RBT_PROVIDER',
     'RBT_MODEL',
     'RBT_CACHE_DIR',
     'RBT_LOG_LEVEL',
@@ -18,9 +17,6 @@ const MANAGED_ENV_VARS = [
     'RBT_MATCH_THRESHOLD',
     'RBT_MIN_SCORE',
     'RBT_MATCH_MIN_SCORE',
-    'OLLAMA_HOST',
-    'OLLAMA_MODEL',
-    'RBT_OLLAMA_MODEL',
 ];
 
 describe('resolveConfig', () => {
@@ -46,8 +42,7 @@ describe('resolveConfig', () => {
 
     it('falls back to built-in defaults', async () => {
         const config = await resolveConfig({}, {});
-        assert.equal(config.provider, 'hf');
-        assert.equal(config.model, 'Xenova/all-MiniLM-L6-v2');
+        assert.equal(config.model, path.resolve('models/embeddinggemma-300M-Q4_0.gguf'));
         assert.equal(config.logLevel, 'info');
         assert.equal(config.match.topK, 5);
         assert.equal(config.match.threshold, 0.45);
@@ -57,21 +52,18 @@ describe('resolveConfig', () => {
     it('prefers command options over root options and env vars', async () => {
         process.env.RBT_TOP_K = '9';
         const config = await resolveConfig(
-            { provider: 'hf', model: 'root-model' },
-            { provider: 'ollama', model: 'command-model', topK: '3' }
+            { model: 'root-model' },
+            { model: 'command-model', topK: '3' }
         );
-        assert.equal(config.provider, 'ollama');
-        assert.equal(config.model, 'command-model');
+        assert.equal(config.model, path.resolve('command-model'));
         assert.equal(config.match.topK, 3);
     });
 
     it('prefers env vars over the config file', async () => {
-        process.env.RBT_PROVIDER = 'ollama';
         process.env.RBT_MODEL = 'env-model';
-        const configFile = await writeTempConfig({ provider: 'hf', model: 'file-model' });
+        const configFile = await writeTempConfig({ model: 'file-model' });
         const config = await resolveConfig({ config: configFile }, {});
-        assert.equal(config.provider, 'ollama');
-        assert.equal(config.model, 'env-model');
+        assert.equal(config.model, path.resolve('env-model'));
     });
 
     it('reads settings from an explicit config file', async () => {
@@ -81,7 +73,7 @@ describe('resolveConfig', () => {
             match: { topK: 7, threshold: 0.6 },
         });
         const config = await resolveConfig({ config: configFile }, {});
-        assert.equal(config.model, 'file-model');
+        assert.equal(config.model, path.resolve('file-model'));
         assert.equal(config.logLevel, 'warn');
         assert.equal(config.match.topK, 7);
         assert.equal(config.match.threshold, 0.6);
@@ -98,10 +90,6 @@ describe('resolveConfig', () => {
         assert.equal(config.match.threshold, 1);
         assert.equal(config.match.minScore, 0);
         assert.equal(config.match.topK, 1);
-    });
-
-    it('rejects an invalid provider', async () => {
-        await assert.rejects(resolveConfig({ provider: 'openai' }, {}), /Invalid provider "openai"/);
     });
 
     it('rejects an invalid log level', async () => {

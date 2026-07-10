@@ -8,16 +8,14 @@ export function registerEmbedCommand(program: Command): void {
         .command('embed')
         .description('Generate embeddings for text')
         .argument('[text]', 'Text to embed')
-        .option('--provider <provider>', 'Embedding provider: hf or ollama')
-        .option('--model <model>', 'Embedding model for selected provider')
+        .option('--model <path>', 'Path to a local GGUF embedding model')
         .option('--cache-dir <path>', 'Directory used to cache embeddings')
         .option('--json', 'Print machine-readable JSON output')
-        .action(async (text: string, options: { provider?: string; model?: string; cacheDir?: string; json?: boolean }) => {
+        .action(async (text: string, options: { model?: string; cacheDir?: string; json?: boolean }) => {
             const rootOptions = program.opts();
             const config = await resolveConfig(
                 {
                     config: rootOptions.config,
-                    provider: rootOptions.provider,
                     model: rootOptions.model,
                     cacheDir: rootOptions.cacheDir,
                     logLevel: rootOptions.logLevel,
@@ -25,7 +23,6 @@ export function registerEmbedCommand(program: Command): void {
                     quiet: rootOptions.quiet,
                 },
                 {
-                    provider: options.provider,
                     model: options.model,
                     cacheDir: options.cacheDir,
                 },
@@ -40,19 +37,15 @@ export function registerEmbedCommand(program: Command): void {
 
             const embedding = await createEmbedding({
                 text: finalText,
-                provider: config.provider,
                 model: config.model,
                 cacheDir: config.cacheDir,
-                ollamaHost: config.ollamaHost,
             });
 
             if (options.json) {
                 console.log(JSON.stringify({
-                    provider: config.provider,
                     model: config.model,
                     backend: embedding.backend,
                     cacheHit: embedding.cacheHit,
-                    fallbackReason: embedding.fallbackReason,
                     size: embedding.vector.length,
                     embedding: embedding.vector,
                 }));
@@ -60,9 +53,6 @@ export function registerEmbedCommand(program: Command): void {
             }
 
             console.log(`Embedding backend: ${embedding.backend}${embedding.cacheHit ? ' (cache)' : ''}`);
-            if (embedding.fallbackReason) {
-                console.log(`Fallback reason: ${embedding.fallbackReason}`);
-            }
             console.log('Embedding:', embedding.vector);
         });
 }

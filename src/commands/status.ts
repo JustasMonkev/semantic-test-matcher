@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { resolveConfig } from '../config.ts';
-import { getCacheEntryCount } from '../services/embeddings.ts';
+import { EMBEDDING_BACKEND, getCacheEntryCount } from '../services/embeddings.ts';
 
 export function registerStatusCommand(program: Command): void {
     program
@@ -12,7 +12,6 @@ export function registerStatusCommand(program: Command): void {
             const config = await resolveConfig(
                 {
                     config: rootOptions.config,
-                    provider: rootOptions.provider,
                     model: rootOptions.model,
                     cacheDir: rootOptions.cacheDir,
                     logLevel: rootOptions.logLevel,
@@ -28,7 +27,7 @@ export function registerStatusCommand(program: Command): void {
             if (options.json) {
                 console.log(
                     JSON.stringify({
-                        provider: config.provider,
+                        backend: EMBEDDING_BACKEND,
                         model: config.model,
                         logLevel: config.logLevel,
                         cacheDir: config.cacheDir,
@@ -41,7 +40,7 @@ export function registerStatusCommand(program: Command): void {
                 return;
             }
 
-            console.log(`provider: ${config.provider}`);
+            console.log(`backend: ${EMBEDDING_BACKEND}`);
             console.log(`model: ${config.model}`);
             console.log(`logLevel: ${config.logLevel}`);
             console.log(`cacheDir: ${config.cacheDir}`);

@@ -2,8 +2,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isParentPath } from './utils/patterns.ts';
 
-export type EmbeddingProvider = 'hf' | 'ollama';
-
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export interface MatchDefaults {
@@ -16,9 +14,7 @@ export interface MatchDefaults {
 }
 
 export interface AppConfig {
-    provider?: EmbeddingProvider;
     model?: string;
-    ollamaHost?: string;
     cacheDir?: string;
     logLevel?: LogLevel;
     quiet?: boolean;
@@ -27,9 +23,7 @@ export interface AppConfig {
 }
 
 export interface RuntimeConfig {
-    provider: EmbeddingProvider;
     model: string;
-    ollamaHost: string;
     cacheDir: string;
     logLevel: LogLevel;
     quiet: boolean;
@@ -40,7 +34,6 @@ export interface RuntimeConfig {
 
 export interface RootOptions {
     config?: string;
-    provider?: string;
     model?: string;
     cacheDir?: string;
     logLevel?: string;
@@ -55,16 +48,13 @@ export interface MatchCommandOptions {
     candidates?: string[];
     includeFile?: string[];
     excludeFile?: string[];
-    provider?: string;
     model?: string;
     cacheDir?: string;
     json?: boolean;
 }
 
 const DEFAULT_CONFIG: AppConfig = {
-    provider: 'hf',
-    model: 'Xenova/all-MiniLM-L6-v2',
-    ollamaHost: 'http://127.0.0.1:11434',
+    model: 'models/embeddinggemma-300M-Q4_0.gguf',
     cacheDir: '.rbt/cache',
     logLevel: 'info',
     match: {
@@ -91,19 +81,6 @@ function firstFiniteNumber(...values: Array<unknown>): number | undefined {
     }
 
     return undefined;
-}
-
-function parseProvider(value?: string): EmbeddingProvider {
-    const normalized = (value || '').trim().toLowerCase();
-    if (!normalized) {
-        return 'hf';
-    }
-
-    if (normalized === 'hf' || normalized === 'ollama') {
-        return normalized;
-    }
-
-    throw new Error(`Invalid provider "${value}". Expected "hf" or "ollama".`);
 }
 
 function parseBoolean(value: unknown, fallback = false): boolean {
@@ -150,24 +127,6 @@ function parseJsonConfig(raw: string, filePath: string): AppConfig {
         return typeof parsed === 'object' && parsed !== null ? parsed : {};
     } catch (error) {
         throw new Error(`Failed to parse config file ${filePath}: ${(error as Error).message}`);
-    }
-}
-
-function isLoopbackHost(value: string): boolean {
-    try {
-        const url = new URL(value);
-        const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-
-        if (hostname === 'localhost' || hostname === '::1' || hostname === '0:0:0:0:0:0:0:1') {
-            return true;
-        }
-
-        const octets = hostname.split('.');
-        return octets.length === 4 &&
-            octets.every((octet) => /^\d+$/.test(octet) && Number(octet) >= 0 && Number(octet) <= 255) &&
-            Number(octets[0]) === 127;
-    } catch {
-        return false;
     }
 }
 
@@ -239,20 +198,22 @@ export async function resolveConfig(
 ): Promise<RuntimeConfig> {
     const { config: fileConfig, autoDiscovered, filePath: configFile } = await loadConfig(rootOptions.config);
     const resolvedWorkspace = path.resolve(cwd);
-    const resolvedProvider = parseProvider(
-        commandOptions.provider ??
-            rootOptions.provider ??
-            process.env.RBT_PROVIDER ??
-            fileConfig.provider ??
-            DEFAULT_CONFIG.provider
-    );
     const resolvedModel = commandOptions.model ??
         rootOptions.model ??
         process.env.RBT_MODEL ??
-        (resolvedProvider === 'ollama'
-            ? process.env.OLLAMA_MODEL || process.env.RBT_OLLAMA_MODEL || fileConfig.model || 'qwen3.5:9b'
-            : fileConfig.model) ??
+        fileConfig.model ??
         DEFAULT_CONFIG.model!;
+    const model = path.resolve(cwd, resolvedModel);
+    if (
+        autoDiscovered &&
+        commandOptions.model == null &&
+        rootOptions.model == null &&
+        process.env.RBT_MODEL == null &&
+        fileConfig.model &&
+        !await isWorkspaceContainedPath(model, resolvedWorkspace)
+    ) {
+        throw new Error('Auto-discovered repo config cannot set the model outside the workspace.');
+    }
 
     const resolvedLogLevel = parseLogLevel(
         rootOptions.logLevel ??
@@ -275,11 +236,6 @@ export async function resolveConfig(
         false,
         false
     );
-
-    const resolvedOllamaHost = process.env.OLLAMA_HOST ?? fileConfig.ollamaHost ?? DEFAULT_CONFIG.ollamaHost!;
-    if (autoDiscovered && process.env.OLLAMA_HOST == null && fileConfig.ollamaHost && !isLoopbackHost(fileConfig.ollamaHost)) {
-        throw new Error('Auto-discovered repo config cannot set ollamaHost to a non-loopback address.');
-    }
 
     const resolvedTopK = firstFiniteNumber(
         commandOptions.topK,
@@ -348,9 +304,7 @@ export async function resolveConfig(
         DEFAULT_CONFIG.match!.excludePatterns!);
 
     return {
-        provider: resolvedProvider,
-        model: resolvedModel,
-        ollamaHost: resolvedOllamaHost,
+        model,
         cacheDir,
         logLevel: resolvedLogLevel,
         quiet: resolvedQuiet,

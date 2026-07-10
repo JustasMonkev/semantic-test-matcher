@@ -23,8 +23,7 @@ export function registerMatchCommand(program: Command): void {
         .option('--include-file <patterns...>', 'Include only matching files (glob pattern)')
         .option('--exclude-file <patterns...>', 'Exclude matching files (glob pattern)')
         .option('--candidates-from-stdin', 'Read candidate file list (JSON array or newline list) from stdin')
-        .option('--provider <provider>', 'Embedding provider: hf or ollama')
-        .option('--model <model>', 'Embedding model for selected provider')
+        .option('--model <path>', 'Path to a local GGUF embedding model')
         .option('--cache-dir <path>', 'Directory used to cache embeddings')
         .option('--diff-file <path>', 'Unified diff file used to enrich change-aware matching')
         .option('--json', 'Print machine-readable output')
@@ -37,7 +36,6 @@ export function registerMatchCommand(program: Command): void {
                 candidates?: string[];
                 includeFile?: string[];
                 excludeFile?: string[];
-                provider?: string;
                 model?: string;
                 cacheDir?: string;
                 diffFile?: string;
@@ -52,7 +50,6 @@ export function registerMatchCommand(program: Command): void {
             const config = await resolveConfig(
                 {
                     config: rootOptions.config,
-                    provider: rootOptions.provider,
                     model: rootOptions.model,
                     cacheDir: rootOptions.cacheDir,
                     logLevel: rootOptions.logLevel,
@@ -66,7 +63,6 @@ export function registerMatchCommand(program: Command): void {
                     candidates: options.candidates?.length ? options.candidates : candidatesFromStdin,
                     includeFile: options.includeFile,
                     excludeFile: options.excludeFile,
-                    provider: options.provider,
                     model: options.model,
                     cacheDir: options.cacheDir,
                     json: options.json,
@@ -82,10 +78,8 @@ export function registerMatchCommand(program: Command): void {
             const sourceProfile = buildDocumentProfile(changedPath, changedText, process.cwd(), diffText);
 
             const embeddingSession = new EmbeddingSession({
-                provider: config.provider,
                 model: config.model,
                 cacheDir: config.cacheDir,
-                ollamaHost: config.ollamaHost,
             });
 
             const sourceEmbedding = await embeddingSession.embed(sourceProfile.embeddingText);
@@ -115,7 +109,6 @@ export function registerMatchCommand(program: Command): void {
                         profile: candidateProfile,
                         embeddingBackend: candidateEmbedding.backend,
                         cacheHit: candidateEmbedding.cacheHit,
-                        fallbackReason: candidateEmbedding.fallbackReason,
                     };
                 }
             );
@@ -130,13 +123,11 @@ export function registerMatchCommand(program: Command): void {
             const topMatches = filtered.slice(0, config.match.topK);
             const cacheEntries = await getCacheEntryCount(config.cacheDir);
             const candidateBackends = [...new Set(ranked.map((entry) => entry.embeddingBackend).filter(Boolean))];
-            const candidateFallbackCount = ranked.filter((entry) => Boolean(entry.fallbackReason)).length;
 
             if (options.json) {
                 console.log(
                     JSON.stringify({
                         file: path.relative(process.cwd(), changedPath),
-                        provider: config.provider,
                         model: config.model,
                         matched: topMatches.length,
                         threshold: config.match.threshold,
@@ -146,10 +137,8 @@ export function registerMatchCommand(program: Command): void {
                         sourceEmbedding: {
                             backend: sourceEmbedding.backend,
                             cacheHit: sourceEmbedding.cacheHit,
-                            fallbackReason: sourceEmbedding.fallbackReason,
                         },
                         candidateEmbeddingBackends: candidateBackends,
-                        candidateFallbackCount,
                         cacheEntries,
                         candidateLimitReached: candidateResult.truncated,
                         results: topMatches,
@@ -162,15 +151,6 @@ export function registerMatchCommand(program: Command): void {
                 console.log(
                     `Matched ${topMatches.length}/${matches.length} candidates for ${path.relative(process.cwd(), changedPath)}`
                 );
-                if (config.provider === 'ollama' || sourceEmbedding.backend !== 'hf' || candidateFallbackCount > 0) {
-                    console.log(`Source embedding backend: ${sourceEmbedding.backend}${sourceEmbedding.cacheHit ? ' (cache)' : ''}`);
-                    if (sourceEmbedding.fallbackReason) {
-                        console.log(`Source fallback: ${sourceEmbedding.fallbackReason}`);
-                    }
-                    if (candidateBackends.length) {
-                        console.log(`Candidate embedding backends: ${candidateBackends.join(', ')}${candidateFallbackCount ? `; fallbacks: ${candidateFallbackCount}` : ''}`);
-                    }
-                }
                 if (candidateResult.truncated) {
                     console.log(`Candidate scan truncated at ${MAX_CANDIDATE_FILES} files`);
                 }
