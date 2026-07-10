@@ -6,7 +6,7 @@ import { parseStdinList, readStdinText } from '../utils/io.ts';
 import { mapWithConcurrency } from '../utils/async.ts';
 import { resolveConfig } from '../config.ts';
 import { EmbeddingSession, getCacheEntryCount } from '../services/embeddings.ts';
-import { rankMatches, type RankedMatchCandidate } from '../services/match.ts';
+import { filterMatches, rankMatches, type RankedMatchCandidate } from '../services/match.ts';
 import { buildDocumentProfile } from '../services/document-profile.ts';
 
 const EMBED_CONCURRENCY = 8;
@@ -126,7 +126,7 @@ export function registerMatchCommand(program: Command): void {
                 { profile: sourceProfile, vector: sourceEmbedding.vector },
                 ranked
             );
-            const filtered = matches.filter((entry) => entry.score >= config.match.minScore);
+            const filtered = filterMatches(matches, config.match.minScore);
             const topMatches = filtered.slice(0, config.match.topK);
             const cacheEntries = await getCacheEntryCount(config.cacheDir);
             const candidateBackends = [...new Set(ranked.map((entry) => entry.embeddingBackend).filter(Boolean))];

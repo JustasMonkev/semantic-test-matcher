@@ -5,7 +5,7 @@ import { resolveConfig } from '../config.ts';
 import { EmbeddingSession } from '../services/embeddings.ts';
 import { buildDocumentProfile, type DocumentProfile } from '../services/document-profile.ts';
 import type { EmbeddingBackend } from '../services/embedding-types.ts';
-import { rankMatches } from '../services/match.ts';
+import { filterMatches, rankMatches } from '../services/match.ts';
 import { collectCandidateFilesDetailed } from '../utils/files.ts';
 import { mapWithConcurrency } from '../utils/async.ts';
 
@@ -74,7 +74,7 @@ function normalizeOptionalPaths(values?: string[]): string[] | undefined {
 }
 
 function getExpectedTop1(entry: BenchmarkCase): string | undefined {
-    return entry.expectedTop1 ?? entry.expectedTop3?.[0];
+    return entry.expectedTop1;
 }
 
 function getExpectedTop3(entry: BenchmarkCase): string[] {
@@ -140,6 +140,8 @@ export function registerBenchmarkCommand(program: Command): void {
         .option('--provider <provider>', 'Embedding provider: hf or ollama')
         .option('--model <model>', 'Embedding model for selected provider')
         .option('--cache-dir <path>', 'Directory used to cache embeddings')
+        .option('-t, --threshold <number>', 'Minimum similarity threshold')
+        .option('--min-score <number>', 'Minimum similarity score override')
         .option('--json', 'Print machine-readable output')
         .action(async (options: {
             cases: string;
@@ -149,6 +151,8 @@ export function registerBenchmarkCommand(program: Command): void {
             provider?: string;
             model?: string;
             cacheDir?: string;
+            threshold?: string;
+            minScore?: string;
             json?: boolean;
         }) => {
             const rootOptions = program.opts();
@@ -170,6 +174,8 @@ export function registerBenchmarkCommand(program: Command): void {
                     provider: options.provider,
                     model: options.model,
                     cacheDir: options.cacheDir,
+                    threshold: options.threshold,
+                    minScore: options.minScore,
                     json: options.json,
                 },
                 cwd
@@ -211,9 +217,12 @@ export function registerBenchmarkCommand(program: Command): void {
                     fallbackReason: sourceVector.fallbackReason,
                 });
 
-                const matches = rankMatches(
-                    { profile: sourceProfile, vector: sourceVector.vector },
-                    preparedCandidates.filter((candidate) => path.resolve(cwd, candidate.file) !== sourcePath)
+                const matches = filterMatches(
+                    rankMatches(
+                        { profile: sourceProfile, vector: sourceVector.vector },
+                        preparedCandidates.filter((candidate) => path.resolve(cwd, candidate.file) !== sourcePath)
+                    ),
+                    config.match.minScore
                 );
                 const topThree = matches.slice(0, 3);
                 const topTen = matches.slice(0, 10);
@@ -268,8 +277,13 @@ export function registerBenchmarkCommand(program: Command): void {
             const embeddingSummary = summarizeEmbeddingBackends(sourceEmbeddings, preparedCandidates);
             const summary = {
                 cases: cases.length,
+                threshold: config.match.threshold,
+                minScore: config.match.minScore,
+                top1Cases: top1Total,
                 top1Rate: top1Total ? top1Hits / top1Total : 0,
+                top3Cases: top3Total,
                 top3Rate: top3Total ? top3Hits / top3Total : 0,
+                top10IncludeCases: top10IncludeTotal,
                 top10IncludeRate: top10IncludeTotal ? top10IncludeHits / top10IncludeTotal : 0,
                 misses,
                 candidateLimitReached: candidateResult.truncated,
@@ -282,8 +296,11 @@ export function registerBenchmarkCommand(program: Command): void {
             }
 
             console.log(`cases: ${summary.cases}`);
+            console.log(`top1Cases: ${summary.top1Cases}`);
             console.log(`top1Rate: ${summary.top1Rate.toFixed(4)}`);
+            console.log(`top3Cases: ${summary.top3Cases}`);
             console.log(`top3Rate: ${summary.top3Rate.toFixed(4)}`);
+            console.log(`top10IncludeCases: ${summary.top10IncludeCases}`);
             console.log(`top10IncludeRate: ${summary.top10IncludeRate.toFixed(4)}`);
             console.log(`candidateLimitReached: ${summary.candidateLimitReached}`);
             console.log(`sourceEmbeddingBackends: ${summary.sourceEmbeddingBackends.join(', ') || 'none'}`);

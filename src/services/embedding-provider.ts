@@ -1,6 +1,5 @@
 import { pipeline } from '@huggingface/transformers';
 import type { EmbeddingProvider } from '../config.ts';
-import { isDebug } from '../utils/io.ts';
 import type { LiveEmbeddingResult } from './embedding-types.ts';
 import { textToVector } from './text-utils.ts';
 
@@ -126,36 +125,6 @@ async function requestOllamaJson(
     }
 }
 
-async function ollamaSemanticDigest(model: string, host: string, text: string): Promise<string> {
-    const payload = await requestOllamaJson(
-        host,
-        '/api/generate',
-        {
-            model,
-            prompt: [
-                'Normalize the following code into a compact semantic fingerprint.',
-                'Return lowercase plain text only.',
-                'Include the file purpose, exported symbols, test intent, and key domain terms.',
-                'Prefer 8 to 12 comma separated phrases.',
-                '',
-                text,
-            ].join('\n'),
-            stream: false,
-            options: {
-                temperature: 0,
-            },
-        },
-        60000
-    ) as { response?: string; error?: string };
-
-    const digest = typeof payload.response === 'string' ? payload.response.trim() : '';
-    if (!digest) {
-        throw new Error(payload.error || 'Ollama did not return a semantic digest');
-    }
-
-    return digest;
-}
-
 export interface EmbeddingProviderClient {
     embed(text: string): Promise<LiveEmbeddingResult>;
 }
@@ -216,58 +185,25 @@ class OllamaEmbeddingProvider implements EmbeddingProviderClient {
     }
 
     async embed(text: string): Promise<LiveEmbeddingResult> {
-        let embeddingError: Error | undefined;
-        try {
-            const payload = await requestOllamaJson(
-                this.host,
-                '/api/embeddings',
-                {
-                    model: this.model,
-                    prompt: text,
-                },
-                60000
-            ) as { embedding?: number[]; error?: string };
-
-            if (!payload.embedding) {
-                throw new Error(payload.error || 'Ollama did not return an embedding');
-            }
-
-            return {
-                vector: sanitizeOllamaVector(payload.embedding),
-                backend: 'ollama-embeddings',
-            };
-        } catch (error) {
-            embeddingError = error as Error;
-            if (isDebug()) {
-                console.warn(
-                    `Ollama embeddings failed for ${this.model}; falling back to semantic digest: ${embeddingError.message}`
-                );
-            }
+        const payload = await requestOllamaJson(
+            this.host,
+            '/api/embed',
+            {
+                model: this.model,
+                input: text,
+                truncate: true,
+            },
+            60000
+        ) as { embeddings?: unknown[]; error?: string };
+        const embedding = payload.embeddings?.[0];
+        if (!embedding) {
+            throw new Error(payload.error || 'Ollama did not return an embedding');
         }
 
-        try {
-            const digest = await ollamaSemanticDigest(this.model, this.host, text);
-            return {
-                vector: textToVector(digest),
-                backend: 'ollama-generate',
-                fallbackReason: `ollama embeddings failed: ${embeddingError?.message || 'unknown error'}`,
-            };
-        } catch (fallbackError) {
-            if (isDebug()) {
-                console.warn(
-                    `Ollama semantic digest fallback failed for ${this.model}; using local vectorizer: ${(fallbackError as Error).message}`
-                );
-            }
-
-            return {
-                vector: textToVector(text),
-                backend: 'local-text-vector',
-                fallbackReason: [
-                    `ollama embeddings failed: ${embeddingError?.message || 'unknown error'}`,
-                    `ollama semantic digest failed: ${(fallbackError as Error).message}`,
-                ].join('; '),
-            };
-        }
+        return {
+            vector: sanitizeOllamaVector(embedding),
+            backend: 'ollama-embeddings',
+        };
     }
 }
 

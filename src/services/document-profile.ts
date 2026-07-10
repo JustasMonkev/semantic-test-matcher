@@ -474,6 +474,7 @@ function createEmbeddingText(profile: Omit<DocumentProfile, 'summary' | 'embeddi
         `path: ${profile.relativePath}`,
         `kind: ${profile.kind}`,
         `basename: ${profile.basenameTokens.join(' ')}`,
+        `summary: ${profile.summary}`,
     ];
 
     if (profile.exports.length) {
@@ -509,7 +510,6 @@ function createEmbeddingText(profile: Omit<DocumentProfile, 'summary' | 'embeddi
     }
 
     sections.push(`signals: ${profile.semanticTokens.join(' ')}`);
-    sections.push(`summary: ${profile.summary}`);
     return sections.join('\n');
 }
 

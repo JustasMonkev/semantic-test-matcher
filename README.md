@@ -256,8 +256,8 @@ Environment variables used by the resolver include:
 ### Ollama
 
 - uses the configured `OLLAMA_HOST` or `ollamaHost`
-- prefers `/api/embeddings`
-- falls back to an Ollama-generated semantic digest and then to a local text vectorizer if needed
+- uses `/api/embed` with model-native input truncation
+- fails when Ollama cannot embed instead of mixing incompatible vector backends
 
 ### Cache
 
