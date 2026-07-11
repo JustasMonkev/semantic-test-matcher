@@ -36,31 +36,26 @@ interface PreparedCandidate {
     profile: DocumentProfile;
     embeddingBackend: EmbeddingBackend;
     cacheHit: boolean;
-    fallbackReason?: string;
 }
 
 interface EmbeddingSummary {
     sourceEmbeddingBackends: EmbeddingBackend[];
     candidateEmbeddingBackends: EmbeddingBackend[];
-    fallbackCount: number;
     cacheHitCount: number;
 }
 
 function summarizeEmbeddingBackends(
-    sourceEmbeddings: Array<{ backend: EmbeddingBackend; cacheHit: boolean; fallbackReason?: string }>,
+    sourceEmbeddings: Array<{ backend: EmbeddingBackend; cacheHit: boolean }>,
     candidates: PreparedCandidate[]
 ): EmbeddingSummary {
     const sourceEmbeddingBackends = [...new Set(sourceEmbeddings.map((entry) => entry.backend))];
     const candidateEmbeddingBackends = [...new Set(candidates.map((entry) => entry.embeddingBackend))];
-    const fallbackCount = sourceEmbeddings.filter((entry) => Boolean(entry.fallbackReason)).length +
-        candidates.filter((entry) => Boolean(entry.fallbackReason)).length;
     const cacheHitCount = sourceEmbeddings.filter((entry) => entry.cacheHit).length +
         candidates.filter((entry) => entry.cacheHit).length;
 
     return {
         sourceEmbeddingBackends,
         candidateEmbeddingBackends,
-        fallbackCount,
         cacheHitCount,
     };
 }
@@ -124,7 +119,6 @@ async function prepareCandidates(
             profile: candidateProfile,
             embeddingBackend: candidateVector.backend,
             cacheHit: candidateVector.cacheHit,
-            fallbackReason: candidateVector.fallbackReason,
         };
     });
 }
@@ -137,8 +131,7 @@ export function registerBenchmarkCommand(program: Command): void {
         .option('-c, --candidates <patterns...>', 'Candidate file paths, directories, or file globs')
         .option('--include-file <patterns...>', 'Include only matching files (glob pattern)')
         .option('--exclude-file <patterns...>', 'Exclude matching files (glob pattern)')
-        .option('--provider <provider>', 'Embedding provider: hf or ollama')
-        .option('--model <model>', 'Embedding model for selected provider')
+        .option('--model <path>', 'Path to a local GGUF embedding model')
         .option('--cache-dir <path>', 'Directory used to cache embeddings')
         .option('--json', 'Print machine-readable output')
         .action(async (options: {
@@ -146,7 +139,6 @@ export function registerBenchmarkCommand(program: Command): void {
             candidates?: string[];
             includeFile?: string[];
             excludeFile?: string[];
-            provider?: string;
             model?: string;
             cacheDir?: string;
             json?: boolean;
@@ -156,7 +148,6 @@ export function registerBenchmarkCommand(program: Command): void {
             const config = await resolveConfig(
                 {
                     config: rootOptions.config,
-                    provider: rootOptions.provider,
                     model: rootOptions.model,
                     cacheDir: rootOptions.cacheDir,
                     logLevel: rootOptions.logLevel,
@@ -167,7 +158,6 @@ export function registerBenchmarkCommand(program: Command): void {
                     candidates: options.candidates,
                     includeFile: options.includeFile,
                     excludeFile: options.excludeFile,
-                    provider: options.provider,
                     model: options.model,
                     cacheDir: options.cacheDir,
                     json: options.json,
@@ -184,10 +174,8 @@ export function registerBenchmarkCommand(program: Command): void {
                 cwd
             );
             const embeddingSession = new EmbeddingSession({
-                provider: config.provider,
                 model: config.model,
                 cacheDir: config.cacheDir,
-                ollamaHost: config.ollamaHost,
             });
             const preparedCandidates = await prepareCandidates(candidateResult.files, embeddingSession, cwd);
 
@@ -198,7 +186,7 @@ export function registerBenchmarkCommand(program: Command): void {
             let top10IncludeHits = 0;
             let top10IncludeTotal = 0;
             const misses: BenchmarkMiss[] = [];
-            const sourceEmbeddings: Array<{ backend: EmbeddingBackend; cacheHit: boolean; fallbackReason?: string }> = [];
+            const sourceEmbeddings: Array<{ backend: EmbeddingBackend; cacheHit: boolean }> = [];
 
             for (const entry of cases) {
                 const sourcePath = path.resolve(cwd, entry.source);
@@ -208,7 +196,6 @@ export function registerBenchmarkCommand(program: Command): void {
                 sourceEmbeddings.push({
                     backend: sourceVector.backend,
                     cacheHit: sourceVector.cacheHit,
-                    fallbackReason: sourceVector.fallbackReason,
                 });
 
                 const matches = rankMatches(
@@ -288,7 +275,6 @@ export function registerBenchmarkCommand(program: Command): void {
             console.log(`candidateLimitReached: ${summary.candidateLimitReached}`);
             console.log(`sourceEmbeddingBackends: ${summary.sourceEmbeddingBackends.join(', ') || 'none'}`);
             console.log(`candidateEmbeddingBackends: ${summary.candidateEmbeddingBackends.join(', ') || 'none'}`);
-            console.log(`fallbackCount: ${summary.fallbackCount}`);
             console.log(`cacheHitCount: ${summary.cacheHitCount}`);
             if (!summary.misses.length) {
                 console.log('misses: none');

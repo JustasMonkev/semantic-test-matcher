@@ -11,7 +11,6 @@ export interface CachedEmbedding {
     model: string;
     vector: number[];
     backend?: EmbeddingBackend;
-    fallbackReason?: string;
 }
 
 export interface EmbeddingCache {
@@ -153,7 +152,7 @@ export async function readCachedEmbedding(
     provider: string,
     model: string,
     text: string
-): Promise<{ vector: number[]; backend: EmbeddingBackend; fallbackReason?: string } | null> {
+): Promise<{ vector: number[]; backend: EmbeddingBackend } | null> {
     const cache = await loadCache(filePath);
     const hit = cache[buildCacheKey(provider, model, text)];
     if (!hit || !hit.backend) {
@@ -163,7 +162,6 @@ export async function readCachedEmbedding(
     return {
         vector: hit.vector,
         backend: hit.backend,
-        fallbackReason: hit.fallbackReason,
     };
 }
 
@@ -191,8 +189,7 @@ export async function writeCachedEmbedding(
     model: string,
     text: string,
     vector: number[],
-    backend: EmbeddingBackend,
-    fallbackReason?: string
+    backend: EmbeddingBackend
 ): Promise<void> {
     await writeCachedEmbeddings(filePath, {
         [buildCacheKey(provider, model, text)]: {
@@ -201,7 +198,6 @@ export async function writeCachedEmbedding(
             model,
             vector,
             backend,
-            fallbackReason,
         },
     });
 }

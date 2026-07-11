@@ -18,7 +18,6 @@ export interface MatchCandidate {
     changeScore: number;
     embeddingBackend?: EmbeddingBackend;
     cacheHit?: boolean;
-    fallbackReason?: string;
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
@@ -46,7 +45,6 @@ export interface RankedMatchCandidate {
     profile: DocumentProfile;
     embeddingBackend?: EmbeddingBackend;
     cacheHit?: boolean;
-    fallbackReason?: string;
 }
 
 const ANCHOR_KEYWORD_PATTERN = /(testid|codegen|browsername|dotenv|toollist|mcp|selector|config|timeout|internal|attr)/i;
@@ -324,7 +322,6 @@ export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCa
                 changeScore: structure.changeScore,
                 embeddingBackend: item.embeddingBackend,
                 cacheHit: item.cacheHit,
-                fallbackReason: item.fallbackReason,
             };
         })
         .sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));

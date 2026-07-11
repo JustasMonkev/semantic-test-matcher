@@ -1,5 +1,5 @@
-import { createEmbeddingProvider, type EmbeddingProviderClient } from './embedding-provider.ts';
-import { isStableEmbeddingBackend, type EmbeddingResult } from './embedding-types.ts';
+import { createEmbeddingProvider } from './embedding-provider.ts';
+import type { EmbeddingResult } from './embedding-types.ts';
 import {
     buildCacheKey,
     getCacheFile,
@@ -8,14 +8,13 @@ import {
     type CachedEmbedding,
     type EmbeddingCache,
 } from './cache.ts';
-import type { EmbeddingProvider } from '../config.ts';
 import { isDebug } from '../utils/io.ts';
 
+export const EMBEDDING_BACKEND = 'node-llama-cpp';
+
 export interface EmbeddingSessionOptions {
-    provider: EmbeddingProvider;
     model: string;
     cacheDir: string;
-    ollamaHost: string;
     skipCache?: boolean;
 }
 
@@ -24,7 +23,7 @@ export interface CreateEmbeddingOptions extends EmbeddingSessionOptions {
 }
 
 /**
- * Embeds texts against a single provider/model/cache configuration.
+ * Embeds texts against a single model/cache configuration.
  *
  * The on-disk cache is read once per session and new embeddings are buffered
  * in memory, so callers embedding many documents pay for one cache read and
@@ -33,13 +32,13 @@ export interface CreateEmbeddingOptions extends EmbeddingSessionOptions {
 export class EmbeddingSession {
     private cachePromise?: Promise<EmbeddingCache>;
     private pending: EmbeddingCache = {};
-    private providerClient?: EmbeddingProviderClient;
+    private providerClient?: ReturnType<typeof createEmbeddingProvider>;
     private readonly options: EmbeddingSessionOptions;
     private readonly cacheFile: string;
 
     constructor(options: EmbeddingSessionOptions) {
-        if (options.provider === 'ollama' && !options.model) {
-            throw new Error('Ollama model is required when using --provider ollama');
+        if (!options.model) {
+            throw new Error('A local GGUF embedding model path is required');
         }
         this.options = options;
         this.cacheFile = getCacheFile(options.cacheDir);
@@ -56,33 +55,31 @@ export class EmbeddingSession {
     }
 
     async embed(text: string): Promise<EmbeddingResult> {
-        const { provider, model, ollamaHost, skipCache } = this.options;
-        const key = buildCacheKey(provider, model, text);
+        const { model, skipCache } = this.options;
+        const key = buildCacheKey(EMBEDDING_BACKEND, model, text);
 
         if (!skipCache) {
             const cache = await this.getCache();
             const hit = this.pending[key] ?? cache[key];
-            if (hit?.backend && isStableEmbeddingBackend(hit.backend)) {
+            if (hit?.backend === EMBEDDING_BACKEND) {
                 return {
                     vector: hit.vector,
                     backend: hit.backend,
                     cacheHit: true,
-                    fallbackReason: hit.fallbackReason,
                 };
             }
         }
 
-        this.providerClient ??= createEmbeddingProvider(provider, { model, ollamaHost });
+        this.providerClient ??= createEmbeddingProvider(model);
         const embedding = await this.providerClient.embed(text);
 
-        if (!skipCache && isStableEmbeddingBackend(embedding.backend)) {
+        if (!skipCache) {
             const entry: CachedEmbedding = {
                 createdAt: new Date().toISOString(),
-                provider,
+                provider: EMBEDDING_BACKEND,
                 model,
                 vector: embedding.vector,
                 backend: embedding.backend,
-                fallbackReason: embedding.fallbackReason,
             };
             this.pending[key] = entry;
         }
@@ -91,7 +88,6 @@ export class EmbeddingSession {
             vector: embedding.vector,
             backend: embedding.backend,
             cacheHit: false,
-            fallbackReason: embedding.fallbackReason,
         };
     }
 
