@@ -18,7 +18,6 @@ export interface MatchCandidate {
     changeScore: number;
     embeddingBackend?: EmbeddingBackend;
     cacheHit?: boolean;
-    fallbackReason?: string;
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
@@ -45,7 +44,6 @@ export interface RankedMatchCandidate {
     profile: DocumentProfile;
     embeddingBackend?: EmbeddingBackend;
     cacheHit?: boolean;
-    fallbackReason?: string;
 }
 
 const ANCHOR_KEYWORD_PATTERN = /(testid|codegen|browsername|dotenv|toollist|mcp|selector|config|timeout|internal|attr)/i;
@@ -303,7 +301,7 @@ export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCa
                 1,
                 Math.max(
                     0,
-                    (embeddingScore * 0.6) + (structure.score * 0.4)
+                    (embeddingScore * 0.2) + (structure.score * 0.8)
                 )
             );
 
@@ -323,7 +321,6 @@ export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCa
                 changeScore: structure.changeScore,
                 embeddingBackend: item.embeddingBackend,
                 cacheHit: item.cacheHit,
-                fallbackReason: item.fallbackReason,
             };
         })
         .sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));

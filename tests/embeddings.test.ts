@@ -6,15 +6,14 @@ import path from 'node:path';
 import { createEmbedding, EmbeddingSession } from '../src/services/embeddings.ts';
 import { getCacheFile, loadCache } from '../src/services/cache.ts';
 
-// The hf-stub test mode swaps the Hugging Face pipeline for the deterministic
-// local vectorizer so these tests never download a model.
-describe('EmbeddingSession (hf-stub)', () => {
+// Stub mode keeps cache tests local and deterministic without loading a GGUF.
+describe('EmbeddingSession (stub)', () => {
     let savedTestMode: string | undefined;
     let cacheDir: string;
 
     beforeEach(async () => {
         savedTestMode = process.env.RBT_EMBEDDING_TEST_MODE;
-        process.env.RBT_EMBEDDING_TEST_MODE = 'hf-stub';
+        process.env.RBT_EMBEDDING_TEST_MODE = 'stub';
         cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-embed-'));
     });
 
@@ -28,10 +27,8 @@ describe('EmbeddingSession (hf-stub)', () => {
 
     function makeSession(): EmbeddingSession {
         return new EmbeddingSession({
-            provider: 'hf',
             model: 'stub-model',
             cacheDir,
-            ollamaHost: 'http://127.0.0.1:11434',
         });
     }
 
@@ -39,7 +36,7 @@ describe('EmbeddingSession (hf-stub)', () => {
         const session = makeSession();
         const result = await session.embed('checkout pricing logic');
         assert.equal(result.cacheHit, false);
-        assert.equal(result.backend, 'hf');
+        assert.equal(result.backend, 'node-llama-cpp');
         assert.ok(result.vector.length > 0);
     });
 
@@ -79,10 +76,8 @@ describe('EmbeddingSession (hf-stub)', () => {
 
     it('does not touch the cache when skipCache is set', async () => {
         const session = new EmbeddingSession({
-            provider: 'hf',
             model: 'stub-model',
             cacheDir,
-            ollamaHost: 'http://127.0.0.1:11434',
             skipCache: true,
         });
         await session.embed('uncached text');
@@ -93,20 +88,18 @@ describe('EmbeddingSession (hf-stub)', () => {
         );
     });
 
-    it('rejects an ollama session without a model', () => {
+    it('rejects a session without a model path', () => {
         assert.throws(
-            () => new EmbeddingSession({ provider: 'ollama', model: '', cacheDir, ollamaHost: 'http://127.0.0.1:11434' }),
-            /Ollama model is required/
+            () => new EmbeddingSession({ model: '', cacheDir }),
+            /local GGUF embedding model path is required/
         );
     });
 
     it('createEmbedding embeds and persists in one call', async () => {
         const result = await createEmbedding({
             text: 'standalone embedding',
-            provider: 'hf',
             model: 'stub-model',
             cacheDir,
-            ollamaHost: 'http://127.0.0.1:11434',
         });
         assert.equal(result.cacheHit, false);
 

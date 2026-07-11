@@ -13,7 +13,7 @@ describe('benchmark command', () => {
     beforeEach(() => {
         cwd = process.cwd();
         testMode = process.env.RBT_EMBEDDING_TEST_MODE;
-        process.env.RBT_EMBEDDING_TEST_MODE = 'hf-stub';
+        process.env.RBT_EMBEDDING_TEST_MODE = 'stub';
     });
 
     afterEach(() => {
@@ -41,7 +41,7 @@ describe('benchmark command', () => {
             registerBenchmarkCommand(program);
             await program.parseAsync([
                 'benchmark', '--cases', 'cases.json', '--candidates', 'tests',
-                '--provider', 'hf', '--model', 'stub', '--threshold', '1', '--json',
+                '--model', 'stub', '--threshold', '1', '--json',
             ], { from: 'user' });
         } finally {
             console.log = originalLog;

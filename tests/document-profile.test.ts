@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { buildDocumentProfile } from '../src/services/document-profile.ts';
 
 describe('buildDocumentProfile', () => {
-    it('places the bounded summary before verbose sections that Ollama may truncate', () => {
+    it('places the bounded summary before verbose sections', () => {
         const tests = Array.from({ length: 500 }, (_, index) => `test('case ${index}', () => {});`).join('\n');
         const profile = buildDocumentProfile('/repo/tests/large.spec.ts', tests, '/repo');
 
