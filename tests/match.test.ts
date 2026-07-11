@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { cosineSimilarity, rankMatches, type RankedMatchCandidate } from '../src/services/match.ts';
+import { cosineSimilarity, filterMatches, rankMatches, type RankedMatchCandidate } from '../src/services/match.ts';
 import { buildDocumentProfile } from '../src/services/document-profile.ts';
 import { textToVector } from '../src/services/text-utils.ts';
 
@@ -54,9 +54,9 @@ describe('cosineSimilarity', () => {
         assert.equal(cosineSimilarity([1, 0], [0, 1]), 0);
     });
 
-    it('handles empty and mismatched-length vectors', () => {
+    it('rejects empty and mismatched-length vectors', () => {
         assert.equal(cosineSimilarity([], [1, 2]), 0);
-        assert.equal(cosineSimilarity([1, 0, 0.5], [1, 0]), 1);
+        assert.equal(cosineSimilarity([1, 0, 0.5], [1, 0]), 0);
     });
 });
 
@@ -73,6 +73,17 @@ describe('rankMatches', () => {
 
         assert.equal(matches[0].file, 'tests/price-engine.test.ts');
         assert.ok(matches[0].score > matches[1].score);
+    });
+
+    it('separates a related test from an unrelated test at the default threshold', () => {
+        const matches = rankMatches(source, [
+            makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd),
+            makeCandidate('tests/price-engine.test.ts', PRICE_ENGINE_TEST, cwd),
+        ]);
+
+        assert.deepEqual(filterMatches(matches, 0.45).map((match) => match.file), [
+            'tests/price-engine.test.ts',
+        ]);
     });
 
     it('returns scores and component scores within [0, 1]', () => {

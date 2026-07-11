@@ -21,13 +21,12 @@ export interface MatchCandidate {
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
-    const max = Math.min(a.length, b.length);
-    if (!max) {
+    if (!a.length || a.length !== b.length) {
         return 0;
     }
 
     let sum = 0;
-    for (let i = 0; i < max; i += 1) {
+    for (let i = 0; i < a.length; i += 1) {
         sum += a[i] * b[i];
     }
     return sum;
@@ -325,4 +324,8 @@ export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCa
             };
         })
         .sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
+}
+
+export function filterMatches(matches: MatchCandidate[], minScore: number): MatchCandidate[] {
+    return matches.filter((entry) => entry.score >= minScore);
 }

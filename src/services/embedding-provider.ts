@@ -5,7 +5,10 @@ import { textToVector } from './text-utils.ts';
 export function createEmbeddingProvider(modelPath: string): {
     embed(text: string): Promise<LiveEmbeddingResult>;
 } {
-    let contextPromise: Promise<LlamaEmbeddingContext> | undefined;
+    let contextPromise: Promise<{
+        context: LlamaEmbeddingContext;
+        maxInputTokens: number;
+    }> | undefined;
 
     return {
         async embed(text: string): Promise<LiveEmbeddingResult> {
@@ -15,10 +18,18 @@ export function createEmbeddingProvider(modelPath: string): {
 
             contextPromise ??= getLlama()
                 .then((llama) => llama.loadModel({ modelPath }))
-                .then((model) => model.createEmbeddingContext());
-            const embedding = await (await contextPromise).getEmbeddingFor(
+                .then(async (model) => {
+                    const contextSize = Math.min(model.trainContextSize, 2048);
+                    return {
+                        context: await model.createEmbeddingContext({ contextSize }),
+                        maxInputTokens: Math.max(1, contextSize - 2),
+                    };
+                });
+            const { context, maxInputTokens } = await contextPromise;
+            const tokens = context.model.tokenize(
                 `task: sentence similarity | query: ${text}`
             );
+            const embedding = await context.getEmbeddingFor(tokens.slice(0, maxInputTokens));
             return { vector: [...embedding.vector], backend: 'node-llama-cpp' };
         },
     };

@@ -243,6 +243,7 @@ Environment variables used by the resolver include:
 - uses `node-llama-cpp` with an embedding-capable local GGUF file
 - defaults to `models/embeddinggemma-300M-Q4_0.gguf`
 - applies EmbeddingGemma's `sentence similarity` prompt for semantic matching
+- truncates oversized profiles to the embedding context
 - does not call a cloud API or require a local model server
 
 ### Cache
