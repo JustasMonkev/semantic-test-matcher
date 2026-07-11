@@ -210,8 +210,8 @@ Example config:
   "logLevel": "info",
   "match": {
     "topK": 5,
-    "threshold": 0.45,
-    "minScore": 0.45,
+    "threshold": 0,
+    "minScore": 0,
     "candidatePaths": ["test", "tests"],
     "includePatterns": ["**/*"],
     "excludePatterns": [
