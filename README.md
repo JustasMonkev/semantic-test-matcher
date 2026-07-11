@@ -211,7 +211,6 @@ Example config:
   "match": {
     "topK": 5,
     "threshold": 0,
-    "minScore": 0,
     "candidatePaths": ["test", "tests"],
     "includePatterns": ["**/*"],
     "excludePatterns": [
