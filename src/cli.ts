@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { registerCommands } from './commands/index.ts';
 import { isDebug } from './utils/io.ts';
 
-const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
+const { version } = createRequire(import.meta.url)('../package.json');
 const program = new Command();
 
 program
