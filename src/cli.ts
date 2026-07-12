@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
+import { createRequire } from 'node:module';
 import { registerCommands } from './commands/index.ts';
 import { isDebug } from './utils/io.ts';
 
+const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
 const program = new Command();
 
 program
     .name('rbt')
     .description('RBT Semantic Test Matcher')
-    .version('0.1.0');
+    .version(version);
 
 program
     .option('-c, --config <path>', 'Path to config file')

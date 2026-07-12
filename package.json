@@ -1,8 +1,31 @@
 {
-  "name": "cli-ai-tool",
+  "name": "semantic-test-matcher",
   "private": false,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Rank likely test files for source changes using local GGUF embeddings.",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JustasMonkev/semantic-test-matcher.git"
+  },
+  "bugs": {
+    "url": "https://github.com/JustasMonkev/semantic-test-matcher/issues"
+  },
+  "homepage": "https://github.com/JustasMonkev/semantic-test-matcher#readme",
+  "keywords": [
+    "test-selection",
+    "semantic-search",
+    "embeddings",
+    "gguf",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist"
+  ],
   "bin": {
     "rbt": "dist/cli.js"
   },
@@ -14,7 +37,8 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/cli.js",
     "test": "node --experimental-strip-types --test \"tests/**/*.test.ts\"",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

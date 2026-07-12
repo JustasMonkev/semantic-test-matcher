@@ -1,6 +1,6 @@
-# cli-ai-tool
+# semantic-test-matcher
 
-`cli-ai-tool` is a TypeScript CLI for semantic test matching. It exposes the `rbt` command, which can embed free-form text, inspect resolved runtime configuration, print shell completion scripts, and rank likely test files for a changed source file.
+`semantic-test-matcher` is a TypeScript CLI for semantic test matching. It exposes the `rbt` command, which can embed free-form text, inspect resolved runtime configuration, print shell completion scripts, and rank likely test files for a changed source file.
 
 The matching flow combines:
 
@@ -60,55 +60,59 @@ flowchart TD
     M --> M2["JSON output for automation"]
 ```
 
+## Requirements
+
+- Node.js 20 or newer
+- about 278 MB of disk space for the local embedding model
+
 ## Install
 
 ```bash
-npm install
-npm run build
+npm install --global semantic-test-matcher
 ```
 
-Place an embedding-capable GGUF model at
-`models/embeddinggemma-300M-Q4_0.gguf`, or pass its local path with `--model`.
-Model inference is fully local.
-
-Run the compiled CLI:
+From your project root, download the compatible EmbeddingGemma model:
 
 ```bash
-node dist/cli.js --help
+npx --yes node-llama-cpp@3.19.0 pull \
+  --dir models \
+  --filename embeddinggemma-300M-Q4_0.gguf \
+  hf:ggml-org/embeddinggemma-300M-qat-q4_0-GGUF:Q4_0
 ```
 
-Run in development mode:
+The model is stored at `models/embeddinggemma-300M-Q4_0.gguf`. You can use a different local GGUF file with `--model`. Model inference is fully local, and the model is distributed separately under the [Gemma license](https://huggingface.co/ggml-org/embeddinggemma-300M-qat-q4_0-GGUF).
+
+Verify the installation:
 
 ```bash
-npm run dev -- --help
+rbt --version
+rbt status
 ```
-
-If you want the `rbt` binary directly, install the package in a way that exposes the `bin` entry from `package.json`.
 
 ## Quick Start
 
 Generate an embedding:
 
 ```bash
-node dist/cli.js embed "discount and tax edge cases" --json
+rbt embed "discount and tax edge cases" --json
 ```
 
 Match a changed file to likely tests:
 
 ```bash
-node dist/cli.js match prompts-idea/src/price-engine.ts --candidates prompts-idea/tests --json
+rbt match prompts-idea/src/price-engine.ts --candidates prompts-idea/tests --json
 ```
 
 Inspect resolved settings:
 
 ```bash
-node dist/cli.js status --json
+rbt status --json
 ```
 
 Print shell completion:
 
 ```bash
-node dist/cli.js completion zsh
+rbt completion zsh
 ```
 
 ## Commands
@@ -120,8 +124,8 @@ Embeds the provided text or stdin input.
 Examples:
 
 ```bash
-node dist/cli.js embed "checkout pricing logic"
-printf "coupon validation" | node dist/cli.js embed --json
+rbt embed "checkout pricing logic"
+printf "coupon validation" | rbt embed --json
 ```
 
 Useful flags:
@@ -137,10 +141,10 @@ Ranks likely candidate files for a changed source file.
 Examples:
 
 ```bash
-node dist/cli.js match prompts-idea/src/price-engine.ts --candidates prompts-idea/tests
+rbt match prompts-idea/src/price-engine.ts --candidates prompts-idea/tests
 
 cat prompts-idea/candidate-list.txt | \
-  node dist/cli.js match prompts-idea/src/price-engine.ts \
+  rbt match prompts-idea/src/price-engine.ts \
     --candidates-from-stdin \
     --top-k 4 \
     --threshold 0.35 \
@@ -173,8 +177,8 @@ How matching works:
 Prints the resolved runtime configuration and cache stats.
 
 ```bash
-node dist/cli.js status
-node dist/cli.js status --json
+rbt status
+rbt status --json
 ```
 
 ### `completion`
@@ -182,8 +186,8 @@ node dist/cli.js status --json
 Prints a bash or zsh completion script.
 
 ```bash
-node dist/cli.js completion bash
-node dist/cli.js completion zsh
+rbt completion bash
+rbt completion zsh
 ```
 
 ## Configuration
@@ -275,12 +279,12 @@ Useful commands:
 ```bash
 npm test
 
-node dist/cli.js match prompts-idea/src/price-engine.ts \
+rbt match prompts-idea/src/price-engine.ts \
   --candidates prompts-idea/tests \
   --json
 
 cat prompts-idea/candidate-list.txt | \
-  node dist/cli.js match prompts-idea/src/price-engine.ts \
+  rbt match prompts-idea/src/price-engine.ts \
     --candidates-from-stdin \
     --json
 ```
@@ -290,6 +294,7 @@ For dataset-specific notes, see [prompts-idea/README.md](./prompts-idea/README.m
 ## Development
 
 ```bash
+npm install
 npm run lint
 npm test
 npm run build
