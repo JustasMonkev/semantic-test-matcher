@@ -298,9 +298,10 @@ export async function resolveConfig(
         throw new Error('Auto-discovered repo config cannot set candidate paths outside the workspace.');
     }
 
-    const includePatterns = commandOptions.includeFile?.length
-        ? commandOptions.includeFile
-        : fileConfig.match?.includePatterns ?? DEFAULT_CONFIG.match!.includePatterns!;
+    let includePatterns = fileConfig.match?.includePatterns ?? DEFAULT_CONFIG.match!.includePatterns!;
+    if (commandOptions.includeFile?.length) {
+        includePatterns = commandOptions.includeFile;
+    }
     const excludePatterns = mergeArrays(commandOptions.excludeFile, fileConfig.match?.excludePatterns ??
         DEFAULT_CONFIG.match!.excludePatterns!);
 
