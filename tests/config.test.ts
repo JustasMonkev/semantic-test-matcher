@@ -45,7 +45,8 @@ describe('resolveConfig', () => {
         assert.equal(config.model, path.resolve('models/embeddinggemma-300M-Q4_0.gguf'));
         assert.equal(config.logLevel, 'info');
         assert.equal(config.match.topK, 5);
-        assert.equal(config.match.threshold, 0.45);
+        assert.equal(config.match.threshold, 0);
+        assert.equal(config.match.minScore, 0);
         assert.deepEqual(config.match.candidatePaths, ['test', 'tests']);
     });
 
@@ -107,10 +108,9 @@ describe('resolveConfig', () => {
         assert.equal(config.cacheDir, path.resolve('/workspace-root', 'custom-cache'));
     });
 
-    it('merges include/exclude patterns from flags and defaults', async () => {
+    it('uses include patterns from flags and merges exclude patterns with defaults', async () => {
         const config = await resolveConfig({}, { includeFile: ['**/*.spec.ts'], excludeFile: ['**/tmp/**'] });
-        assert.ok(config.match.includePatterns.includes('**/*.spec.ts'));
-        assert.ok(config.match.includePatterns.includes('**/*'));
+        assert.deepEqual(config.match.includePatterns, ['**/*.spec.ts']);
         assert.ok(config.match.excludePatterns.includes('**/tmp/**'));
         assert.ok(config.match.excludePatterns.includes('**/node_modules/**'));
     });
