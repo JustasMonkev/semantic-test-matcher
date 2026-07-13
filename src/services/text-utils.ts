@@ -135,7 +135,13 @@ export function canonicalizeToken(token: string, options?: { skipStopWords?: boo
         return normalized.slice(0, -2);
     }
 
-    if (normalized.endsWith('s') && normalized.length > 3 && !normalized.endsWith('ss')) {
+    if (
+        normalized.endsWith('s') &&
+        normalized.length > 3 &&
+        !normalized.endsWith('ss') &&
+        !normalized.endsWith('us') &&
+        !normalized.endsWith('is')
+    ) {
         return normalized.slice(0, -1);
     }
 

@@ -30,6 +30,13 @@ describe('canonicalizeToken', () => {
         assert.equal(canonicalizeToken('discounts'), 'discount');
         assert.equal(canonicalizeToken('classes'), 'class');
     });
+
+    it('does not strip s from singular words ending in us or is', () => {
+        assert.equal(canonicalizeToken('status'), 'status');
+        assert.equal(canonicalizeToken('focus'), 'focus');
+        assert.equal(canonicalizeToken('campus'), 'campus');
+        assert.equal(canonicalizeToken('analysis'), 'analysis');
+    });
 });
 
 describe('tokenizeText', () => {

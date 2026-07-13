@@ -80,6 +80,18 @@ const GENERIC_ANCHOR_TOKENS = new Set([
     'option',
 ]);
 
+const GENERIC_CHANGE_TOKENS = new Set([...GENERIC_ANCHOR_TOKENS, 'is']);
+
+interface ChangedLines {
+    added: string[];
+    removed: string[];
+}
+
+const MAX_SEMANTIC_TOKENS = 72;
+const MAX_CHANGE_SEMANTIC_TOKENS = 24;
+const MAX_EMBEDDING_SECTION_TOKENS = 32;
+const MAX_EMBEDDING_WORDS = 512;
+
 function collectIdentifierTokens(value: string, filterGenericAnchors = false): string[] {
     const tokens = uniqueTokens([
         ...tokenizeText(value),
@@ -327,24 +339,52 @@ function collectPathFamilyTokens(relativePath: string, text: string): string[] {
     ).slice(0, 96);
 }
 
-function collectChangedLines(diffText?: string): string[] {
-    if (!diffText) {
-        return [];
+function interleaveUniqueTokens(groups: string[][], limit: number): string[] {
+    const tokens: string[] = [];
+    const seen = new Set<string>();
+
+    for (let index = 0; tokens.length < limit; index += 1) {
+        let hasValue = false;
+        for (const group of groups) {
+            const token = group[index];
+            if (token === undefined) {
+                continue;
+            }
+            hasValue = true;
+            if (!seen.has(token)) {
+                seen.add(token);
+                tokens.push(token);
+                if (tokens.length === limit) {
+                    break;
+                }
+            }
+        }
+        if (!hasValue) {
+            break;
+        }
     }
 
-    return diffText
-        .split(/\r?\n/)
-        .filter((line) => {
-            if (!line) {
-                return false;
-            }
-            if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@') || line.startsWith('diff --git')) {
-                return false;
-            }
-            return line.startsWith('+') || line.startsWith('-');
-        })
-        .map((line) => line.slice(1))
-        .filter(Boolean);
+    return tokens;
+}
+
+function collectChangedLines(diffText?: string): ChangedLines {
+    const changedLines: ChangedLines = { added: [], removed: [] };
+    if (!diffText) {
+        return changedLines;
+    }
+
+    for (const line of diffText.split(/\r?\n/)) {
+        if (!line || line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@') || line.startsWith('diff --git')) {
+            continue;
+        }
+        if (line.startsWith('+')) {
+            changedLines.added.push(line.slice(1));
+        } else if (line.startsWith('-')) {
+            changedLines.removed.push(line.slice(1));
+        }
+    }
+
+    return changedLines;
 }
 
 function collectChangeSignalValues(changedLines: string[]): string[] {
@@ -387,24 +427,49 @@ function collectChangeSignalValues(changedLines: string[]): string[] {
         }
     }
 
-    return uniqueTokens(values);
+    return values;
 }
 
-function collectChangeTokens(changedLines: string[]): string[] {
-    return uniqueTokens(
-        collectChangeSignalValues(changedLines)
-            .flatMap((value) => collectIdentifierTokens(value, true))
-            .filter((token) => !GENERIC_ANCHOR_TOKENS.has(token))
+function collectChangedTokens(changedLines: ChangedLines, collect: (lines: string[]) => string[]): string[] {
+    const added = collect(changedLines.added);
+    const removed = collect(changedLines.removed);
+    const count = (tokens: string[]): Map<string, number> => {
+        const counts = new Map<string, number>();
+        for (const token of tokens) {
+            counts.set(token, (counts.get(token) || 0) + 1);
+        }
+        return counts;
+    };
+    const addedCounts = count(added);
+    const removedCounts = count(removed);
+
+    return uniqueTokens([...added, ...removed].filter(
+        (token) => addedCounts.get(token) !== removedCounts.get(token)
+    ));
+}
+
+function isUsefulChangeToken(token: string): boolean {
+    const canonicalToken = canonicalizeToken(token);
+    return Boolean(canonicalToken && !GENERIC_CHANGE_TOKENS.has(canonicalToken));
+}
+
+function collectChangeTokens(changedLines: ChangedLines): string[] {
+    return collectChangedTokens(changedLines, (lines) =>
+        collectChangeSignalValues(lines)
+            .flatMap((value) => tokenizeText(value))
+            .filter(isUsefulChangeToken)
     ).slice(0, 64);
 }
 
-function collectChangePhraseTokens(changedLines: string[], relativePath: string): string[] {
-    const values = collectChangeSignalValues(changedLines);
+function collectChangePhraseTokens(changedLines: ChangedLines, relativePath: string): string[] {
+    return collectChangedTokens(changedLines, (lines) => {
+        const values = collectChangeSignalValues(lines);
 
-    return uniqueTokens([
-        ...values.flatMap((value) => collectIdentifierTokens(value)),
-        ...collectRareAnchorTokens(values.join('\n'), relativePath, values, true),
-    ]).slice(0, 96);
+        return [
+            ...values.flatMap((value) => buildPhraseTokens(splitPhraseParts(value))),
+            ...collectRareAnchorTokens(values.join('\n'), relativePath, values, true),
+        ].filter(isUsefulChangeToken);
+    }).slice(0, 96);
 }
 
 function stripCommentsAndStrings(text: string): string {
@@ -434,6 +499,10 @@ function createSummary(profile: Omit<DocumentProfile, 'summary' | 'embeddingText
     const focus = profile.semanticTokens.slice(0, 12).join(', ');
     const lines = [`${subject} about ${focus || profile.basenameTokens.join(', ')}`];
 
+    if (profile.changePhraseTokens.length) {
+        lines.push(`changes: ${profile.changePhraseTokens.slice(0, 8).join(', ')}`);
+    }
+
     if (profile.exports.length) {
         lines.push(`exports: ${profile.exports.slice(0, 8).join(', ')}`);
     }
@@ -462,55 +531,41 @@ function createSummary(profile: Omit<DocumentProfile, 'summary' | 'embeddingText
         lines.push(`anchors: ${profile.rareAnchorTokens.slice(0, 8).join(', ')}`);
     }
 
-    if (profile.changePhraseTokens.length) {
-        lines.push(`changes: ${profile.changePhraseTokens.slice(0, 8).join(', ')}`);
-    }
-
     return lines.join('\n');
 }
 
 function createEmbeddingText(profile: Omit<DocumentProfile, 'summary' | 'embeddingText' | 'preview'> & { summary: string }): string {
-    const sections = [
-        `path: ${profile.relativePath}`,
-        `kind: ${profile.kind}`,
-        `basename: ${profile.basenameTokens.join(' ')}`,
-        `summary: ${profile.summary}`,
-    ];
+    const buildSections = (limit?: number): string[] => {
+        const take = (tokens: string[]): string[] => limit === undefined ? tokens : tokens.slice(0, limit);
+        const sections = [
+            `path: ${profile.relativePath}`,
+            `kind: ${profile.kind}`,
+            `basename: ${profile.basenameTokens.join(' ')}`,
+            `summary: ${profile.summary}`,
+        ];
+        const tokenSections: Array<[string, string[]]> = [
+            ['exports', profile.exports],
+            ['imports', profile.imports],
+            ['tests', profile.testNames],
+            ['commands', profile.commandTokens],
+            ['options', profile.optionTokens],
+            ['path-families', profile.pathFamilyTokens],
+            ['anchors', profile.rareAnchorTokens],
+        ];
 
-    if (profile.exports.length) {
-        sections.push(`exports: ${profile.exports.join(' ')}`);
-    }
+        for (const [label, tokens] of tokenSections) {
+            if (tokens.length) {
+                sections.push(`${label}: ${take(tokens).join(' ')}`);
+            }
+        }
+        sections.push(`signals: ${profile.semanticTokens.join(' ')}`);
+        return sections;
+    };
 
-    if (profile.imports.length) {
-        sections.push(`imports: ${profile.imports.join(' ')}`);
-    }
-
-    if (profile.testNames.length) {
-        sections.push(`tests: ${profile.testNames.join(' ')}`);
-    }
-
-    if (profile.commandTokens.length) {
-        sections.push(`commands: ${profile.commandTokens.join(' ')}`);
-    }
-
-    if (profile.optionTokens.length) {
-        sections.push(`options: ${profile.optionTokens.join(' ')}`);
-    }
-
-    if (profile.pathFamilyTokens.length) {
-        sections.push(`path-families: ${profile.pathFamilyTokens.join(' ')}`);
-    }
-
-    if (profile.rareAnchorTokens.length) {
-        sections.push(`anchors: ${profile.rareAnchorTokens.join(' ')}`);
-    }
-
-    if (profile.changePhraseTokens.length) {
-        sections.push(`changes: ${profile.changePhraseTokens.join(' ')}`);
-    }
-
-    sections.push(`signals: ${profile.semanticTokens.join(' ')}`);
-    return sections.join('\n');
+    const completeText = buildSections().join('\n');
+    return completeText.split(/\s+/).length <= MAX_EMBEDDING_WORDS
+        ? completeText
+        : buildSections(MAX_EMBEDDING_SECTION_TOKENS).join('\n');
 }
 
 export function buildDocumentProfile(
@@ -528,10 +583,11 @@ export function buildDocumentProfile(
     const changedLines = collectChangedLines(diffText);
     const phraseTokens = collectPhraseTokens(text, relativePath);
     const rareAnchorTokens = collectRareAnchorTokens(text, relativePath);
-    const changeTokens = changedLines.length
+    const hasChangedLines = changedLines.added.length > 0 || changedLines.removed.length > 0;
+    const changeTokens = hasChangedLines
         ? collectChangeTokens(changedLines)
         : [];
-    const changePhraseTokens = changedLines.length
+    const changePhraseTokens = hasChangedLines
         ? collectChangePhraseTokens(changedLines, relativePath)
         : [];
     const kind = determineKind(relativePath);
@@ -542,20 +598,28 @@ export function buildDocumentProfile(
     const optionTokens = collectOptionTokens(text);
     const contentTokens = uniqueTokens(tokenizeText(stripCommentsAndStrings(text)));
 
-    const semanticTokens = uniqueTokens([
-        ...basenameTokens,
-        ...stemTokens,
-        ...pathFamilyTokens,
-        ...exports,
-        ...imports,
-        ...testNames,
-        ...commandTokens,
-        ...optionTokens,
-        ...rareAnchorTokens,
+    const changeSemanticTokens = uniqueTokens([
         ...changeTokens,
         ...changePhraseTokens,
-        ...contentTokens,
-    ]).slice(0, 72);
+    ]).slice(0, MAX_CHANGE_SEMANTIC_TOKENS);
+    const semanticTokens = [
+        ...changeSemanticTokens,
+        ...interleaveUniqueTokens(
+            [
+                basenameTokens,
+                stemTokens,
+                pathFamilyTokens,
+                exports,
+                imports,
+                testNames,
+                commandTokens,
+                optionTokens,
+                rareAnchorTokens,
+                contentTokens,
+            ],
+            MAX_SEMANTIC_TOKENS - changeSemanticTokens.length
+        ),
+    ];
 
     const partialProfile = {
         absolutePath,

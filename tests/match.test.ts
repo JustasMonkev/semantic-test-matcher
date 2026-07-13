@@ -107,4 +107,194 @@ describe('rankMatches', () => {
     it('returns an empty list for no candidates', () => {
         assert.deepEqual(rankMatches(source, []), []);
     });
+
+    it('scores tests for changed symbols above unrelated source anchors', () => {
+        const diff = `
+--- a/src/page.ts
++++ b/src/page.ts
+@@ -1 +1,2 @@
+-return await this.screenshotter.screenshotPage(progress, options);
++const screenshot = await this.screenshotter.screenshotPage(progress, options);
++return screenshot;
+`;
+        const pageProfile = buildDocumentProfile(
+            `${cwd}/src/page.ts`,
+            `
+export function getByTestIdSelector() {}
+export class Page {
+    async screenshot(progress, options) {
+        return await this.screenshotter.screenshotPage(progress, options);
+    }
+}
+`,
+            cwd,
+            diff
+        );
+        const matches = rankMatches(
+            { profile: pageProfile, vector: [1, 0] },
+            [
+                makeCandidate(
+                    'tests/page-screenshot.spec.ts',
+                    `test('page screenshot captures image', async () => page.screenshot());`,
+                    cwd
+                ),
+                makeCandidate(
+                    'tests/codegen.spec.ts',
+                    `test('getByTestId selector codegen output', () => {});`,
+                    cwd
+                ),
+            ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
+        );
+        const screenshot = matches.find((match) => match.file === 'tests/page-screenshot.spec.ts');
+        const codegen = matches.find((match) => match.file === 'tests/codegen.spec.ts');
+
+        assert.ok(screenshot && codegen);
+        assert.ok(screenshot.changeScore > codegen.changeScore);
+    });
+
+    it('prefers a changed symbol in the test filename over generic diff parameters', () => {
+        const diff = `
+--- a/src/page.ts
++++ b/src/page.ts
+@@ -1 +1,2 @@
+-return await this.screenshotter.screenshotPage(progress, options);
++const screenshot = await this.screenshotter.screenshotPage(progress, options);
++return screenshot;
+`;
+        const pageProfile = buildDocumentProfile(
+            `${cwd}/src/page.ts`,
+            `export class Page { async screenshot(progress, options) {} }`,
+            cwd,
+            diff
+        );
+        const matches = rankMatches(
+            { profile: pageProfile, vector: [1, 0] },
+            [
+                makeCandidate(
+                    'tests/page/page-screenshot.spec.ts',
+                    `test('page screenshot', () => {});`,
+                    cwd
+                ),
+                makeCandidate(
+                    'tests/page/page-options.spec.ts',
+                    `test('page options progress', () => {});`,
+                    cwd
+                ),
+            ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
+        );
+        const screenshot = matches.find((match) => match.file === 'tests/page/page-screenshot.spec.ts');
+        const options = matches.find((match) => match.file === 'tests/page/page-options.spec.ts');
+
+        assert.ok(screenshot && options);
+        assert.ok(screenshot.changeScore > options.changeScore);
+    });
+
+    it('ranks a direct caller of changed APIs above a one-token filename match', () => {
+        const diff = `
+--- a/src/page.ts
++++ b/src/page.ts
+@@ -1 +1,2 @@
+-return await capture();
++const screenshot = await capture();
++return screenshotWithTimeout(screenshot);
+`;
+        const pageProfile = buildDocumentProfile(
+            `${cwd}/src/page.ts`,
+            'export class Page { screenshot(timeout) { return screenshotWithTimeout(timeout); } }',
+            cwd,
+            diff
+        );
+        const matches = rankMatches(
+            { profile: pageProfile, vector: textToVector(pageProfile.embeddingText) },
+            [
+                makeCandidate(
+                    'tests/api-behavior.spec.ts',
+                    `test('captures output', async () => page.screenshot({ timeout: 1000 }));`,
+                    cwd
+                ),
+                makeCandidate(
+                    'tests/timeout.spec.ts',
+                    `test('timeout', async () => waitForTimeout());`,
+                    cwd
+                ),
+            ]
+        );
+
+        assert.equal(matches[0].file, 'tests/api-behavior.spec.ts');
+        assert.ok(matches[0].changeScore > matches[1].changeScore);
+    });
+
+    it('uses distinctive changed phrases when simple change tokens are generic', () => {
+        const diff = `
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -1 +1,2 @@
+-return selector;
++const testIdAttributeName = selector;
++return testIdAttributeName;
+`;
+        const configProfile = buildDocumentProfile(
+            `${cwd}/src/config.ts`,
+            'export const testIdAttributeName = selector;',
+            cwd,
+            diff
+        );
+        const matches = rankMatches(
+            { profile: configProfile, vector: textToVector(configProfile.embeddingText) },
+            [
+                makeCandidate(
+                    'tests/codegen.spec.ts',
+                    `test('uses getByTestId codegen', () => getByTestId());`,
+                    cwd
+                ),
+                makeCandidate(
+                    'tests/network.spec.ts',
+                    `test('sends request', () => request());`,
+                    cwd
+                ),
+            ]
+        );
+
+        assert.deepEqual(configProfile.changeTokens, []);
+        assert.equal(matches[0].file, 'tests/codegen.spec.ts');
+        assert.ok(matches[0].changeScore > 0);
+    });
+
+    it('uses source identity to disambiguate a common changed identifier', () => {
+        const diff = `
+--- a/src/dialog.ts
++++ b/src/dialog.ts
+@@ -1 +1,2 @@
+-return this._accept();
++const accept = this._accept();
++return accept;
+`;
+        const dialogProfile = buildDocumentProfile(
+            `${cwd}/src/dialog.ts`,
+            'export class Dialog { accept() {} }',
+            cwd,
+            diff
+        );
+        const matches = rankMatches(
+            { profile: dialogProfile, vector: textToVector(dialogProfile.embeddingText) },
+            [
+                makeCandidate(
+                    'tests/page-dialog.spec.ts',
+                    `test('dialog can accept a prompt', () => dialog.accept());`,
+                    cwd
+                ),
+                makeCandidate(
+                    'tests/tracing.spec.ts',
+                    `test('trace accepts downloads', () => acceptDownloads());`,
+                    cwd
+                ),
+            ]
+        );
+        const dialog = matches.find((match) => match.file === 'tests/page-dialog.spec.ts');
+        const tracing = matches.find((match) => match.file === 'tests/tracing.spec.ts');
+
+        assert.ok(dialog && tracing);
+        assert.ok(dialog.changeScore > tracing.changeScore);
+        assert.equal(matches[0].file, 'tests/page-dialog.spec.ts');
+    });
 });
