@@ -207,6 +207,7 @@ function changeOverlap(source: DocumentProfile, candidate: DocumentProfile): num
     ]);
     const internalChangeTokens = uniqueTokens([
         ...candidate.rareAnchorTokens,
+        ...candidate.phraseTokens,
         ...candidate.semanticTokens,
         ...candidate.contentTokens,
     ]);

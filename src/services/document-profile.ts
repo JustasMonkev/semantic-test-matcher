@@ -367,14 +367,26 @@ function interleaveUniqueTokens(groups: string[][], limit: number): string[] {
     return tokens;
 }
 
-function collectChangedLines(diffText?: string): ChangedLines {
+function collectChangedLines(diffText: string | undefined, relativePath: string): ChangedLines {
     const changedLines: ChangedLines = { added: [], removed: [] };
     if (!diffText) {
         return changedLines;
     }
 
+    let currentFileMatches = true;
     for (const line of diffText.split(/\r?\n/)) {
-        if (!line || line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@') || line.startsWith('diff --git')) {
+        if (line.startsWith('diff --git ')) {
+            currentFileMatches = false;
+            continue;
+        }
+        if (line.startsWith('--- ') || line.startsWith('+++ ')) {
+            const diffPath = line.slice(4).trim().replace(/^"?[ab]\//, '').replace(/"$/, '');
+            currentFileMatches = line.startsWith('+++ ')
+                ? currentFileMatches || diffPath === relativePath
+                : diffPath === relativePath;
+            continue;
+        }
+        if (!currentFileMatches || !line || line.startsWith('@@')) {
             continue;
         }
         if (line.startsWith('+')) {
@@ -580,7 +592,7 @@ export function buildDocumentProfile(
     const basenameTokens = tokenizeText(basename);
     const stemTokens = collectStemTokens(basename);
     const pathFamilyTokens = collectPathFamilyTokens(relativePath, text);
-    const changedLines = collectChangedLines(diffText);
+    const changedLines = collectChangedLines(diffText, relativePath);
     const phraseTokens = collectPhraseTokens(text, relativePath);
     const rareAnchorTokens = collectRareAnchorTokens(text, relativePath);
     const hasChangedLines = changedLines.added.length > 0 || changedLines.removed.length > 0;

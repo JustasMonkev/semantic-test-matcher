@@ -54,6 +54,27 @@ describe('buildDocumentProfile', () => {
         assert.deepEqual(profile.changePhraseTokens, ['screenshot']);
     });
 
+    it('scopes changed tokens to the profiled file in multi-file diffs', () => {
+        const diff = `
+diff --git a/src/page.ts b/src/page.ts
+--- a/src/page.ts
++++ b/src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+diff --git a/src/socket.ts b/src/socket.ts
+--- a/src/socket.ts
++++ b/src/socket.ts
+@@ -1 +1 @@
+-return screenshot();
++return heartbeat();
+`;
+        const profile = buildDocumentProfile('/repo/src/page.ts', '', '/repo', diff);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+        assert.deepEqual(profile.changePhraseTokens, ['screenshot', 'capture']);
+    });
+
     it('canonicalizes changed identifiers once', () => {
         const profile = buildDocumentProfile('/repo/src/cart.ts', '', '/repo', `
 --- a/src/cart.ts

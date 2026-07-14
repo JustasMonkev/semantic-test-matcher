@@ -260,6 +260,45 @@ export class Page {
         assert.ok(matches[0].changeScore > 0);
     });
 
+    it('matches changed camel-case APIs that only survive as phrase tokens', () => {
+        const diff = `
+--- a/src/settings.ts
++++ b/src/settings.ts
+@@ -1 +1 @@
+-return config;
++return getConfig();
+`;
+        const settingsProfile = buildDocumentProfile(
+            `${cwd}/src/settings.ts`,
+            'export function getConfig() {}',
+            cwd,
+            diff
+        );
+        const matches = rankMatches(
+            { profile: settingsProfile, vector: [1, 0] },
+            [
+                makeCandidate(
+                    'tests/settings-api.spec.ts',
+                    `test('loads settings', () => getConfig());`,
+                    cwd
+                ),
+                makeCandidate(
+                    'tests/settings-storage.spec.ts',
+                    `test('loads settings', () => readConfig());`,
+                    cwd
+                ),
+            ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
+        );
+        const direct = matches.find((match) => match.file === 'tests/settings-api.spec.ts');
+        const unrelated = matches.find((match) => match.file === 'tests/settings-storage.spec.ts');
+
+        assert.deepEqual(settingsProfile.changeTokens, []);
+        assert.deepEqual(settingsProfile.changePhraseTokens, ['getconfig']);
+        assert.ok(direct && unrelated);
+        assert.ok(direct.changeScore > 0);
+        assert.ok(direct.changeScore > unrelated.changeScore);
+    });
+
     it('uses source identity to disambiguate a common changed identifier', () => {
         const diff = `
 --- a/src/dialog.ts

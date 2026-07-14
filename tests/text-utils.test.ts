@@ -29,6 +29,7 @@ describe('canonicalizeToken', () => {
         assert.equal(canonicalizeToken('categories'), 'category');
         assert.equal(canonicalizeToken('discounts'), 'discount');
         assert.equal(canonicalizeToken('classes'), 'class');
+        assert.equal(canonicalizeToken('menus'), 'menu');
     });
 
     it('does not strip s from singular words ending in us or is', () => {
