@@ -112,6 +112,22 @@ diff --git a/src/socket.ts b/src/socket.ts
         assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
     });
 
+    it('preserves real top-level a and b path segments in no-prefix diffs', () => {
+        const diff = `
+diff --git a/src/page.ts a/src/page.ts
+--- a/src/page.ts
++++ a/src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`;
+        const target = buildDocumentProfile('/repo/a/src/page.ts', '', '/repo', diff);
+        const unrelated = buildDocumentProfile('/repo/src/page.ts', '', '/repo', diff);
+
+        assert.deepEqual(target.changeTokens, ['screenshot', 'capture']);
+        assert.deepEqual(unrelated.changeTokens, []);
+    });
+
     it('scopes concatenated plain unified diffs by file', () => {
         const profile = buildDocumentProfile('/repo/src/page.ts', '', '/repo', `
 --- src/page.ts

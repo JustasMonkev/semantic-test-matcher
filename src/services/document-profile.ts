@@ -378,18 +378,22 @@ function collectChangedLines(diffText: string | undefined, relativePath: string,
     let oldLinesRemaining = 0;
     let newLinesRemaining = 0;
     let structuredDiff = false;
+    let stripGitPrefixes = true;
     const absolutePath = path.resolve(cwd, relativePath);
     for (const line of diffText.split(/\r?\n/)) {
         if (line.startsWith('diff --git ')) {
             currentFileMatches = false;
             inHunk = false;
             structuredDiff = true;
+            stripGitPrefixes = /^diff --git "?a\/.* "?b\//.test(line);
             continue;
         }
         if (!inHunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
-            const diffPath = line.slice(4).split('\t', 1)[0].trim()
-                .replace(/^"?[ab]\//, '')
-                .replace(/"$/, '');
+            let diffPath = line.slice(4).split('\t', 1)[0].trim()
+                .replace(/^"|"$/g, '');
+            if (stripGitPrefixes) {
+                diffPath = diffPath.replace(/^[ab]\//, '');
+            }
             const diffPathMatches = path.resolve(cwd, diffPath) === absolutePath;
             currentFileMatches = line.startsWith('+++ ')
                 ? currentFileMatches || diffPathMatches
