@@ -44,6 +44,7 @@ describe('canonicalizeToken', () => {
 describe('tokenizeText', () => {
     it('splits camelCase, snake_case, and path separators', () => {
         assert.deepEqual(tokenizeText('applyDiscount'), ['apply', 'discount']);
+        assert.deepEqual(tokenizeText('parseUris'), ['parse', 'uri']);
         assert.deepEqual(tokenizeText('coupon_validator'), ['coupon', 'validator']);
         assert.deepEqual(tokenizeText('checkout/pricing'), ['checkout', 'pricing']);
     });

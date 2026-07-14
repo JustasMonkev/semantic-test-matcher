@@ -375,30 +375,56 @@ function collectChangedLines(diffText: string | undefined, relativePath: string)
 
     let currentFileMatches = true;
     let inHunk = false;
+    let oldLinesRemaining = 0;
+    let newLinesRemaining = 0;
+    let structuredDiff = false;
     for (const line of diffText.split(/\r?\n/)) {
         if (line.startsWith('diff --git ')) {
             currentFileMatches = false;
             inHunk = false;
+            structuredDiff = true;
             continue;
         }
         if (!inHunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
-            const diffPath = line.slice(4).trim().replace(/^"?[ab]\//, '').replace(/"$/, '');
+            const diffPath = line.slice(4).split('\t', 1)[0].trim()
+                .replace(/^"?[ab]\//, '')
+                .replace(/"$/, '');
             currentFileMatches = line.startsWith('+++ ')
                 ? currentFileMatches || diffPath === relativePath
                 : diffPath === relativePath;
+            structuredDiff = true;
             continue;
         }
         if (line.startsWith('@@')) {
-            inHunk = true;
+            const header = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+            if (header) {
+                oldLinesRemaining = Number(header[1] ?? 1);
+                newLinesRemaining = Number(header[2] ?? 1);
+                inHunk = true;
+                structuredDiff = true;
+            }
             continue;
         }
-        if (!currentFileMatches || !line) {
+        if (!line || (!inHunk && structuredDiff)) {
             continue;
         }
-        if (line.startsWith('+')) {
-            changedLines.added.push(line.slice(1));
-        } else if (line.startsWith('-')) {
-            changedLines.removed.push(line.slice(1));
+        if (currentFileMatches) {
+            if (line.startsWith('+')) {
+                changedLines.added.push(line.slice(1));
+            } else if (line.startsWith('-')) {
+                changedLines.removed.push(line.slice(1));
+            }
+        }
+        if (inHunk) {
+            if (line.startsWith('+')) {
+                newLinesRemaining -= 1;
+            } else if (line.startsWith('-')) {
+                oldLinesRemaining -= 1;
+            } else if (line.startsWith(' ')) {
+                oldLinesRemaining -= 1;
+                newLinesRemaining -= 1;
+            }
+            inHunk = oldLinesRemaining > 0 || newLinesRemaining > 0;
         }
     }
 

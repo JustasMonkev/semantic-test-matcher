@@ -88,6 +88,35 @@ diff --git a/src/socket.ts b/src/socket.ts
         assert.deepEqual(profile.changePhraseTokens, ['screenshot', 'section']);
     });
 
+    it('accepts timestamps in plain unified diff headers', () => {
+        const profile = buildDocumentProfile('/repo/src/page.ts', '', '/repo', `
+--- src/page.ts\t2026-07-14 10:00:00
++++ src/page.ts\t2026-07-14 10:01:00
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
+    it('scopes concatenated plain unified diffs by file', () => {
+        const profile = buildDocumentProfile('/repo/src/page.ts', '', '/repo', `
+--- src/page.ts
++++ src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+--- src/socket.ts
++++ src/socket.ts
+@@ -1 +1 @@
+-return reconnect();
++return heartbeat();
+`);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
     it('canonicalizes changed identifiers once', () => {
         const profile = buildDocumentProfile('/repo/src/cart.ts', '', '/repo', `
 --- a/src/cart.ts
