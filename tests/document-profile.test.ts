@@ -100,6 +100,18 @@ diff --git a/src/socket.ts b/src/socket.ts
         assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
     });
 
+    it('accepts absolute paths in plain unified diff headers', () => {
+        const profile = buildDocumentProfile('/repo/src/page.ts', '', '/repo', `
+--- /repo/src/page.ts
++++ /repo/src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
     it('scopes concatenated plain unified diffs by file', () => {
         const profile = buildDocumentProfile('/repo/src/page.ts', '', '/repo', `
 --- src/page.ts

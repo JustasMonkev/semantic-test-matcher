@@ -367,7 +367,7 @@ function interleaveUniqueTokens(groups: string[][], limit: number): string[] {
     return tokens;
 }
 
-function collectChangedLines(diffText: string | undefined, relativePath: string): ChangedLines {
+function collectChangedLines(diffText: string | undefined, relativePath: string, cwd: string): ChangedLines {
     const changedLines: ChangedLines = { added: [], removed: [] };
     if (!diffText) {
         return changedLines;
@@ -378,6 +378,7 @@ function collectChangedLines(diffText: string | undefined, relativePath: string)
     let oldLinesRemaining = 0;
     let newLinesRemaining = 0;
     let structuredDiff = false;
+    const absolutePath = path.resolve(cwd, relativePath);
     for (const line of diffText.split(/\r?\n/)) {
         if (line.startsWith('diff --git ')) {
             currentFileMatches = false;
@@ -389,9 +390,10 @@ function collectChangedLines(diffText: string | undefined, relativePath: string)
             const diffPath = line.slice(4).split('\t', 1)[0].trim()
                 .replace(/^"?[ab]\//, '')
                 .replace(/"$/, '');
+            const diffPathMatches = path.resolve(cwd, diffPath) === absolutePath;
             currentFileMatches = line.startsWith('+++ ')
-                ? currentFileMatches || diffPath === relativePath
-                : diffPath === relativePath;
+                ? currentFileMatches || diffPathMatches
+                : diffPathMatches;
             structuredDiff = true;
             continue;
         }
@@ -624,7 +626,7 @@ export function buildDocumentProfile(
     const basenameTokens = tokenizeText(basename);
     const stemTokens = collectStemTokens(basename);
     const pathFamilyTokens = collectPathFamilyTokens(relativePath, text);
-    const changedLines = collectChangedLines(diffText, relativePath);
+    const changedLines = collectChangedLines(diffText, relativePath, cwd);
     const phraseTokens = collectPhraseTokens(text, relativePath);
     const rareAnchorTokens = collectRareAnchorTokens(text, relativePath);
     const hasChangedLines = changedLines.added.length > 0 || changedLines.removed.length > 0;
