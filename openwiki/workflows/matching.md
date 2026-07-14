@@ -99,7 +99,6 @@ Prints Bash or Zsh scripts that parse `rbt --help` with `awk`. It completes subc
 - Candidate stdin integrates with changed-file lists from build/CI systems.
 - `--diff-file` or benchmark `diffText` integrates source-control changes into ranking.
 - The package integrates with local `node-llama-cpp`; it does not call Hugging Face or Ollama at runtime.
-- `.github/workflows/openwiki-update.yml` automates documentation updates, not matcher execution or validation. It should not be mistaken for product CI.
 
 ## Workflow change checklist
 

@@ -56,7 +56,6 @@ The current branch's highest-risk coupled area is this three-file group. Recent 
 - `models/*.gguf`: external model files, ignored by git.
 - `.rbt/cache/`: runtime embeddings, ignored by convention/default.
 - `openwiki/INSTRUCTIONS.md`: user-authored wiki brief; do not rewrite during normal maintenance.
-- `.github/workflows/openwiki-update.yml`: scheduled documentation automation, not matcher CI.
 - `AGENTS.md`, `CLAUDE.md`: repository guidance pointers maintained with the OpenWiki documentation.
 
 ## Change recipes

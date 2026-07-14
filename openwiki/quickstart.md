@@ -78,7 +78,7 @@ See [Architecture](architecture/overview.md), [Matching workflow](workflows/matc
 - The current profiler and candidate scanner are JS/TS-oriented. Profiling is regex-based, not AST-based.
 - Auto-discovered repository config is prevented from redirecting the model, cache, or candidate roots outside the workspace, including through existing symlink ancestors. Explicit config/CLI/environment paths are treated as trusted input (`src/config.ts`).
 - The README architecture is broadly useful, but its `prompts-idea/` sample directory is absent from this checkout. It also omits the implemented `benchmark` command and `match --diff-file` option.
-- No matcher validation CI workflow is tracked; the OpenWiki workflow only updates documentation. Run lint, tests, build, and package verification locally before release.
+- No matcher validation CI workflow is tracked. Run lint, tests, build, and package verification locally before release.
 
 ## Change checklist
 
