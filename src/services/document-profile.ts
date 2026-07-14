@@ -374,19 +374,25 @@ function collectChangedLines(diffText: string | undefined, relativePath: string)
     }
 
     let currentFileMatches = true;
+    let inHunk = false;
     for (const line of diffText.split(/\r?\n/)) {
         if (line.startsWith('diff --git ')) {
             currentFileMatches = false;
+            inHunk = false;
             continue;
         }
-        if (line.startsWith('--- ') || line.startsWith('+++ ')) {
+        if (!inHunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
             const diffPath = line.slice(4).trim().replace(/^"?[ab]\//, '').replace(/"$/, '');
             currentFileMatches = line.startsWith('+++ ')
                 ? currentFileMatches || diffPath === relativePath
                 : diffPath === relativePath;
             continue;
         }
-        if (!currentFileMatches || !line || line.startsWith('@@')) {
+        if (line.startsWith('@@')) {
+            inHunk = true;
+            continue;
+        }
+        if (!currentFileMatches || !line) {
             continue;
         }
         if (line.startsWith('+')) {

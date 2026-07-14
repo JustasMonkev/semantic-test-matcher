@@ -212,19 +212,17 @@ function changeOverlap(source: DocumentProfile, candidate: DocumentProfile): num
         ...candidate.contentTokens,
     ]);
     const changeTokenGroups = [source.changeTokens, source.changePhraseTokens]
-        .filter((tokens) => tokens.length > 0)
-        .map((tokens) => uniqueTokens([...tokens, ...source.stemTokens]));
+        .filter((tokens) => tokens.length > 0);
     const changedTokenCoverage = (candidateTokens: string[]): number => {
         const scores = changeTokenGroups.map((tokens) => focusedWeightedOverlap(candidateTokens, tokens));
         return scores.reduce((sum, score) => sum + score, 0) / scores.length;
     };
 
-    const indirectEvidenceWeight = 0.75;
-    const stemAligned = candidate.stemTokens.some(
-        (token) => source.stemTokens.includes(token) || source.phraseTokens.includes(token)
+    const sourceIdentityAligned = [...candidate.stemTokens, ...candidate.contentTokens].some(
+        (token) => source.stemTokens.includes(token)
     );
-    const publicFalloutScore = changedTokenCoverage(publicFalloutTokens) *
-        (stemAligned ? 1 : indirectEvidenceWeight);
+    const evidenceWeight = sourceIdentityAligned ? 1 : 0.75;
+    const publicFalloutScore = changedTokenCoverage(publicFalloutTokens) * evidenceWeight;
     let internalChangeScore = changedTokenCoverage(internalChangeTokens);
     if (
         candidate.pathFamilyTokens.includes('codegen') &&
@@ -233,7 +231,7 @@ function changeOverlap(source: DocumentProfile, candidate: DocumentProfile): num
         internalChangeScore = Math.min(1, internalChangeScore + 0.35);
     }
 
-    return Math.max(publicFalloutScore, internalChangeScore * indirectEvidenceWeight);
+    return Math.max(publicFalloutScore, internalChangeScore * evidenceWeight);
 }
 
 function structuralScore(source: DocumentProfile, candidate: DocumentProfile): {

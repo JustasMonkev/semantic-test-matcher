@@ -224,6 +224,44 @@ export class Page {
         assert.ok(matches[0].changeScore > matches[1].changeScore);
     });
 
+    it('does not award change credit for source-stem matches alone', () => {
+        const diff = `
+--- a/src/page.ts
++++ b/src/page.ts
+@@ -1 +1,2 @@
+-return capture();
++const screenshot = capture();
++return screenshot;
+`;
+        const pageProfile = buildDocumentProfile(
+            `${cwd}/src/page.ts`,
+            'export class Page { screenshot() {} }',
+            cwd,
+            diff
+        );
+        const matches = rankMatches(
+            { profile: pageProfile, vector: [1, 0] },
+            [
+                makeCandidate(
+                    'tests/page-options.spec.ts',
+                    `test('uses page options', () => configureOptions());`,
+                    cwd
+                ),
+                makeCandidate(
+                    'tests/api-behavior.spec.ts',
+                    `test('captures an image', () => screenshot());`,
+                    cwd
+                ),
+            ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
+        );
+        const stemOnly = matches.find((match) => match.file === 'tests/page-options.spec.ts');
+        const direct = matches.find((match) => match.file === 'tests/api-behavior.spec.ts');
+
+        assert.ok(stemOnly && direct);
+        assert.equal(stemOnly.changeScore, 0);
+        assert.ok(direct.changeScore > stemOnly.changeScore);
+    });
+
     it('uses distinctive changed phrases when simple change tokens are generic', () => {
         const diff = `
 --- a/src/config.ts

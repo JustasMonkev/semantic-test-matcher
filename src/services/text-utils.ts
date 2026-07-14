@@ -118,7 +118,9 @@ function splitIntoParts(value: string): string[] {
 }
 
 export function canonicalizeToken(token: string, options?: { skipStopWords?: boolean }): string | null {
-    const normalized = token.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const compact = token.replace(/[^a-z0-9]+/gi, '');
+    const acronymPlural = /^[A-Z]{2,}s$/.test(compact);
+    const normalized = compact.toLowerCase();
     if (!normalized || normalized.length < 2 || /^\d+$/.test(normalized)) {
         return null;
     }
@@ -140,7 +142,7 @@ export function canonicalizeToken(token: string, options?: { skipStopWords?: boo
         normalized.length > 3 &&
         !normalized.endsWith('ss') &&
         (!normalized.endsWith('us') || normalized.endsWith('menus')) &&
-        !normalized.endsWith('is')
+        (!normalized.endsWith('is') || acronymPlural)
     ) {
         return normalized.slice(0, -1);
     }

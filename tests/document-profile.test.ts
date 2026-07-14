@@ -75,6 +75,19 @@ diff --git a/src/socket.ts b/src/socket.ts
         assert.deepEqual(profile.changePhraseTokens, ['screenshot', 'capture']);
     });
 
+    it('treats header-like lines inside hunks as changed content', () => {
+        const profile = buildDocumentProfile('/repo/src/template.ts', '', '/repo', `
+--- a/src/template.ts
++++ b/src/template.ts
+@@ -1 +1 @@
+--- section
++const screenshot = true;
+`);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'section']);
+        assert.deepEqual(profile.changePhraseTokens, ['screenshot', 'section']);
+    });
+
     it('canonicalizes changed identifiers once', () => {
         const profile = buildDocumentProfile('/repo/src/cart.ts', '', '/repo', `
 --- a/src/cart.ts
