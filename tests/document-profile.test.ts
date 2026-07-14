@@ -75,6 +75,19 @@ diff --git a/src/socket.ts b/src/socket.ts
         assert.deepEqual(profile.changePhraseTokens, ['screenshot', 'capture']);
     });
 
+    it('accepts custom git diff prefixes', () => {
+        const profile = buildDocumentProfile('/repo/src/page.ts', '', '/repo', `
+diff --git old/tree/src/page.ts new/tree/src/page.ts
+--- old/tree/src/page.ts
++++ new/tree/src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
     it('treats header-like lines inside hunks as changed content', () => {
         const profile = buildDocumentProfile('/repo/src/template.ts', '', '/repo', `
 --- a/src/template.ts

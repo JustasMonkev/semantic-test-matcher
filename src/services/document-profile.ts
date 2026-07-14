@@ -367,6 +367,24 @@ function interleaveUniqueTokens(groups: string[][], limit: number): string[] {
     return tokens;
 }
 
+function inferGitPrefixes(line: string, relativePath: string): [string, string] | undefined {
+    const paths = /^diff --git ("(?:\\.|[^"])*"|\S+) ("(?:\\.|[^"])*"|\S+)$/.exec(line);
+    if (!paths) {
+        return undefined;
+    }
+
+    const [oldPath, newPath] = paths.slice(1).map(value => value.replace(/^"|"$/g, ''));
+    const oldPrefix = oldPath.endsWith(relativePath)
+        ? oldPath.slice(0, -relativePath.length)
+        : undefined;
+    const newPrefix = newPath.endsWith(relativePath)
+        ? newPath.slice(0, -relativePath.length)
+        : undefined;
+    return oldPrefix && newPrefix && oldPrefix !== newPrefix
+        ? [oldPrefix, newPrefix]
+        : undefined;
+}
+
 function collectChangedLines(diffText: string | undefined, relativePath: string, cwd: string): ChangedLines {
     const changedLines: ChangedLines = { added: [], removed: [] };
     if (!diffText) {
@@ -378,21 +396,22 @@ function collectChangedLines(diffText: string | undefined, relativePath: string,
     let oldLinesRemaining = 0;
     let newLinesRemaining = 0;
     let structuredDiff = false;
-    let stripGitPrefixes = true;
+    let gitPrefixes: [string, string] | undefined = ['a/', 'b/'];
     const absolutePath = path.resolve(cwd, relativePath);
     for (const line of diffText.split(/\r?\n/)) {
         if (line.startsWith('diff --git ')) {
             currentFileMatches = false;
             inHunk = false;
             structuredDiff = true;
-            stripGitPrefixes = /^diff --git "?a\/.* "?b\//.test(line);
+            gitPrefixes = inferGitPrefixes(line, relativePath);
             continue;
         }
         if (!inHunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
             let diffPath = line.slice(4).split('\t', 1)[0].trim()
                 .replace(/^"|"$/g, '');
-            if (stripGitPrefixes) {
-                diffPath = diffPath.replace(/^[ab]\//, '');
+            const prefix = line.startsWith('+++ ') ? gitPrefixes?.[1] : gitPrefixes?.[0];
+            if (prefix && diffPath.startsWith(prefix)) {
+                diffPath = diffPath.slice(prefix.length);
             }
             const diffPathMatches = path.resolve(cwd, diffPath) === absolutePath;
             currentFileMatches = line.startsWith('+++ ')
