@@ -130,6 +130,67 @@ rename to src/new.ts
         assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
     });
 
+    it('accepts renamed files with custom git prefixes', () => {
+        const profile = buildDocumentProfile('/repo/src/new.ts', '', '/repo', `
+diff --git old/src/old.ts new/src/new.ts
+similarity index 80%
+rename from src/old.ts
+rename to src/new.ts
+--- old/src/old.ts
++++ new/src/new.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
+    it('preserves real top-level paths in no-prefix rename diffs', () => {
+        const diff = `
+diff --git a/src/old.ts b/src/new.ts
+similarity index 80%
+rename from a/src/old.ts
+rename to b/src/new.ts
+--- a/src/old.ts
++++ b/src/new.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`;
+        const target = buildDocumentProfile('/repo/b/src/new.ts', '', '/repo', diff);
+        const unrelated = buildDocumentProfile('/repo/src/new.ts', '', '/repo', diff);
+
+        assert.deepEqual(target.changeTokens, ['screenshot', 'capture']);
+        assert.deepEqual(unrelated.changeTokens, []);
+    });
+
+    it('unescapes Git-quoted paths before matching', () => {
+        const profile = buildDocumentProfile('/repo/src/café.ts', '', '/repo', `
+diff --git "a/src/caf\\303\\251.ts" "b/src/caf\\303\\251.ts"
+--- "a/src/caf\\303\\251.ts"
++++ "b/src/caf\\303\\251.ts"
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
+    it('matches repo-root git paths when run from a subdirectory', () => {
+        const profile = buildDocumentProfile('/repo/packages/foo/src/page.ts', '', '/repo/packages/foo', `
+diff --git a/packages/foo/src/page.ts b/packages/foo/src/page.ts
+--- a/packages/foo/src/page.ts
++++ b/packages/foo/src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
     it('does not treat parent directories as custom git prefixes', () => {
         const diff = `
 diff --git a/packages/foo/src/page.ts b/packages/foo/src/page.ts
