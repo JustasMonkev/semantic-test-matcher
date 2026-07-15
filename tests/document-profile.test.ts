@@ -88,6 +88,38 @@ diff --git old/tree/src/page.ts new/tree/src/page.ts
         assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
     });
 
+    it('accepts renamed files in standard git diffs', () => {
+        const profile = buildDocumentProfile('/repo/src/new.ts', '', '/repo', `
+diff --git a/src/old.ts b/src/new.ts
+similarity index 80%
+rename from src/old.ts
+rename to src/new.ts
+--- a/src/old.ts
++++ b/src/new.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
+    it('does not treat parent directories as custom git prefixes', () => {
+        const diff = `
+diff --git a/packages/foo/src/page.ts b/packages/foo/src/page.ts
+--- a/packages/foo/src/page.ts
++++ b/packages/foo/src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`;
+        const target = buildDocumentProfile('/repo/packages/foo/src/page.ts', '', '/repo', diff);
+        const unrelated = buildDocumentProfile('/repo/src/page.ts', '', '/repo', diff);
+
+        assert.deepEqual(target.changeTokens, ['screenshot', 'capture']);
+        assert.deepEqual(unrelated.changeTokens, []);
+    });
+
     it('treats header-like lines inside hunks as changed content', () => {
         const profile = buildDocumentProfile('/repo/src/template.ts', '', '/repo', `
 --- a/src/template.ts

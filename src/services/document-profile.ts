@@ -374,6 +374,9 @@ function inferGitPrefixes(line: string, relativePath: string): [string, string] 
     }
 
     const [oldPath, newPath] = paths.slice(1).map(value => value.replace(/^"|"$/g, ''));
+    if (oldPath.startsWith('a/') && newPath.startsWith('b/')) {
+        return ['a/', 'b/'];
+    }
     const oldPrefix = oldPath.endsWith(relativePath)
         ? oldPath.slice(0, -relativePath.length)
         : undefined;
