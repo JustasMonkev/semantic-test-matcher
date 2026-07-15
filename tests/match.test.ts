@@ -224,6 +224,44 @@ export class Page {
         assert.ok(matches[0].changeScore > matches[1].changeScore);
     });
 
+    it('keeps direct-call evidence after the first 64 content tokens', () => {
+        const diff = `
+--- src/page.ts
++++ src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`;
+        const pageProfile = buildDocumentProfile(
+            `${cwd}/src/page.ts`,
+            'export function screenshot() {}',
+            cwd,
+            diff
+        );
+        const setup = Array.from({ length: 80 }, (_, index) => `feature${index}();`).join('\n');
+        const matches = rankMatches(
+            { profile: pageProfile, vector: [1, 0] },
+            [
+                makeCandidate(
+                    'tests/late-direct-call.spec.ts',
+                    `test('late behavior', () => {\n${setup}\nscreenshot();\n});`,
+                    cwd
+                ),
+                makeCandidate(
+                    'tests/unrelated.spec.ts',
+                    `test('other behavior', () => {\n${setup}\nheartbeat();\n});`,
+                    cwd
+                ),
+            ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
+        );
+        const direct = matches.find((match) => match.file === 'tests/late-direct-call.spec.ts');
+        const unrelated = matches.find((match) => match.file === 'tests/unrelated.spec.ts');
+
+        assert.ok(direct && unrelated);
+        assert.ok(direct.changeScore > 0);
+        assert.ok(direct.changeScore > unrelated.changeScore);
+    });
+
     it('does not award change credit for source-stem matches alone', () => {
         const diff = `
 --- src/page.ts

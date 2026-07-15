@@ -77,9 +77,9 @@ diff --git a/src/socket.ts b/src/socket.ts
 
     it('accepts custom git diff prefixes', () => {
         const profile = buildDocumentProfile('/repo/src/page.ts', '', '/repo', `
-diff --git old/tree/src/page.ts new/tree/src/page.ts
---- old/tree/src/page.ts
-+++ new/tree/src/page.ts
+diff --git old/source/src/page.ts new/destination/src/page.ts
+--- old/source/src/page.ts
++++ new/destination/src/page.ts
 @@ -1 +1 @@
 -return capture();
 +return screenshot();
@@ -239,6 +239,22 @@ diff --git a/packages/foo/src/page.ts b/packages/foo/src/page.ts
         assert.deepEqual(unrelated.changeTokens, []);
     });
 
+    it('does not infer custom prefixes from another file path suffix', () => {
+        const diff = `
+diff --git old/packages/foo/src/page.ts new/packages/foo/src/page.ts
+--- old/packages/foo/src/page.ts
++++ new/packages/foo/src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`;
+        const target = buildDocumentProfile('/repo/packages/foo/src/page.ts', '', '/repo', diff);
+        const unrelated = buildDocumentProfile('/repo/src/page.ts', '', '/repo', diff);
+
+        assert.deepEqual(target.changeTokens, ['screenshot', 'capture']);
+        assert.deepEqual(unrelated.changeTokens, []);
+    });
+
     it('treats header-like lines inside hunks as changed content', () => {
         const profile = buildDocumentProfile('/repo/src/template.ts', '', '/repo', `
 --- src/template.ts
@@ -305,6 +321,18 @@ diff --git a/src/page.ts a/src/page.ts
 
         assert.deepEqual(target.changeTokens, ['screenshot', 'capture']);
         assert.deepEqual(unrelated.changeTokens, []);
+    });
+
+    it('accepts paired a and b headers in plain unified diffs', () => {
+        const profile = buildDocumentProfile('/repo/src/page.ts', '', '/repo', `
+--- a/src/page.ts
++++ b/src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
     });
 
     it('scopes concatenated plain unified diffs by file', () => {

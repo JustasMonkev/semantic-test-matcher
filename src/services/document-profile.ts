@@ -450,28 +450,34 @@ function parseGitDiffPaths(line: string, relativePath: string): [string, string]
     return paths ? [paths[1], paths[2]] : undefined;
 }
 
-function inferDirectoryPrefix(gitPath: string, relativePath: string): string | undefined {
-    if (!gitPath.endsWith(relativePath)) {
-        return undefined;
-    }
-    const prefix = gitPath.slice(0, -relativePath.length);
-    return !prefix || prefix.endsWith('/') ? prefix : undefined;
-}
-
-function inferGitPrefixes(paths: [string, string], relativePath: string): GitPrefixes | undefined {
+function inferGitPrefixes(paths: [string, string]): GitPrefixes | undefined {
     const [oldPath, newPath] = paths;
-    const oldPrefix = inferDirectoryPrefix(oldPath, relativePath);
-    const newPrefix = inferDirectoryPrefix(newPath, relativePath);
+    const oldParts = oldPath.split('/');
+    const newParts = newPath.split('/');
+    let sharedParts = 0;
+    while (
+        sharedParts < oldParts.length
+        && sharedParts < newParts.length
+        && oldParts[oldParts.length - sharedParts - 1] === newParts[newParts.length - sharedParts - 1]
+    ) {
+        sharedParts += 1;
+    }
+
     if (oldPath.startsWith('a/') && newPath.startsWith('b/') && (
-        oldPath.slice(2) === newPath.slice(2)
-        || oldPrefix === 'a/'
-        || newPrefix === 'b/'
+        oldPath.slice(2) === newPath.slice(2) || sharedParts === 0
     )) {
         return ['a/', 'b/'];
     }
-    return (oldPrefix !== undefined || newPrefix !== undefined) && oldPrefix !== newPrefix
-        ? [oldPrefix, newPrefix]
-        : undefined;
+    if (!sharedParts) {
+        return undefined;
+    }
+
+    const sharedPath = oldParts.slice(-sharedParts).join('/');
+    const prefixes: GitPrefixes = [
+        oldPath.slice(0, -sharedPath.length),
+        newPath.slice(0, -sharedPath.length),
+    ];
+    return prefixes[0] !== prefixes[1] ? prefixes : undefined;
 }
 
 function parseGitPathMetadata(line: string): [0 | 1, string] | undefined {
@@ -549,6 +555,7 @@ function collectChangedLines(diffText: string | undefined, relativePath: string,
     let oldLinesRemaining = 0;
     let newLinesRemaining = 0;
     let structuredDiff = false;
+    let plainOldPath: string | undefined;
     let gitDiffLine: string | undefined;
     let gitPaths: [string, string] | undefined;
     let gitLogicalPaths: [string | undefined, string | undefined] = [undefined, undefined];
@@ -559,10 +566,11 @@ function collectChangedLines(diffText: string | undefined, relativePath: string,
             currentFileMatches = false;
             inHunk = false;
             structuredDiff = true;
+            plainOldPath = undefined;
             gitDiffLine = line;
             gitPaths = parseGitDiffPaths(line, relativePath);
             gitLogicalPaths = [undefined, undefined];
-            gitPrefixes = gitPaths ? inferGitPrefixes(gitPaths, relativePath) : undefined;
+            gitPrefixes = gitPaths ? inferGitPrefixes(gitPaths) : undefined;
             continue;
         }
         if (!inHunk && /^(?:rename|copy) (?:from|to) /.test(line)) {
@@ -573,7 +581,7 @@ function collectChangedLines(diffText: string | undefined, relativePath: string,
             const [oldLogicalPath, newLogicalPath] = gitLogicalPaths;
             if (!gitPaths && gitDiffLine && oldLogicalPath !== undefined && newLogicalPath !== undefined) {
                 gitPaths = parseGitDiffPathsFromMetadata(gitDiffLine, [oldLogicalPath, newLogicalPath]);
-                gitPrefixes = gitPaths ? inferGitPrefixes(gitPaths, relativePath) : undefined;
+                gitPrefixes = gitPaths ? inferGitPrefixes(gitPaths) : undefined;
             }
             gitPrefixes = applyGitPathMetadata(gitPaths, gitLogicalPaths, gitPrefixes);
             continue;
@@ -585,11 +593,25 @@ function collectChangedLines(diffText: string | undefined, relativePath: string,
             if (prefix && diffPath.startsWith(prefix)) {
                 diffPath = diffPath.slice(prefix.length);
             }
+            if (!isNewFileHeader && !gitDiffLine) {
+                plainOldPath = diffPath;
+            } else if (
+                isNewFileHeader
+                && !gitDiffLine
+                && plainOldPath?.startsWith('a/')
+                && diffPath.startsWith('b/')
+                && plainOldPath.slice(2) === diffPath.slice(2)
+            ) {
+                plainOldPath = plainOldPath.slice(2);
+                diffPath = diffPath.slice(2);
+                currentFileMatches = matchesDiffPath(plainOldPath, absolutePath, cwd);
+            }
             const diffPathMatches = matchesDiffPath(diffPath, absolutePath, cwd);
             currentFileMatches = isNewFileHeader
                 ? currentFileMatches || diffPathMatches
                 : diffPathMatches;
             if (isNewFileHeader) {
+                plainOldPath = undefined;
                 gitDiffLine = undefined;
                 gitPaths = undefined;
                 gitLogicalPaths = [undefined, undefined];
@@ -885,7 +907,7 @@ export function buildDocumentProfile(
         testNames,
         commandTokens,
         optionTokens,
-        contentTokens: contentTokens.slice(0, 64),
+        contentTokens,
         semanticTokens,
     };
 
