@@ -367,22 +367,48 @@ function interleaveUniqueTokens(groups: string[][], limit: number): string[] {
     return tokens;
 }
 
+function parseGitDiffPaths(line: string, relativePath: string): [string, string] | undefined {
+    const value = line.slice('diff --git '.length);
+    const quotedPaths = /^("(?:\\.|[^"])*") ("(?:\\.|[^"])*")$/.exec(value);
+    if (quotedPaths) {
+        return [quotedPaths[1].slice(1, -1), quotedPaths[2].slice(1, -1)];
+    }
+
+    const samePathBoundary = value.lastIndexOf(`${relativePath} `);
+    if (samePathBoundary !== -1) {
+        const oldPathEnd = samePathBoundary + relativePath.length;
+        const paths: [string, string] = [value.slice(0, oldPathEnd), value.slice(oldPathEnd + 1)];
+        if (paths[0].endsWith(relativePath) && paths[1].endsWith(relativePath)) {
+            return paths;
+        }
+    }
+
+    const standardNewPath = `b/${relativePath}`;
+    if (value.startsWith('a/') && value.endsWith(` ${standardNewPath}`)) {
+        return [value.slice(0, -standardNewPath.length - 1), standardNewPath];
+    }
+
+    const paths = /^(\S+) (\S+)$/.exec(value);
+    return paths ? [paths[1], paths[2]] : undefined;
+}
+
 function inferGitPrefixes(line: string, relativePath: string): [string, string] | undefined {
-    const paths = /^diff --git ("(?:\\.|[^"])*"|\S+) ("(?:\\.|[^"])*"|\S+)$/.exec(line);
+    const paths = parseGitDiffPaths(line, relativePath);
     if (!paths) {
         return undefined;
     }
 
-    const [oldPath, newPath] = paths.slice(1).map(value => value.replace(/^"|"$/g, ''));
-    if (oldPath.startsWith('a/') && newPath.startsWith('b/')) {
-        return ['a/', 'b/'];
-    }
+    const [oldPath, newPath] = paths;
     const oldPrefix = oldPath.endsWith(relativePath)
         ? oldPath.slice(0, -relativePath.length)
         : undefined;
     const newPrefix = newPath.endsWith(relativePath)
         ? newPath.slice(0, -relativePath.length)
         : undefined;
+    if (oldPath.startsWith('a/') && newPath.startsWith('b/')
+        && (oldPath.slice(2) === newPath.slice(2) || !oldPrefix || !newPrefix)) {
+        return ['a/', 'b/'];
+    }
     return oldPrefix && newPrefix && oldPrefix !== newPrefix
         ? [oldPrefix, newPrefix]
         : undefined;
@@ -399,7 +425,7 @@ function collectChangedLines(diffText: string | undefined, relativePath: string,
     let oldLinesRemaining = 0;
     let newLinesRemaining = 0;
     let structuredDiff = false;
-    let gitPrefixes: [string, string] | undefined = ['a/', 'b/'];
+    let gitPrefixes: [string, string] | undefined;
     const absolutePath = path.resolve(cwd, relativePath);
     for (const line of diffText.split(/\r?\n/)) {
         if (line.startsWith('diff --git ')) {
@@ -412,14 +438,18 @@ function collectChangedLines(diffText: string | undefined, relativePath: string,
         if (!inHunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
             let diffPath = line.slice(4).split('\t', 1)[0].trim()
                 .replace(/^"|"$/g, '');
-            const prefix = line.startsWith('+++ ') ? gitPrefixes?.[1] : gitPrefixes?.[0];
+            const isNewFileHeader = line.startsWith('+++ ');
+            const prefix = isNewFileHeader ? gitPrefixes?.[1] : gitPrefixes?.[0];
             if (prefix && diffPath.startsWith(prefix)) {
                 diffPath = diffPath.slice(prefix.length);
             }
             const diffPathMatches = path.resolve(cwd, diffPath) === absolutePath;
-            currentFileMatches = line.startsWith('+++ ')
+            currentFileMatches = isNewFileHeader
                 ? currentFileMatches || diffPathMatches
                 : diffPathMatches;
+            if (isNewFileHeader) {
+                gitPrefixes = undefined;
+            }
             structuredDiff = true;
             continue;
         }

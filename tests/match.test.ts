@@ -110,8 +110,8 @@ describe('rankMatches', () => {
 
     it('scores tests for changed symbols above unrelated source anchors', () => {
         const diff = `
---- a/src/page.ts
-+++ b/src/page.ts
+--- src/page.ts
++++ src/page.ts
 @@ -1 +1,2 @@
 -return await this.screenshotter.screenshotPage(progress, options);
 +const screenshot = await this.screenshotter.screenshotPage(progress, options);
@@ -154,8 +154,8 @@ export class Page {
 
     it('prefers a changed symbol in the test filename over generic diff parameters', () => {
         const diff = `
---- a/src/page.ts
-+++ b/src/page.ts
+--- src/page.ts
++++ src/page.ts
 @@ -1 +1,2 @@
 -return await this.screenshotter.screenshotPage(progress, options);
 +const screenshot = await this.screenshotter.screenshotPage(progress, options);
@@ -191,8 +191,8 @@ export class Page {
 
     it('ranks a direct caller of changed APIs above a one-token filename match', () => {
         const diff = `
---- a/src/page.ts
-+++ b/src/page.ts
+--- src/page.ts
++++ src/page.ts
 @@ -1 +1,2 @@
 -return await capture();
 +const screenshot = await capture();
@@ -226,8 +226,8 @@ export class Page {
 
     it('does not award change credit for source-stem matches alone', () => {
         const diff = `
---- a/src/page.ts
-+++ b/src/page.ts
+--- src/page.ts
++++ src/page.ts
 @@ -1 +1,2 @@
 -return capture();
 +const screenshot = capture();
@@ -264,8 +264,8 @@ export class Page {
 
     it('uses distinctive changed phrases when simple change tokens are generic', () => {
         const diff = `
---- a/src/config.ts
-+++ b/src/config.ts
+--- src/config.ts
++++ src/config.ts
 @@ -1 +1,2 @@
 -return selector;
 +const testIdAttributeName = selector;
@@ -300,8 +300,8 @@ export class Page {
 
     it('matches changed camel-case APIs that only survive as phrase tokens', () => {
         const diff = `
---- a/src/settings.ts
-+++ b/src/settings.ts
+--- src/settings.ts
++++ src/settings.ts
 @@ -1 +1 @@
 -return config;
 +return getConfig();
@@ -339,8 +339,8 @@ export class Page {
 
     it('uses source identity to disambiguate a common changed identifier', () => {
         const diff = `
---- a/src/dialog.ts
-+++ b/src/dialog.ts
+--- src/dialog.ts
++++ src/dialog.ts
 @@ -1 +1,2 @@
 -return this._accept();
 +const accept = this._accept();
