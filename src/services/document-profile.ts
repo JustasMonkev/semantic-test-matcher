@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { canonicalizeToken, tokenizeText, uniqueTokens } from './text-utils.ts';
 
@@ -21,6 +22,7 @@ export interface DocumentProfile {
     commandTokens: string[];
     optionTokens: string[];
     contentTokens: string[];
+    lateCallTokens: string[];
     semanticTokens: string[];
     summary: string;
     embeddingText: string;
@@ -93,6 +95,7 @@ const MAX_SEMANTIC_TOKENS = 72;
 const MAX_CHANGE_SEMANTIC_TOKENS = 24;
 const MAX_EMBEDDING_SECTION_TOKENS = 32;
 const MAX_EMBEDDING_WORDS = 512;
+const MAX_LATE_CALL_TOKENS = 128;
 
 function collectIdentifierTokens(value: string, filterGenericAnchors = false): string[] {
     const tokens = uniqueTokens([
@@ -526,25 +529,19 @@ function applyGitPathMetadata(
     return updated ? prefixes : gitPrefixes;
 }
 
-function matchesDiffPath(diffPath: string, absolutePath: string, cwd: string): boolean {
+function matchesDiffPath(diffPath: string, absolutePath: string, basePath: string): boolean {
     if (path.isAbsolute(diffPath)) {
         return path.resolve(diffPath) === absolutePath;
     }
-
-    let basePath = path.resolve(cwd);
-    while (true) {
-        if (path.resolve(basePath, diffPath) === absolutePath) {
-            return true;
-        }
-        const parentPath = path.dirname(basePath);
-        if (parentPath === basePath) {
-            return false;
-        }
-        basePath = parentPath;
-    }
+    return path.resolve(basePath, diffPath) === absolutePath;
 }
 
-function collectChangedLines(diffText: string | undefined, relativePath: string, cwd: string): ChangedLines {
+function collectChangedLines(
+    diffText: string | undefined,
+    relativePath: string,
+    cwd: string,
+    gitRoot: string
+): ChangedLines {
     const changedLines: ChangedLines = { added: [], removed: [] };
     if (!diffText) {
         return changedLines;
@@ -560,6 +557,7 @@ function collectChangedLines(diffText: string | undefined, relativePath: string,
     let gitPaths: [string, string] | undefined;
     let gitLogicalPaths: [string | undefined, string | undefined] = [undefined, undefined];
     let gitPrefixes: GitPrefixes | undefined;
+    let copySection = false;
     const absolutePath = path.resolve(cwd, relativePath);
     for (const line of diffText.split(/\r?\n/)) {
         if (line.startsWith('diff --git ')) {
@@ -571,9 +569,11 @@ function collectChangedLines(diffText: string | undefined, relativePath: string,
             gitPaths = parseGitDiffPaths(line, relativePath);
             gitLogicalPaths = [undefined, undefined];
             gitPrefixes = gitPaths ? inferGitPrefixes(gitPaths) : undefined;
+            copySection = false;
             continue;
         }
         if (!inHunk && /^(?:rename|copy) (?:from|to) /.test(line)) {
+            copySection ||= line.startsWith('copy ');
             const metadata = parseGitPathMetadata(line);
             if (metadata) {
                 gitLogicalPaths[metadata[0]] = metadata[1];
@@ -606,16 +606,22 @@ function collectChangedLines(diffText: string | undefined, relativePath: string,
                 diffPath = diffPath.slice(2);
                 currentFileMatches = matchesDiffPath(plainOldPath, absolutePath, cwd);
             }
-            const diffPathMatches = matchesDiffPath(diffPath, absolutePath, cwd);
-            currentFileMatches = isNewFileHeader
-                ? currentFileMatches || diffPathMatches
-                : diffPathMatches;
+            const diffBase = gitDiffLine ? gitRoot : cwd;
+            const diffPathMatches = matchesDiffPath(diffPath, absolutePath, diffBase);
+            if (copySection) {
+                currentFileMatches = isNewFileHeader && diffPathMatches;
+            } else {
+                currentFileMatches = isNewFileHeader
+                    ? currentFileMatches || diffPathMatches
+                    : diffPathMatches;
+            }
             if (isNewFileHeader) {
                 plainOldPath = undefined;
                 gitDiffLine = undefined;
                 gitPaths = undefined;
                 gitLogicalPaths = [undefined, undefined];
                 gitPrefixes = undefined;
+                copySection = false;
             }
             structuredDiff = true;
             continue;
@@ -712,9 +718,12 @@ function collectChangedTokens(changedLines: ChangedLines, collect: (lines: strin
     const addedCounts = count(added);
     const removedCounts = count(removed);
 
-    return uniqueTokens([...added, ...removed].filter(
+    const changedTokens = uniqueTokens([...added, ...removed].filter(
         (token) => addedCounts.get(token) !== removedCounts.get(token)
     ));
+    return changedTokens.length
+        ? changedTokens
+        : uniqueTokens(added.filter((token) => removedCounts.has(token)));
 }
 
 function isUsefulChangeToken(token: string): boolean {
@@ -748,6 +757,28 @@ function stripCommentsAndStrings(text: string): string {
         .replace(/'([^'\\]|\\.)*'/g, ' ')
         .replace(/"([^"\\]|\\.)*"/g, ' ')
         .replace(/`([^`\\]|\\.)*`/g, ' ');
+}
+
+function collectLateCallTokens(text: string): string[] {
+    const tokens: string[] = [];
+    for (const match of text.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\?\.)?\(/g)) {
+        tokens.push(...tokenizeText(match[1]));
+    }
+    return uniqueTokens(tokens).slice(-MAX_LATE_CALL_TOKENS);
+}
+
+function findGitRoot(cwd: string): string {
+    let currentPath = path.resolve(cwd);
+    while (true) {
+        if (existsSync(path.join(currentPath, '.git'))) {
+            return currentPath;
+        }
+        const parentPath = path.dirname(currentPath);
+        if (parentPath === currentPath) {
+            return path.resolve(cwd);
+        }
+        currentPath = parentPath;
+    }
 }
 
 function determineKind(relativePath: string): DocumentKind {
@@ -841,7 +872,8 @@ export function buildDocumentProfile(
     filePath: string,
     text: string,
     cwd = process.cwd(),
-    diffText?: string
+    diffText?: string,
+    diffRoot?: string
 ): DocumentProfile {
     const absolutePath = path.resolve(cwd, filePath);
     const relativePath = path.relative(cwd, absolutePath).replace(/\\/g, '/');
@@ -849,7 +881,13 @@ export function buildDocumentProfile(
     const basenameTokens = tokenizeText(basename);
     const stemTokens = collectStemTokens(basename);
     const pathFamilyTokens = collectPathFamilyTokens(relativePath, text);
-    const changedLines = collectChangedLines(diffText, relativePath, cwd);
+    let resolvedDiffRoot = cwd;
+    if (diffRoot) {
+        resolvedDiffRoot = path.resolve(cwd, diffRoot);
+    } else if (diffText) {
+        resolvedDiffRoot = findGitRoot(cwd);
+    }
+    const changedLines = collectChangedLines(diffText, relativePath, cwd, resolvedDiffRoot);
     const phraseTokens = collectPhraseTokens(text, relativePath);
     const rareAnchorTokens = collectRareAnchorTokens(text, relativePath);
     const hasChangedLines = changedLines.added.length > 0 || changedLines.removed.length > 0;
@@ -865,7 +903,9 @@ export function buildDocumentProfile(
     const testNames = collectTestNames(text);
     const commandTokens = collectCommandTokens(text);
     const optionTokens = collectOptionTokens(text);
-    const contentTokens = uniqueTokens(tokenizeText(stripCommentsAndStrings(text)));
+    const contentText = stripCommentsAndStrings(text);
+    const contentTokens = uniqueTokens(tokenizeText(contentText));
+    const lateCallTokens = collectLateCallTokens(contentText);
 
     const changeSemanticTokens = uniqueTokens([
         ...changeTokens,
@@ -907,7 +947,8 @@ export function buildDocumentProfile(
         testNames,
         commandTokens,
         optionTokens,
-        contentTokens,
+        contentTokens: contentTokens.slice(0, 64),
+        lateCallTokens,
         semanticTokens,
     };
 

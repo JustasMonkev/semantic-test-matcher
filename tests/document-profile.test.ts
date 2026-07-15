@@ -146,6 +146,25 @@ rename to src/new.ts
         assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
     });
 
+    it('attributes copied-file hunks only to the copy target', () => {
+        const diff = `
+diff --git a/src/template.ts b/src/page.ts
+similarity index 90%
+copy from src/template.ts
+copy to src/page.ts
+--- a/src/template.ts
++++ b/src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`;
+        const target = buildDocumentProfile('/repo/src/page.ts', '', '/repo', diff);
+        const source = buildDocumentProfile('/repo/src/template.ts', '', '/repo', diff);
+
+        assert.deepEqual(target.changeTokens, ['screenshot', 'capture']);
+        assert.deepEqual(source.changeTokens, []);
+    });
+
     it('accepts spaced custom prefixes and filenames in rename diffs', () => {
         const profile = buildDocumentProfile('/repo/src/new file.ts', '', '/repo', `
 diff --git old tree/src/old file.ts new tree/src/new file.ts
@@ -218,9 +237,25 @@ diff --git a/packages/foo/src/page.ts b/packages/foo/src/page.ts
 @@ -1 +1 @@
 -return capture();
 +return screenshot();
-`);
+`, '/repo');
 
         assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
+    it('uses the git root to disambiguate duplicate relative paths', () => {
+        const diff = `
+diff --git a/src/page.ts b/src/page.ts
+--- a/src/page.ts
++++ b/src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`;
+        const root = buildDocumentProfile('/repo/src/page.ts', '', '/repo/packages/foo', diff, '/repo');
+        const nested = buildDocumentProfile('/repo/packages/foo/src/page.ts', '', '/repo/packages/foo', diff, '/repo');
+
+        assert.deepEqual(root.changeTokens, ['screenshot', 'capture']);
+        assert.deepEqual(nested.changeTokens, []);
     });
 
     it('does not treat parent directories as custom git prefixes', () => {
@@ -364,6 +399,19 @@ diff --git a/src/page.ts a/src/page.ts
 
         assert.deepEqual(profile.changeTokens, ['bonus']);
         assert.deepEqual(profile.changePhraseTokens, ['bonuses']);
+    });
+
+    it('keeps changed-line context for literal-only edits', () => {
+        const profile = buildDocumentProfile('/repo/src/config.ts', '', '/repo', `
+--- src/config.ts
++++ src/config.ts
+@@ -1 +1 @@
+-const defaultTimeout = 30000;
++const defaultTimeout = 10000;
+`);
+
+        assert.ok(profile.changeTokens.includes('timeout'));
+        assert.ok(profile.changePhraseTokens.includes('defaulttimeout'));
     });
 
     it('reserves semantic space for file identity when a diff is large', () => {

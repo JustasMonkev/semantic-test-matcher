@@ -210,6 +210,7 @@ function changeOverlap(source: DocumentProfile, candidate: DocumentProfile): num
         ...candidate.phraseTokens,
         ...candidate.semanticTokens,
         ...candidate.contentTokens,
+        ...candidate.lateCallTokens,
     ]);
     const changeTokenGroups = [source.changeTokens, source.changePhraseTokens]
         .filter((tokens) => tokens.length > 0);

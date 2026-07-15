@@ -239,14 +239,15 @@ export class Page {
             diff
         );
         const setup = Array.from({ length: 80 }, (_, index) => `feature${index}();`).join('\n');
+        const directCandidate = makeCandidate(
+            'tests/late-direct-call.spec.ts',
+            `test('late behavior', () => {\n${setup}\nscreenshot();\n});`,
+            cwd
+        );
         const matches = rankMatches(
             { profile: pageProfile, vector: [1, 0] },
             [
-                makeCandidate(
-                    'tests/late-direct-call.spec.ts',
-                    `test('late behavior', () => {\n${setup}\nscreenshot();\n});`,
-                    cwd
-                ),
+                directCandidate,
                 makeCandidate(
                     'tests/unrelated.spec.ts',
                     `test('other behavior', () => {\n${setup}\nheartbeat();\n});`,
@@ -257,6 +258,8 @@ export class Page {
         const direct = matches.find((match) => match.file === 'tests/late-direct-call.spec.ts');
         const unrelated = matches.find((match) => match.file === 'tests/unrelated.spec.ts');
 
+        assert.ok(directCandidate.profile.contentTokens.length <= 64);
+        assert.ok(directCandidate.profile.lateCallTokens.includes('screenshot'));
         assert.ok(direct && unrelated);
         assert.ok(direct.changeScore > 0);
         assert.ok(direct.changeScore > unrelated.changeScore);
