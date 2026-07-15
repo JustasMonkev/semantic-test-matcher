@@ -450,14 +450,18 @@ function parseGitDiffPaths(line: string, relativePath: string): [string, string]
     return paths ? [paths[1], paths[2]] : undefined;
 }
 
+function inferDirectoryPrefix(gitPath: string, relativePath: string): string | undefined {
+    if (!gitPath.endsWith(relativePath)) {
+        return undefined;
+    }
+    const prefix = gitPath.slice(0, -relativePath.length);
+    return !prefix || prefix.endsWith('/') ? prefix : undefined;
+}
+
 function inferGitPrefixes(paths: [string, string], relativePath: string): GitPrefixes | undefined {
     const [oldPath, newPath] = paths;
-    const oldPrefix = oldPath.endsWith(relativePath)
-        ? oldPath.slice(0, -relativePath.length)
-        : undefined;
-    const newPrefix = newPath.endsWith(relativePath)
-        ? newPath.slice(0, -relativePath.length)
-        : undefined;
+    const oldPrefix = inferDirectoryPrefix(oldPath, relativePath);
+    const newPrefix = inferDirectoryPrefix(newPath, relativePath);
     if (oldPath.startsWith('a/') && newPath.startsWith('b/') && (
         oldPath.slice(2) === newPath.slice(2)
         || oldPrefix === 'a/'
@@ -470,26 +474,50 @@ function inferGitPrefixes(paths: [string, string], relativePath: string): GitPre
         : undefined;
 }
 
-function applyGitPathMetadata(
-    line: string,
-    gitPaths: [string, string] | undefined,
-    gitPrefixes: GitPrefixes | undefined
-): GitPrefixes | undefined {
+function parseGitPathMetadata(line: string): [0 | 1, string] | undefined {
     const metadata = /^(?:rename|copy) (from|to) (.+)$/.exec(line);
-    if (!metadata || !gitPaths) {
-        return gitPrefixes;
+    if (!metadata) {
+        return undefined;
+    }
+    return [metadata[1] === 'to' ? 1 : 0, decodeGitPath(metadata[2])];
+}
+
+function parseGitDiffPathsFromMetadata(
+    line: string,
+    logicalPaths: [string, string]
+): [string, string] | undefined {
+    const value = line.slice('diff --git '.length);
+    const oldPathBoundary = value.lastIndexOf(`${logicalPaths[0]} `);
+    if (oldPathBoundary === -1) {
+        return undefined;
     }
 
-    const pathIndex = metadata[1] === 'to' ? 1 : 0;
-    const logicalPath = decodeGitPath(metadata[2]);
-    const gitPath = gitPaths[pathIndex];
-    if (!gitPath.endsWith(logicalPath)) {
+    const oldPathEnd = oldPathBoundary + logicalPaths[0].length;
+    const paths: [string, string] = [value.slice(0, oldPathEnd), value.slice(oldPathEnd + 1)];
+    return paths[0].endsWith(logicalPaths[0]) && paths[1].endsWith(logicalPaths[1])
+        ? paths
+        : undefined;
+}
+
+function applyGitPathMetadata(
+    gitPaths: [string, string] | undefined,
+    logicalPaths: [string | undefined, string | undefined],
+    gitPrefixes: GitPrefixes | undefined
+): GitPrefixes | undefined {
+    if (!gitPaths) {
         return gitPrefixes;
     }
 
     const prefixes: GitPrefixes = gitPrefixes ? [...gitPrefixes] : [undefined, undefined];
-    prefixes[pathIndex] = gitPath.slice(0, -logicalPath.length);
-    return prefixes;
+    let updated = false;
+    for (let pathIndex = 0; pathIndex < gitPaths.length; pathIndex += 1) {
+        const logicalPath = logicalPaths[pathIndex];
+        if (logicalPath !== undefined && gitPaths[pathIndex].endsWith(logicalPath)) {
+            prefixes[pathIndex] = gitPaths[pathIndex].slice(0, -logicalPath.length);
+            updated = true;
+        }
+    }
+    return updated ? prefixes : gitPrefixes;
 }
 
 function matchesDiffPath(diffPath: string, absolutePath: string, cwd: string): boolean {
@@ -521,7 +549,9 @@ function collectChangedLines(diffText: string | undefined, relativePath: string,
     let oldLinesRemaining = 0;
     let newLinesRemaining = 0;
     let structuredDiff = false;
+    let gitDiffLine: string | undefined;
     let gitPaths: [string, string] | undefined;
+    let gitLogicalPaths: [string | undefined, string | undefined] = [undefined, undefined];
     let gitPrefixes: GitPrefixes | undefined;
     const absolutePath = path.resolve(cwd, relativePath);
     for (const line of diffText.split(/\r?\n/)) {
@@ -529,12 +559,23 @@ function collectChangedLines(diffText: string | undefined, relativePath: string,
             currentFileMatches = false;
             inHunk = false;
             structuredDiff = true;
+            gitDiffLine = line;
             gitPaths = parseGitDiffPaths(line, relativePath);
+            gitLogicalPaths = [undefined, undefined];
             gitPrefixes = gitPaths ? inferGitPrefixes(gitPaths, relativePath) : undefined;
             continue;
         }
         if (!inHunk && /^(?:rename|copy) (?:from|to) /.test(line)) {
-            gitPrefixes = applyGitPathMetadata(line, gitPaths, gitPrefixes);
+            const metadata = parseGitPathMetadata(line);
+            if (metadata) {
+                gitLogicalPaths[metadata[0]] = metadata[1];
+            }
+            const [oldLogicalPath, newLogicalPath] = gitLogicalPaths;
+            if (!gitPaths && gitDiffLine && oldLogicalPath !== undefined && newLogicalPath !== undefined) {
+                gitPaths = parseGitDiffPathsFromMetadata(gitDiffLine, [oldLogicalPath, newLogicalPath]);
+                gitPrefixes = gitPaths ? inferGitPrefixes(gitPaths, relativePath) : undefined;
+            }
+            gitPrefixes = applyGitPathMetadata(gitPaths, gitLogicalPaths, gitPrefixes);
             continue;
         }
         if (!inHunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
@@ -549,7 +590,9 @@ function collectChangedLines(diffText: string | undefined, relativePath: string,
                 ? currentFileMatches || diffPathMatches
                 : diffPathMatches;
             if (isNewFileHeader) {
+                gitDiffLine = undefined;
                 gitPaths = undefined;
+                gitLogicalPaths = [undefined, undefined];
                 gitPrefixes = undefined;
             }
             structuredDiff = true;

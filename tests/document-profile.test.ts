@@ -146,6 +146,38 @@ rename to src/new.ts
         assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
     });
 
+    it('accepts spaced custom prefixes and filenames in rename diffs', () => {
+        const profile = buildDocumentProfile('/repo/src/new file.ts', '', '/repo', `
+diff --git old tree/src/old file.ts new tree/src/new file.ts
+similarity index 80%
+rename from src/old file.ts
+rename to src/new file.ts
+--- old tree/src/old file.ts
++++ new tree/src/new file.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
+    it('does not infer prefixes from partial filename suffixes', () => {
+        const diff = `
+diff --git oldfile.ts newfile.ts
+--- oldfile.ts
++++ newfile.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`;
+        const target = buildDocumentProfile('/repo/newfile.ts', '', '/repo', diff);
+        const unrelated = buildDocumentProfile('/repo/file.ts', '', '/repo', diff);
+
+        assert.deepEqual(target.changeTokens, ['screenshot', 'capture']);
+        assert.deepEqual(unrelated.changeTokens, []);
+    });
+
     it('preserves real top-level paths in no-prefix rename diffs', () => {
         const diff = `
 diff --git a/src/old.ts b/src/new.ts
