@@ -608,8 +608,13 @@ function collectChangedLines(
                 .trim();
             let diffPath = decodeGitPath(headerPath);
             const isNewFileHeader = line.startsWith('+++ ');
+            const diffBase = gitDiffLine ? gitRoot : cwd;
             const prefix = isNewFileHeader ? gitPrefixes?.[1] : gitPrefixes?.[0];
-            if (prefix && diffPath.startsWith(prefix)) {
+            if (
+                prefix
+                && diffPath.startsWith(prefix)
+                && !matchesDiffPath(diffPath, absolutePath, diffBase)
+            ) {
                 diffPath = diffPath.slice(prefix.length);
             }
             if (!isNewFileHeader && !gitDiffLine) {
@@ -627,7 +632,6 @@ function collectChangedLines(
                 diffPath = diffPath.slice(2);
                 currentFileMatches = matchesDiffPath(plainOldPath, absolutePath, cwd);
             }
-            const diffBase = gitDiffLine ? gitRoot : cwd;
             const diffPathMatches = matchesDiffPath(
                 diffPath,
                 absolutePath,

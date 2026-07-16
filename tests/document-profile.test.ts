@@ -131,6 +131,19 @@ diff --git a/old/src/page.ts b/new/lib/page.ts
         assert.deepEqual(basenameOnly.changeTokens, []);
     });
 
+    it('preserves real a and b paths in no-prefix moves', () => {
+        const profile = buildDocumentProfile('/repo/b/src/new.ts', '', '/repo', `
+diff --git a/src/old.ts b/src/new.ts
+--- a/src/old.ts
++++ b/src/new.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
     it('accepts renamed files in standard git diffs', () => {
         const profile = buildDocumentProfile('/repo/src/new.ts', '', '/repo', `
 diff --git a/src/old.ts b/src/new.ts
