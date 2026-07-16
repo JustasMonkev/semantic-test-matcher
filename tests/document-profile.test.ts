@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { buildDocumentProfile } from '../src/services/document-profile.ts';
@@ -129,6 +131,32 @@ diff --git a/old/src/page.ts b/new/lib/page.ts
 
         assert.deepEqual(target.changeTokens, ['screenshot', 'capture']);
         assert.deepEqual(basenameOnly.changeTokens, []);
+    });
+
+    it('does not strip real top-level dirs onto an existing suffix path', async () => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'semantic-profile-'));
+        try {
+            await fs.mkdir(path.join(root, 'new/src'), { recursive: true });
+            await fs.mkdir(path.join(root, 'src'), { recursive: true });
+            await fs.writeFile(path.join(root, 'new/src/page.ts'), 'export const screenshot = true;');
+            await fs.writeFile(path.join(root, 'src/page.ts'), 'export const unrelated = true;');
+            const diff = `
+diff --git old/src/page.ts new/src/page.ts
+--- old/src/page.ts
++++ new/src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`;
+
+            const target = buildDocumentProfile(path.join(root, 'new/src/page.ts'), '', root, diff);
+            const unrelated = buildDocumentProfile(path.join(root, 'src/page.ts'), '', root, diff);
+
+            assert.deepEqual(target.changeTokens, ['screenshot', 'capture']);
+            assert.deepEqual(unrelated.changeTokens, []);
+        } finally {
+            await fs.rm(root, { recursive: true, force: true });
+        }
     });
 
     it('preserves real a and b paths in no-prefix moves', () => {

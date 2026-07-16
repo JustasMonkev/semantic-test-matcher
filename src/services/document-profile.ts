@@ -609,10 +609,14 @@ function collectChangedLines(
             let diffPath = decodeGitPath(headerPath);
             const isNewFileHeader = line.startsWith('+++ ');
             const diffBase = gitDiffLine ? gitRoot : cwd;
+            const prefixedPathExists = gitPaths?.some(candidatePath => (
+                existsSync(path.resolve(diffBase, candidatePath))
+            )) ?? false;
             const prefix = isNewFileHeader ? gitPrefixes?.[1] : gitPrefixes?.[0];
             if (
                 prefix
                 && diffPath.startsWith(prefix)
+                && !prefixedPathExists
                 && !matchesDiffPath(diffPath, absolutePath, diffBase)
             ) {
                 diffPath = diffPath.slice(prefix.length);
