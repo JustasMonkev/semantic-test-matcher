@@ -378,7 +378,7 @@ export class Page {
         assert.ok(direct.changeScore > unrelated.changeScore);
     });
 
-    it('uses source identity to disambiguate a common changed identifier', () => {
+    it('uses late source identity to disambiguate a common changed identifier', () => {
         const diff = `
 --- src/dialog.ts
 +++ src/dialog.ts
@@ -393,26 +393,27 @@ export class Page {
             cwd,
             diff
         );
+        const setup = Array.from({ length: 80 }, (_, index) => `feature${index}();`).join('\n');
         const matches = rankMatches(
             { profile: dialogProfile, vector: textToVector(dialogProfile.embeddingText) },
             [
                 makeCandidate(
-                    'tests/page-dialog.spec.ts',
-                    `test('dialog can accept a prompt', () => dialog.accept());`,
+                    'tests/prompt.spec.ts',
+                    `test('accepts a prompt', () => {\n${setup}\ndialog.accept();\n});`,
                     cwd
                 ),
                 makeCandidate(
                     'tests/tracing.spec.ts',
-                    `test('trace accepts downloads', () => acceptDownloads());`,
+                    `test('accepts downloads', () => {\n${setup}\nacceptDownloads();\n});`,
                     cwd
                 ),
             ]
         );
-        const dialog = matches.find((match) => match.file === 'tests/page-dialog.spec.ts');
+        const dialog = matches.find((match) => match.file === 'tests/prompt.spec.ts');
         const tracing = matches.find((match) => match.file === 'tests/tracing.spec.ts');
 
         assert.ok(dialog && tracing);
         assert.ok(dialog.changeScore > tracing.changeScore);
-        assert.equal(matches[0].file, 'tests/page-dialog.spec.ts');
+        assert.equal(matches[0].file, 'tests/prompt.spec.ts');
     });
 });

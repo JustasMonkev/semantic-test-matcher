@@ -219,7 +219,7 @@ function changeOverlap(source: DocumentProfile, candidate: DocumentProfile): num
         return scores.reduce((sum, score) => sum + score, 0) / scores.length;
     };
 
-    const sourceIdentityAligned = [...candidate.stemTokens, ...candidate.contentTokens].some(
+    const sourceIdentityAligned = [...candidate.stemTokens, ...candidate.contentTokens, ...candidate.lateCallTokens].some(
         (token) => source.stemTokens.includes(token)
     );
     const evidenceWeight = sourceIdentityAligned ? 1 : 0.75;

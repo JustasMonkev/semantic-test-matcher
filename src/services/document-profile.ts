@@ -761,7 +761,7 @@ function stripCommentsAndStrings(text: string): string {
 
 function collectLateCallTokens(text: string): string[] {
     const tokens: string[] = [];
-    for (const match of text.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\?\.)?\(/g)) {
+    for (const match of text.matchAll(/\b((?:[A-Za-z_$][A-Za-z0-9_$]*\s*(?:\?\.|\.)\s*)*[A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\?\.)?\(/g)) {
         tokens.push(...tokenizeText(match[1]));
     }
     return uniqueTokens(tokens).slice(-MAX_LATE_CALL_TOKENS);
