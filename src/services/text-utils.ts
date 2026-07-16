@@ -109,6 +109,8 @@ const STOP_WORDS = new Set([
     'without',
 ]);
 
+const COMMON_ACRONYMS = new Set(['api', 'cli', 'gui', 'tui', 'ui', 'uri']);
+
 function splitIntoParts(value: string): string[] {
     return value
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -118,7 +120,9 @@ function splitIntoParts(value: string): string[] {
 }
 
 export function canonicalizeToken(token: string, options?: { skipStopWords?: boolean }): string | null {
-    const normalized = token.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const compact = token.replace(/[^a-z0-9]+/gi, '');
+    const normalized = compact.toLowerCase();
+    const acronymPlural = /^[A-Z]{2,}s$/.test(compact) || COMMON_ACRONYMS.has(normalized.slice(0, -1));
     if (!normalized || normalized.length < 2 || /^\d+$/.test(normalized)) {
         return null;
     }
@@ -135,8 +139,15 @@ export function canonicalizeToken(token: string, options?: { skipStopWords?: boo
         return normalized.slice(0, -2);
     }
 
-    if (normalized.endsWith('s') && normalized.length > 3 && !normalized.endsWith('ss')) {
-        return normalized.slice(0, -1);
+    if (
+        normalized.endsWith('s') &&
+        normalized.length > 3 &&
+        !normalized.endsWith('ss') &&
+        (!normalized.endsWith('us') || normalized.endsWith('menus')) &&
+        (!normalized.endsWith('is') || acronymPlural || normalized === 'uris')
+    ) {
+        const singular = normalized.slice(0, -1);
+        return !options?.skipStopWords && STOP_WORDS.has(singular) ? null : singular;
     }
 
     return normalized;

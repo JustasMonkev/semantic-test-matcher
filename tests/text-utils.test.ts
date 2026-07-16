@@ -29,12 +29,25 @@ describe('canonicalizeToken', () => {
         assert.equal(canonicalizeToken('categories'), 'category');
         assert.equal(canonicalizeToken('discounts'), 'discount');
         assert.equal(canonicalizeToken('classes'), 'class');
+        assert.equal(canonicalizeToken('menus'), 'menu');
+        assert.equal(canonicalizeToken('URIs'), 'uri');
+        assert.equal(canonicalizeToken('CLIs'), 'cli');
+    });
+
+    it('does not strip s from singular words ending in us or is', () => {
+        assert.equal(canonicalizeToken('status'), 'status');
+        assert.equal(canonicalizeToken('focus'), 'focus');
+        assert.equal(canonicalizeToken('campus'), 'campus');
+        assert.equal(canonicalizeToken('analysis'), 'analysis');
     });
 });
 
 describe('tokenizeText', () => {
     it('splits camelCase, snake_case, and path separators', () => {
         assert.deepEqual(tokenizeText('applyDiscount'), ['apply', 'discount']);
+        assert.deepEqual(tokenizeText('parseUris'), ['parse', 'uri']);
+        assert.deepEqual(tokenizeText('parseClis'), ['parse', 'cli']);
+        assert.deepEqual(tokenizeText('parseApis'), tokenizeText('parseApi'));
         assert.deepEqual(tokenizeText('coupon_validator'), ['coupon', 'validator']);
         assert.deepEqual(tokenizeText('checkout/pricing'), ['checkout', 'pricing']);
     });

@@ -26,6 +26,7 @@ export function registerMatchCommand(program: Command): void {
         .option('--model <path>', 'Path to a local GGUF embedding model')
         .option('--cache-dir <path>', 'Directory used to cache embeddings')
         .option('--diff-file <path>', 'Unified diff file used to enrich change-aware matching')
+        .option('--diff-root <path>', 'Base directory for relative paths in --diff-file')
         .option('--json', 'Print machine-readable output')
         .action(async (
             file: string,
@@ -39,6 +40,7 @@ export function registerMatchCommand(program: Command): void {
                 model?: string;
                 cacheDir?: string;
                 diffFile?: string;
+                diffRoot?: string;
                 json?: boolean;
                 candidatesFromStdin?: boolean;
             }
@@ -75,7 +77,13 @@ export function registerMatchCommand(program: Command): void {
                 fs.readFile(changedPath, 'utf8'),
                 diffPath ? fs.readFile(diffPath, 'utf8') : Promise.resolve(undefined),
             ]);
-            const sourceProfile = buildDocumentProfile(changedPath, changedText, process.cwd(), diffText);
+            const sourceProfile = buildDocumentProfile(
+                changedPath,
+                changedText,
+                process.cwd(),
+                diffText,
+                options.diffRoot
+            );
 
             const embeddingSession = new EmbeddingSession({
                 model: config.model,

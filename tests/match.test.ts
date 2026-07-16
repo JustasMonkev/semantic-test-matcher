@@ -107,4 +107,314 @@ describe('rankMatches', () => {
     it('returns an empty list for no candidates', () => {
         assert.deepEqual(rankMatches(source, []), []);
     });
+
+    it('scores tests for changed symbols above unrelated source anchors', () => {
+        const diff = `
+--- src/page.ts
++++ src/page.ts
+@@ -1 +1,2 @@
+-return await this.screenshotter.screenshotPage(progress, options);
++const screenshot = await this.screenshotter.screenshotPage(progress, options);
++return screenshot;
+`;
+        const pageProfile = buildDocumentProfile(
+            `${cwd}/src/page.ts`,
+            `
+export function getByTestIdSelector() {}
+export class Page {
+    async screenshot(progress, options) {
+        return await this.screenshotter.screenshotPage(progress, options);
+    }
+}
+`,
+            cwd,
+            diff
+        );
+        const matches = rankMatches(
+            { profile: pageProfile, vector: [1, 0] },
+            [
+                makeCandidate(
+                    'tests/page-screenshot.spec.ts',
+                    `test('page screenshot captures image', async () => page.screenshot());`,
+                    cwd
+                ),
+                makeCandidate(
+                    'tests/codegen.spec.ts',
+                    `test('getByTestId selector codegen output', () => {});`,
+                    cwd
+                ),
+            ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
+        );
+        const screenshot = matches.find((match) => match.file === 'tests/page-screenshot.spec.ts');
+        const codegen = matches.find((match) => match.file === 'tests/codegen.spec.ts');
+
+        assert.ok(screenshot && codegen);
+        assert.ok(screenshot.changeScore > codegen.changeScore);
+    });
+
+    it('prefers a changed symbol in the test filename over generic diff parameters', () => {
+        const diff = `
+--- src/page.ts
++++ src/page.ts
+@@ -1 +1,2 @@
+-return await this.screenshotter.screenshotPage(progress, options);
++const screenshot = await this.screenshotter.screenshotPage(progress, options);
++return screenshot;
+`;
+        const pageProfile = buildDocumentProfile(
+            `${cwd}/src/page.ts`,
+            `export class Page { async screenshot(progress, options) {} }`,
+            cwd,
+            diff
+        );
+        const matches = rankMatches(
+            { profile: pageProfile, vector: [1, 0] },
+            [
+                makeCandidate(
+                    'tests/page/page-screenshot.spec.ts',
+                    `test('page screenshot', () => {});`,
+                    cwd
+                ),
+                makeCandidate(
+                    'tests/page/page-options.spec.ts',
+                    `test('page options progress', () => {});`,
+                    cwd
+                ),
+            ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
+        );
+        const screenshot = matches.find((match) => match.file === 'tests/page/page-screenshot.spec.ts');
+        const options = matches.find((match) => match.file === 'tests/page/page-options.spec.ts');
+
+        assert.ok(screenshot && options);
+        assert.ok(screenshot.changeScore > options.changeScore);
+    });
+
+    it('ranks a direct caller of changed APIs above a one-token filename match', () => {
+        const diff = `
+--- src/page.ts
++++ src/page.ts
+@@ -1 +1,2 @@
+-return await capture();
++const screenshot = await capture();
++return screenshotWithTimeout(screenshot);
+`;
+        const pageProfile = buildDocumentProfile(
+            `${cwd}/src/page.ts`,
+            'export class Page { screenshot(timeout) { return screenshotWithTimeout(timeout); } }',
+            cwd,
+            diff
+        );
+        const matches = rankMatches(
+            { profile: pageProfile, vector: textToVector(pageProfile.embeddingText) },
+            [
+                makeCandidate(
+                    'tests/api-behavior.spec.ts',
+                    `test('captures output', async () => page.screenshot({ timeout: 1000 }));`,
+                    cwd
+                ),
+                makeCandidate(
+                    'tests/timeout.spec.ts',
+                    `test('timeout', async () => waitForTimeout());`,
+                    cwd
+                ),
+            ]
+        );
+
+        assert.equal(matches[0].file, 'tests/api-behavior.spec.ts');
+        assert.ok(matches[0].changeScore > matches[1].changeScore);
+    });
+
+    it('keeps direct-call evidence after the first 64 content tokens', () => {
+        const diff = `
+--- src/page.ts
++++ src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`;
+        const pageProfile = buildDocumentProfile(
+            `${cwd}/src/page.ts`,
+            'export function screenshot() {}',
+            cwd,
+            diff
+        );
+        const setup = Array.from({ length: 80 }, (_, index) => `feature${index}();`).join('\n');
+        const tail = Array.from({ length: 140 }, (_, index) => `trailing${index}();`).join('\n');
+        const directCandidate = makeCandidate(
+            'tests/late-direct-call.spec.ts',
+            `test('late behavior', () => {\n${setup}\nscreenshot();\n${tail}\n});`,
+            cwd
+        );
+        const matches = rankMatches(
+            { profile: pageProfile, vector: [1, 0] },
+            [
+                directCandidate,
+                makeCandidate(
+                    'tests/unrelated.spec.ts',
+                    `test('other behavior', () => {\n${setup}\nheartbeat();\n${tail}\nheartbeat();\n});`,
+                    cwd
+                ),
+            ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
+        );
+        const direct = matches.find((match) => match.file === 'tests/late-direct-call.spec.ts');
+        const unrelated = matches.find((match) => match.file === 'tests/unrelated.spec.ts');
+
+        assert.ok(directCandidate.profile.contentTokens.length <= 64);
+        assert.ok(directCandidate.profile.lateCallTokens.includes('screenshot'));
+        assert.ok(direct && unrelated);
+        assert.ok(direct.changeScore > 0);
+        assert.ok(direct.changeScore > unrelated.changeScore);
+    });
+
+    it('does not award change credit for source-stem matches alone', () => {
+        const diff = `
+--- src/page.ts
++++ src/page.ts
+@@ -1 +1,2 @@
+-return capture();
++const screenshot = capture();
++return screenshot;
+`;
+        const pageProfile = buildDocumentProfile(
+            `${cwd}/src/page.ts`,
+            'export class Page { screenshot() {} }',
+            cwd,
+            diff
+        );
+        const matches = rankMatches(
+            { profile: pageProfile, vector: [1, 0] },
+            [
+                makeCandidate(
+                    'tests/page-options.spec.ts',
+                    `test('uses page options', () => configureOptions());`,
+                    cwd
+                ),
+                makeCandidate(
+                    'tests/api-behavior.spec.ts',
+                    `test('captures an image', () => screenshot());`,
+                    cwd
+                ),
+            ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
+        );
+        const stemOnly = matches.find((match) => match.file === 'tests/page-options.spec.ts');
+        const direct = matches.find((match) => match.file === 'tests/api-behavior.spec.ts');
+
+        assert.ok(stemOnly && direct);
+        assert.equal(stemOnly.changeScore, 0);
+        assert.ok(direct.changeScore > stemOnly.changeScore);
+    });
+
+    it('uses distinctive changed phrases when simple change tokens are generic', () => {
+        const diff = `
+--- src/config.ts
++++ src/config.ts
+@@ -1 +1,2 @@
+-return selector;
++const testIdAttributeName = selector;
++return testIdAttributeName;
+`;
+        const configProfile = buildDocumentProfile(
+            `${cwd}/src/config.ts`,
+            'export const testIdAttributeName = selector;',
+            cwd,
+            diff
+        );
+        const matches = rankMatches(
+            { profile: configProfile, vector: textToVector(configProfile.embeddingText) },
+            [
+                makeCandidate(
+                    'tests/codegen.spec.ts',
+                    `test('uses getByTestId codegen', () => getByTestId());`,
+                    cwd
+                ),
+                makeCandidate(
+                    'tests/network.spec.ts',
+                    `test('sends request', () => request());`,
+                    cwd
+                ),
+            ]
+        );
+
+        assert.deepEqual(configProfile.changeTokens, []);
+        assert.equal(matches[0].file, 'tests/codegen.spec.ts');
+        assert.ok(matches[0].changeScore > 0);
+    });
+
+    it('matches changed camel-case APIs that only survive as phrase tokens', () => {
+        const diff = `
+--- src/settings.ts
++++ src/settings.ts
+@@ -1 +1 @@
+-return config;
++return getConfig();
+`;
+        const settingsProfile = buildDocumentProfile(
+            `${cwd}/src/settings.ts`,
+            'export function getConfig() {}',
+            cwd,
+            diff
+        );
+        const matches = rankMatches(
+            { profile: settingsProfile, vector: [1, 0] },
+            [
+                makeCandidate(
+                    'tests/settings-api.spec.ts',
+                    `test('loads settings', () => getConfig());`,
+                    cwd
+                ),
+                makeCandidate(
+                    'tests/settings-storage.spec.ts',
+                    `test('loads settings', () => readConfig());`,
+                    cwd
+                ),
+            ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
+        );
+        const direct = matches.find((match) => match.file === 'tests/settings-api.spec.ts');
+        const unrelated = matches.find((match) => match.file === 'tests/settings-storage.spec.ts');
+
+        assert.deepEqual(settingsProfile.changeTokens, []);
+        assert.deepEqual(settingsProfile.changePhraseTokens, ['getconfig']);
+        assert.ok(direct && unrelated);
+        assert.ok(direct.changeScore > 0);
+        assert.ok(direct.changeScore > unrelated.changeScore);
+    });
+
+    it('uses late source identity to disambiguate a common changed identifier', () => {
+        const diff = `
+--- src/dialog.ts
++++ src/dialog.ts
+@@ -1 +1,2 @@
+-return this._accept();
++const accept = this._accept();
++return accept;
+`;
+        const dialogProfile = buildDocumentProfile(
+            `${cwd}/src/dialog.ts`,
+            'export class Dialog { accept() {} }',
+            cwd,
+            diff
+        );
+        const setup = Array.from({ length: 80 }, (_, index) => `feature${index}();`).join('\n');
+        const matches = rankMatches(
+            { profile: dialogProfile, vector: textToVector(dialogProfile.embeddingText) },
+            [
+                makeCandidate(
+                    'tests/prompt.spec.ts',
+                    `test('accepts a prompt', () => {\n${setup}\ndialog.accept();\n});`,
+                    cwd
+                ),
+                makeCandidate(
+                    'tests/tracing.spec.ts',
+                    `test('accepts downloads', () => {\n${setup}\nacceptDownloads();\n});`,
+                    cwd
+                ),
+            ]
+        );
+        const dialog = matches.find((match) => match.file === 'tests/prompt.spec.ts');
+        const tracing = matches.find((match) => match.file === 'tests/tracing.spec.ts');
+
+        assert.ok(dialog && tracing);
+        assert.ok(dialog.changeScore > tracing.changeScore);
+        assert.equal(matches[0].file, 'tests/prompt.spec.ts');
+    });
 });

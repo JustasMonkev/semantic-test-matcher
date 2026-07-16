@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { canonicalizeToken, tokenizeText, uniqueTokens } from './text-utils.ts';
 
@@ -21,6 +22,7 @@ export interface DocumentProfile {
     commandTokens: string[];
     optionTokens: string[];
     contentTokens: string[];
+    lateCallTokens: string[];
     semanticTokens: string[];
     summary: string;
     embeddingText: string;
@@ -79,6 +81,21 @@ const GENERIC_ANCHOR_TOKENS = new Set([
     'command',
     'option',
 ]);
+
+const GENERIC_CHANGE_TOKENS = new Set([...GENERIC_ANCHOR_TOKENS, 'is']);
+
+interface ChangedLines {
+    added: string[];
+    removed: string[];
+}
+
+type GitPrefixes = [string | undefined, string | undefined];
+
+const MAX_SEMANTIC_TOKENS = 72;
+const MAX_CHANGE_SEMANTIC_TOKENS = 24;
+const MAX_EMBEDDING_SECTION_TOKENS = 32;
+const MAX_EMBEDDING_WORDS = 512;
+const MAX_LATE_CALL_TOKENS = 128;
 
 function collectIdentifierTokens(value: string, filterGenericAnchors = false): string[] {
     const tokens = uniqueTokens([
@@ -327,24 +344,369 @@ function collectPathFamilyTokens(relativePath: string, text: string): string[] {
     ).slice(0, 96);
 }
 
-function collectChangedLines(diffText?: string): string[] {
-    if (!diffText) {
-        return [];
+function interleaveUniqueTokens(groups: string[][], limit: number): string[] {
+    const tokens: string[] = [];
+    const seen = new Set<string>();
+
+    for (let index = 0; tokens.length < limit; index += 1) {
+        let hasValue = false;
+        for (const group of groups) {
+            const token = group[index];
+            if (token === undefined) {
+                continue;
+            }
+            hasValue = true;
+            if (!seen.has(token)) {
+                seen.add(token);
+                tokens.push(token);
+                if (tokens.length === limit) {
+                    break;
+                }
+            }
+        }
+        if (!hasValue) {
+            break;
+        }
     }
 
-    return diffText
-        .split(/\r?\n/)
-        .filter((line) => {
-            if (!line) {
-                return false;
+    return tokens;
+}
+
+const GIT_ESCAPE_BYTES: Record<string, number> = {
+    a: 0x07,
+    b: 0x08,
+    t: 0x09,
+    n: 0x0a,
+    v: 0x0b,
+    f: 0x0c,
+    r: 0x0d,
+    '"': 0x22,
+    '\\': 0x5c,
+};
+
+function decodeGitPath(value: string): string {
+    if (!value.startsWith('"') || !value.endsWith('"')) {
+        return value;
+    }
+
+    const bytes: number[] = [];
+    const quotedValue = value.slice(1, -1);
+    for (let index = 0; index < quotedValue.length; index += 1) {
+        const character = quotedValue[index];
+        if (character !== '\\') {
+            const codePoint = quotedValue.codePointAt(index);
+            if (codePoint !== undefined) {
+                bytes.push(...Buffer.from(String.fromCodePoint(codePoint)));
+                if (codePoint > 0xffff) {
+                    index += 1;
+                }
             }
-            if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@') || line.startsWith('diff --git')) {
-                return false;
+            continue;
+        }
+
+        const escapedCharacter = quotedValue[index + 1];
+        if (escapedCharacter === undefined) {
+            bytes.push(0x5c);
+            continue;
+        }
+        const octal = /^[0-7]{1,3}/.exec(quotedValue.slice(index + 1))?.[0];
+        if (octal) {
+            bytes.push(Number.parseInt(octal, 8));
+            index += octal.length;
+            continue;
+        }
+        const escapedByte = GIT_ESCAPE_BYTES[escapedCharacter];
+        if (escapedByte !== undefined) {
+            bytes.push(escapedByte);
+            index += 1;
+            continue;
+        }
+        bytes.push(0x5c, ...Buffer.from(escapedCharacter));
+        index += 1;
+    }
+
+    return Buffer.from(bytes).toString('utf8');
+}
+
+function parseGitDiffPaths(line: string, relativePath: string): [string, string] | undefined {
+    const value = line.slice('diff --git '.length);
+    const tokenizedPaths = /^("(?:\\.|[^"])*"|\S+) ("(?:\\.|[^"])*"|\S+)$/.exec(value);
+    if (tokenizedPaths) {
+        return [decodeGitPath(tokenizedPaths[1]), decodeGitPath(tokenizedPaths[2])];
+    }
+
+    const samePathBoundary = value.lastIndexOf(`${relativePath} `);
+    if (samePathBoundary !== -1) {
+        const oldPathEnd = samePathBoundary + relativePath.length;
+        const paths: [string, string] = [value.slice(0, oldPathEnd), value.slice(oldPathEnd + 1)];
+        if (paths[0].endsWith(relativePath) && paths[1].endsWith(relativePath)) {
+            return paths;
+        }
+    }
+
+    const standardNewPath = `b/${relativePath}`;
+    if (value.startsWith('a/') && value.endsWith(` ${standardNewPath}`)) {
+        return [value.slice(0, -standardNewPath.length - 1), standardNewPath];
+    }
+
+    const paths = /^(\S+) (\S+)$/.exec(value);
+    return paths ? [paths[1], paths[2]] : undefined;
+}
+
+function inferGitPrefixes(paths: [string, string]): GitPrefixes | undefined {
+    const [oldPath, newPath] = paths;
+    const oldParts = oldPath.split('/');
+    const newParts = newPath.split('/');
+    let sharedParts = 0;
+    while (
+        sharedParts < oldParts.length
+        && sharedParts < newParts.length
+        && oldParts[oldParts.length - sharedParts - 1] === newParts[newParts.length - sharedParts - 1]
+    ) {
+        sharedParts += 1;
+    }
+
+    if (oldPath.startsWith('a/') && newPath.startsWith('b/') && (
+        oldPath.slice(2) === newPath.slice(2) || sharedParts <= 1
+    )) {
+        return ['a/', 'b/'];
+    }
+    if (sharedParts <= 1) {
+        return undefined;
+    }
+
+    const sharedPath = oldParts.slice(-sharedParts).join('/');
+    const prefixes: GitPrefixes = [
+        oldPath.slice(0, -sharedPath.length),
+        newPath.slice(0, -sharedPath.length),
+    ];
+    return prefixes[0] !== prefixes[1] ? prefixes : undefined;
+}
+
+function parseGitPathMetadata(line: string): [0 | 1, string] | undefined {
+    const metadata = /^(?:rename|copy) (from|to) (.+)$/.exec(line);
+    if (!metadata) {
+        return undefined;
+    }
+    return [metadata[1] === 'to' ? 1 : 0, decodeGitPath(metadata[2])];
+}
+
+function parseGitDiffPathsFromMetadata(
+    line: string,
+    logicalPaths: [string, string]
+): [string, string] | undefined {
+    const value = line.slice('diff --git '.length);
+    const oldPathBoundary = value.lastIndexOf(`${logicalPaths[0]} `);
+    if (oldPathBoundary === -1) {
+        return undefined;
+    }
+
+    const oldPathEnd = oldPathBoundary + logicalPaths[0].length;
+    const paths: [string, string] = [value.slice(0, oldPathEnd), value.slice(oldPathEnd + 1)];
+    return paths[0].endsWith(logicalPaths[0]) && paths[1].endsWith(logicalPaths[1])
+        ? paths
+        : undefined;
+}
+
+function applyGitPathMetadata(
+    gitPaths: [string, string] | undefined,
+    logicalPaths: [string | undefined, string | undefined],
+    gitPrefixes: GitPrefixes | undefined
+): GitPrefixes | undefined {
+    if (!gitPaths) {
+        return gitPrefixes;
+    }
+
+    const prefixes: GitPrefixes = gitPrefixes ? [...gitPrefixes] : [undefined, undefined];
+    let updated = false;
+    for (let pathIndex = 0; pathIndex < gitPaths.length; pathIndex += 1) {
+        const logicalPath = logicalPaths[pathIndex];
+        if (logicalPath !== undefined && gitPaths[pathIndex].endsWith(logicalPath)) {
+            prefixes[pathIndex] = gitPaths[pathIndex].slice(0, -logicalPath.length);
+            updated = true;
+        }
+    }
+    return updated ? prefixes : gitPrefixes;
+}
+
+function matchesDiffPath(
+    diffPath: string,
+    absolutePath: string,
+    basePath: string,
+    fallbackBasePath?: string
+): boolean {
+    if (path.isAbsolute(diffPath)) {
+        return path.resolve(diffPath) === absolutePath;
+    }
+    const resolvedPath = path.resolve(basePath, diffPath);
+    if (resolvedPath === absolutePath) {
+        return true;
+    }
+    if (fallbackBasePath === undefined || path.resolve(fallbackBasePath, diffPath) !== absolutePath) {
+        return false;
+    }
+    if (existsSync(resolvedPath)) {
+        throw new Error(`Ambiguous diff path "${diffPath}"; use --diff-root to select its base directory`);
+    }
+    return true;
+}
+
+function collectChangedLines(
+    diffText: string | undefined,
+    relativePath: string,
+    cwd: string,
+    gitRoot: string,
+    allowCwdRelativeGitPaths: boolean
+): ChangedLines {
+    const changedLines: ChangedLines = { added: [], removed: [] };
+    if (!diffText) {
+        return changedLines;
+    }
+
+    let currentFileMatches = true;
+    let inHunk = false;
+    let oldLinesRemaining = 0;
+    let newLinesRemaining = 0;
+    let structuredDiff = false;
+    let plainOldPath: string | undefined;
+    let gitDiffLine: string | undefined;
+    let gitPaths: [string, string] | undefined;
+    let gitLogicalPaths: [string | undefined, string | undefined] = [undefined, undefined];
+    let gitPrefixes: GitPrefixes | undefined;
+    let copySection = false;
+    const absolutePath = path.resolve(cwd, relativePath);
+    const diffRootRelativePath = path.relative(gitRoot, absolutePath).replace(/\\/g, '/');
+    for (const line of diffText.split(/\r?\n/)) {
+        if (line.startsWith('diff --git ')) {
+            currentFileMatches = false;
+            inHunk = false;
+            structuredDiff = true;
+            plainOldPath = undefined;
+            gitDiffLine = line;
+            gitPaths = parseGitDiffPaths(line, diffRootRelativePath);
+            if (!gitPaths && diffRootRelativePath !== relativePath) {
+                gitPaths = parseGitDiffPaths(line, relativePath);
             }
-            return line.startsWith('+') || line.startsWith('-');
-        })
-        .map((line) => line.slice(1))
-        .filter(Boolean);
+            gitLogicalPaths = [undefined, undefined];
+            gitPrefixes = gitPaths ? inferGitPrefixes(gitPaths) : undefined;
+            copySection = false;
+            continue;
+        }
+        if (!inHunk && /^(?:rename|copy) (?:from|to) /.test(line)) {
+            copySection ||= line.startsWith('copy ');
+            const metadata = parseGitPathMetadata(line);
+            if (metadata) {
+                gitLogicalPaths[metadata[0]] = metadata[1];
+            }
+            const [oldLogicalPath, newLogicalPath] = gitLogicalPaths;
+            if (!gitPaths && gitDiffLine && oldLogicalPath !== undefined && newLogicalPath !== undefined) {
+                gitPaths = parseGitDiffPathsFromMetadata(gitDiffLine, [oldLogicalPath, newLogicalPath]);
+                gitPrefixes = gitPaths ? inferGitPrefixes(gitPaths) : undefined;
+            }
+            gitPrefixes = applyGitPathMetadata(gitPaths, gitLogicalPaths, gitPrefixes);
+            continue;
+        }
+        if (!inHunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
+            const headerPath = line.slice(4).split('\t', 1)[0]
+                .replace(/\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?: [+-]\d{4})?$/, '')
+                .trim();
+            let diffPath = decodeGitPath(headerPath);
+            const isNewFileHeader = line.startsWith('+++ ');
+            const diffBase = gitDiffLine || !allowCwdRelativeGitPaths ? gitRoot : cwd;
+            const prefixedPathExists = gitPaths?.some(candidatePath => (
+                existsSync(path.resolve(diffBase, candidatePath))
+            )) ?? false;
+            const prefixIsSynthetic = Boolean(
+                gitLogicalPaths[0] !== undefined && gitLogicalPaths[1] !== undefined
+                || gitPaths
+                    && gitPaths[0].startsWith('a/')
+                    && gitPaths[1].startsWith('b/')
+                    && gitPaths[0].slice(2) === gitPaths[1].slice(2)
+            );
+            const prefix = isNewFileHeader ? gitPrefixes?.[1] : gitPrefixes?.[0];
+            if (
+                prefix
+                && diffPath.startsWith(prefix)
+                && (
+                    prefixIsSynthetic
+                    || !prefixedPathExists && !matchesDiffPath(diffPath, absolutePath, diffBase)
+                )
+            ) {
+                diffPath = diffPath.slice(prefix.length);
+            }
+            if (!isNewFileHeader && !gitDiffLine) {
+                plainOldPath = diffPath;
+            } else if (
+                isNewFileHeader
+                && !gitDiffLine
+                && plainOldPath?.startsWith('a/')
+                && diffPath.startsWith('b/')
+                && plainOldPath.slice(2) === diffPath.slice(2)
+                && !matchesDiffPath(plainOldPath, absolutePath, diffBase)
+                && !matchesDiffPath(diffPath, absolutePath, diffBase)
+            ) {
+                plainOldPath = plainOldPath.slice(2);
+                diffPath = diffPath.slice(2);
+                currentFileMatches = matchesDiffPath(plainOldPath, absolutePath, diffBase);
+            }
+            const diffPathMatches = matchesDiffPath(
+                diffPath,
+                absolutePath,
+                diffBase,
+                gitDiffLine && allowCwdRelativeGitPaths ? cwd : undefined
+            );
+            if (copySection) {
+                currentFileMatches = isNewFileHeader && diffPathMatches;
+            } else {
+                currentFileMatches = isNewFileHeader
+                    ? currentFileMatches || diffPathMatches
+                    : diffPathMatches;
+            }
+            if (isNewFileHeader) {
+                plainOldPath = undefined;
+                gitDiffLine = undefined;
+                gitPaths = undefined;
+                gitLogicalPaths = [undefined, undefined];
+                gitPrefixes = undefined;
+                copySection = false;
+            }
+            structuredDiff = true;
+            continue;
+        }
+        if (line.startsWith('@@')) {
+            const header = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+            if (header) {
+                oldLinesRemaining = Number(header[1] ?? 1);
+                newLinesRemaining = Number(header[2] ?? 1);
+                inHunk = true;
+                structuredDiff = true;
+            }
+            continue;
+        }
+        if (!line || (!inHunk && structuredDiff)) {
+            continue;
+        }
+        if (currentFileMatches) {
+            if (line.startsWith('+')) {
+                changedLines.added.push(line.slice(1));
+            } else if (line.startsWith('-')) {
+                changedLines.removed.push(line.slice(1));
+            }
+        }
+        if (inHunk) {
+            if (line.startsWith('+')) {
+                newLinesRemaining -= 1;
+            } else if (line.startsWith('-')) {
+                oldLinesRemaining -= 1;
+            } else if (line.startsWith(' ')) {
+                oldLinesRemaining -= 1;
+                newLinesRemaining -= 1;
+            }
+            inHunk = oldLinesRemaining > 0 || newLinesRemaining > 0;
+        }
+    }
+
+    return changedLines;
 }
 
 function collectChangeSignalValues(changedLines: string[]): string[] {
@@ -387,24 +749,52 @@ function collectChangeSignalValues(changedLines: string[]): string[] {
         }
     }
 
-    return uniqueTokens(values);
+    return values;
 }
 
-function collectChangeTokens(changedLines: string[]): string[] {
-    return uniqueTokens(
-        collectChangeSignalValues(changedLines)
-            .flatMap((value) => collectIdentifierTokens(value, true))
-            .filter((token) => !GENERIC_ANCHOR_TOKENS.has(token))
+function collectChangedTokens(changedLines: ChangedLines, collect: (lines: string[]) => string[]): string[] {
+    const added = collect(changedLines.added);
+    const removed = collect(changedLines.removed);
+    const count = (tokens: string[]): Map<string, number> => {
+        const counts = new Map<string, number>();
+        for (const token of tokens) {
+            counts.set(token, (counts.get(token) || 0) + 1);
+        }
+        return counts;
+    };
+    const addedCounts = count(added);
+    const removedCounts = count(removed);
+
+    const changedTokens = uniqueTokens([...added, ...removed].filter(
+        (token) => addedCounts.get(token) !== removedCounts.get(token)
+    ));
+    return changedTokens.length
+        ? changedTokens
+        : uniqueTokens(added.filter((token) => removedCounts.has(token)));
+}
+
+function isUsefulChangeToken(token: string): boolean {
+    const canonicalToken = canonicalizeToken(token);
+    return Boolean(canonicalToken && !GENERIC_CHANGE_TOKENS.has(canonicalToken));
+}
+
+function collectChangeTokens(changedLines: ChangedLines): string[] {
+    return collectChangedTokens(changedLines, (lines) =>
+        collectChangeSignalValues(lines)
+            .flatMap((value) => tokenizeText(value))
+            .filter(isUsefulChangeToken)
     ).slice(0, 64);
 }
 
-function collectChangePhraseTokens(changedLines: string[], relativePath: string): string[] {
-    const values = collectChangeSignalValues(changedLines);
+function collectChangePhraseTokens(changedLines: ChangedLines, relativePath: string): string[] {
+    return collectChangedTokens(changedLines, (lines) => {
+        const values = collectChangeSignalValues(lines);
 
-    return uniqueTokens([
-        ...values.flatMap((value) => collectIdentifierTokens(value)),
-        ...collectRareAnchorTokens(values.join('\n'), relativePath, values, true),
-    ]).slice(0, 96);
+        return [
+            ...values.flatMap((value) => buildPhraseTokens(splitPhraseParts(value))),
+            ...collectRareAnchorTokens(values.join('\n'), relativePath, values, true),
+        ].filter(isUsefulChangeToken);
+    }).slice(0, 96);
 }
 
 function stripCommentsAndStrings(text: string): string {
@@ -414,6 +804,32 @@ function stripCommentsAndStrings(text: string): string {
         .replace(/'([^'\\]|\\.)*'/g, ' ')
         .replace(/"([^"\\]|\\.)*"/g, ' ')
         .replace(/`([^`\\]|\\.)*`/g, ' ');
+}
+
+function collectLateCallTokens(text: string, contentTokens: string[]): string[] {
+    const tokens: string[] = [];
+    for (const match of text.matchAll(/\b((?:[A-Za-z_$][A-Za-z0-9_$]*\s*(?:\?\.|\.)\s*)*[A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\?\.)?\(/g)) {
+        tokens.push(...tokenizeText(match[1]));
+    }
+    const retainedContentTokens = new Set(contentTokens);
+    // ponytail: bounded overflow; use source-aware call matching if 128 unseen call tokens is too small.
+    return uniqueTokens(tokens)
+        .filter((token) => !retainedContentTokens.has(token))
+        .slice(0, MAX_LATE_CALL_TOKENS);
+}
+
+function findGitRoot(cwd: string): string {
+    let currentPath = path.resolve(cwd);
+    while (true) {
+        if (existsSync(path.join(currentPath, '.git'))) {
+            return currentPath;
+        }
+        const parentPath = path.dirname(currentPath);
+        if (parentPath === currentPath) {
+            return path.resolve(cwd);
+        }
+        currentPath = parentPath;
+    }
 }
 
 function determineKind(relativePath: string): DocumentKind {
@@ -433,6 +849,10 @@ function createSummary(profile: Omit<DocumentProfile, 'summary' | 'embeddingText
     const subject = profile.kind === 'test' ? 'test file' : profile.kind === 'fixture' ? 'fixture file' : 'source module';
     const focus = profile.semanticTokens.slice(0, 12).join(', ');
     const lines = [`${subject} about ${focus || profile.basenameTokens.join(', ')}`];
+
+    if (profile.changePhraseTokens.length) {
+        lines.push(`changes: ${profile.changePhraseTokens.slice(0, 8).join(', ')}`);
+    }
 
     if (profile.exports.length) {
         lines.push(`exports: ${profile.exports.slice(0, 8).join(', ')}`);
@@ -462,62 +882,49 @@ function createSummary(profile: Omit<DocumentProfile, 'summary' | 'embeddingText
         lines.push(`anchors: ${profile.rareAnchorTokens.slice(0, 8).join(', ')}`);
     }
 
-    if (profile.changePhraseTokens.length) {
-        lines.push(`changes: ${profile.changePhraseTokens.slice(0, 8).join(', ')}`);
-    }
-
     return lines.join('\n');
 }
 
 function createEmbeddingText(profile: Omit<DocumentProfile, 'summary' | 'embeddingText' | 'preview'> & { summary: string }): string {
-    const sections = [
-        `path: ${profile.relativePath}`,
-        `kind: ${profile.kind}`,
-        `basename: ${profile.basenameTokens.join(' ')}`,
-        `summary: ${profile.summary}`,
-    ];
+    const buildSections = (limit?: number): string[] => {
+        const take = (tokens: string[]): string[] => limit === undefined ? tokens : tokens.slice(0, limit);
+        const sections = [
+            `path: ${profile.relativePath}`,
+            `kind: ${profile.kind}`,
+            `basename: ${profile.basenameTokens.join(' ')}`,
+            `summary: ${profile.summary}`,
+        ];
+        const tokenSections: Array<[string, string[]]> = [
+            ['exports', profile.exports],
+            ['imports', profile.imports],
+            ['tests', profile.testNames],
+            ['commands', profile.commandTokens],
+            ['options', profile.optionTokens],
+            ['path-families', profile.pathFamilyTokens],
+            ['anchors', profile.rareAnchorTokens],
+        ];
 
-    if (profile.exports.length) {
-        sections.push(`exports: ${profile.exports.join(' ')}`);
-    }
+        for (const [label, tokens] of tokenSections) {
+            if (tokens.length) {
+                sections.push(`${label}: ${take(tokens).join(' ')}`);
+            }
+        }
+        sections.push(`signals: ${profile.semanticTokens.join(' ')}`);
+        return sections;
+    };
 
-    if (profile.imports.length) {
-        sections.push(`imports: ${profile.imports.join(' ')}`);
-    }
-
-    if (profile.testNames.length) {
-        sections.push(`tests: ${profile.testNames.join(' ')}`);
-    }
-
-    if (profile.commandTokens.length) {
-        sections.push(`commands: ${profile.commandTokens.join(' ')}`);
-    }
-
-    if (profile.optionTokens.length) {
-        sections.push(`options: ${profile.optionTokens.join(' ')}`);
-    }
-
-    if (profile.pathFamilyTokens.length) {
-        sections.push(`path-families: ${profile.pathFamilyTokens.join(' ')}`);
-    }
-
-    if (profile.rareAnchorTokens.length) {
-        sections.push(`anchors: ${profile.rareAnchorTokens.join(' ')}`);
-    }
-
-    if (profile.changePhraseTokens.length) {
-        sections.push(`changes: ${profile.changePhraseTokens.join(' ')}`);
-    }
-
-    sections.push(`signals: ${profile.semanticTokens.join(' ')}`);
-    return sections.join('\n');
+    const completeText = buildSections().join('\n');
+    return completeText.split(/\s+/).length <= MAX_EMBEDDING_WORDS
+        ? completeText
+        : buildSections(MAX_EMBEDDING_SECTION_TOKENS).join('\n');
 }
 
 export function buildDocumentProfile(
     filePath: string,
     text: string,
     cwd = process.cwd(),
-    diffText?: string
+    diffText?: string,
+    diffRoot?: string
 ): DocumentProfile {
     const absolutePath = path.resolve(cwd, filePath);
     const relativePath = path.relative(cwd, absolutePath).replace(/\\/g, '/');
@@ -525,13 +932,26 @@ export function buildDocumentProfile(
     const basenameTokens = tokenizeText(basename);
     const stemTokens = collectStemTokens(basename);
     const pathFamilyTokens = collectPathFamilyTokens(relativePath, text);
-    const changedLines = collectChangedLines(diffText);
+    let resolvedDiffRoot = cwd;
+    if (diffRoot) {
+        resolvedDiffRoot = path.resolve(cwd, diffRoot);
+    } else if (diffText) {
+        resolvedDiffRoot = findGitRoot(cwd);
+    }
+    const changedLines = collectChangedLines(
+        diffText,
+        relativePath,
+        cwd,
+        resolvedDiffRoot,
+        diffRoot === undefined
+    );
     const phraseTokens = collectPhraseTokens(text, relativePath);
     const rareAnchorTokens = collectRareAnchorTokens(text, relativePath);
-    const changeTokens = changedLines.length
+    const hasChangedLines = changedLines.added.length > 0 || changedLines.removed.length > 0;
+    const changeTokens = hasChangedLines
         ? collectChangeTokens(changedLines)
         : [];
-    const changePhraseTokens = changedLines.length
+    const changePhraseTokens = hasChangedLines
         ? collectChangePhraseTokens(changedLines, relativePath)
         : [];
     const kind = determineKind(relativePath);
@@ -540,22 +960,33 @@ export function buildDocumentProfile(
     const testNames = collectTestNames(text);
     const commandTokens = collectCommandTokens(text);
     const optionTokens = collectOptionTokens(text);
-    const contentTokens = uniqueTokens(tokenizeText(stripCommentsAndStrings(text)));
+    const contentText = stripCommentsAndStrings(text);
+    const contentTokens = uniqueTokens(tokenizeText(contentText));
+    const boundedContentTokens = contentTokens.slice(0, 64);
+    const lateCallTokens = collectLateCallTokens(contentText, boundedContentTokens);
 
-    const semanticTokens = uniqueTokens([
-        ...basenameTokens,
-        ...stemTokens,
-        ...pathFamilyTokens,
-        ...exports,
-        ...imports,
-        ...testNames,
-        ...commandTokens,
-        ...optionTokens,
-        ...rareAnchorTokens,
+    const changeSemanticTokens = uniqueTokens([
         ...changeTokens,
         ...changePhraseTokens,
-        ...contentTokens,
-    ]).slice(0, 72);
+    ]).slice(0, MAX_CHANGE_SEMANTIC_TOKENS);
+    const semanticTokens = [
+        ...changeSemanticTokens,
+        ...interleaveUniqueTokens(
+            [
+                basenameTokens,
+                stemTokens,
+                pathFamilyTokens,
+                exports,
+                imports,
+                testNames,
+                commandTokens,
+                optionTokens,
+                rareAnchorTokens,
+                contentTokens,
+            ],
+            MAX_SEMANTIC_TOKENS - changeSemanticTokens.length
+        ),
+    ];
 
     const partialProfile = {
         absolutePath,
@@ -574,7 +1005,8 @@ export function buildDocumentProfile(
         testNames,
         commandTokens,
         optionTokens,
-        contentTokens: contentTokens.slice(0, 64),
+        contentTokens: boundedContentTokens,
+        lateCallTokens,
         semanticTokens,
     };
 
