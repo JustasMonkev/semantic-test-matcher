@@ -467,11 +467,11 @@ function inferGitPrefixes(paths: [string, string]): GitPrefixes | undefined {
     }
 
     if (oldPath.startsWith('a/') && newPath.startsWith('b/') && (
-        oldPath.slice(2) === newPath.slice(2) || sharedParts === 0
+        oldPath.slice(2) === newPath.slice(2) || sharedParts <= 1
     )) {
         return ['a/', 'b/'];
     }
-    if (!sharedParts) {
+    if (sharedParts <= 1) {
         return undefined;
     }
 
@@ -529,18 +529,29 @@ function applyGitPathMetadata(
     return updated ? prefixes : gitPrefixes;
 }
 
-function matchesDiffPath(diffPath: string, absolutePath: string, basePath: string): boolean {
+function matchesDiffPath(
+    diffPath: string,
+    absolutePath: string,
+    basePath: string,
+    fallbackBasePath?: string
+): boolean {
     if (path.isAbsolute(diffPath)) {
         return path.resolve(diffPath) === absolutePath;
     }
-    return path.resolve(basePath, diffPath) === absolutePath;
+    const resolvedPath = path.resolve(basePath, diffPath);
+    return resolvedPath === absolutePath || (
+        fallbackBasePath !== undefined
+        && !existsSync(resolvedPath)
+        && path.resolve(fallbackBasePath, diffPath) === absolutePath
+    );
 }
 
 function collectChangedLines(
     diffText: string | undefined,
     relativePath: string,
     cwd: string,
-    gitRoot: string
+    gitRoot: string,
+    allowCwdRelativeGitPaths: boolean
 ): ChangedLines {
     const changedLines: ChangedLines = { added: [], removed: [] };
     if (!diffText) {
@@ -607,7 +618,12 @@ function collectChangedLines(
                 currentFileMatches = matchesDiffPath(plainOldPath, absolutePath, cwd);
             }
             const diffBase = gitDiffLine ? gitRoot : cwd;
-            const diffPathMatches = matchesDiffPath(diffPath, absolutePath, diffBase);
+            const diffPathMatches = matchesDiffPath(
+                diffPath,
+                absolutePath,
+                diffBase,
+                gitDiffLine && allowCwdRelativeGitPaths ? cwd : undefined
+            );
             if (copySection) {
                 currentFileMatches = isNewFileHeader && diffPathMatches;
             } else {
@@ -764,7 +780,7 @@ function collectLateCallTokens(text: string): string[] {
     for (const match of text.matchAll(/\b((?:[A-Za-z_$][A-Za-z0-9_$]*\s*(?:\?\.|\.)\s*)*[A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\?\.)?\(/g)) {
         tokens.push(...tokenizeText(match[1]));
     }
-    return uniqueTokens(tokens).slice(-MAX_LATE_CALL_TOKENS);
+    return uniqueTokens(tokens.reverse()).slice(0, MAX_LATE_CALL_TOKENS).reverse();
 }
 
 function findGitRoot(cwd: string): string {
@@ -887,7 +903,13 @@ export function buildDocumentProfile(
     } else if (diffText) {
         resolvedDiffRoot = findGitRoot(cwd);
     }
-    const changedLines = collectChangedLines(diffText, relativePath, cwd, resolvedDiffRoot);
+    const changedLines = collectChangedLines(
+        diffText,
+        relativePath,
+        cwd,
+        resolvedDiffRoot,
+        diffRoot === undefined
+    );
     const phraseTokens = collectPhraseTokens(text, relativePath);
     const rareAnchorTokens = collectRareAnchorTokens(text, relativePath);
     const hasChangedLines = changedLines.added.length > 0 || changedLines.removed.length > 0;

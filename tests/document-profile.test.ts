@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { describe, it } from 'node:test';
 import { buildDocumentProfile } from '../src/services/document-profile.ts';
 
@@ -112,6 +113,22 @@ diff --git a/old/src/page.ts b/new/src/page.ts
 `);
 
         assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
+    it('preserves directory moves in standard no-index diffs', () => {
+        const diff = `
+diff --git a/old/src/page.ts b/new/lib/page.ts
+--- a/old/src/page.ts
++++ b/new/lib/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`;
+        const target = buildDocumentProfile('/repo/new/lib/page.ts', '', '/repo', diff);
+        const basenameOnly = buildDocumentProfile('/repo/page.ts', '', '/repo', diff);
+
+        assert.deepEqual(target.changeTokens, ['screenshot', 'capture']);
+        assert.deepEqual(basenameOnly.changeTokens, []);
     });
 
     it('accepts renamed files in standard git diffs', () => {
@@ -238,6 +255,20 @@ diff --git a/packages/foo/src/page.ts b/packages/foo/src/page.ts
 -return capture();
 +return screenshot();
 `, '/repo');
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
+    it('matches cwd-relative git paths when run from a subdirectory', () => {
+        const cwd = path.join(process.cwd(), 'src');
+        const profile = buildDocumentProfile(path.join(cwd, 'services/document-profile.ts'), '', cwd, `
+diff --git a/services/document-profile.ts b/services/document-profile.ts
+--- a/services/document-profile.ts
++++ b/services/document-profile.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`);
 
         assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
     });

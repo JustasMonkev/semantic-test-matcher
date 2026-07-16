@@ -239,9 +239,10 @@ export class Page {
             diff
         );
         const setup = Array.from({ length: 80 }, (_, index) => `feature${index}();`).join('\n');
+        const tail = Array.from({ length: 140 }, (_, index) => `trailing${index}();`).join('\n');
         const directCandidate = makeCandidate(
             'tests/late-direct-call.spec.ts',
-            `test('late behavior', () => {\n${setup}\nscreenshot();\n});`,
+            `test('late behavior', () => {\n${setup}\nscreenshot();\n${tail}\nscreenshot();\n});`,
             cwd
         );
         const matches = rankMatches(
@@ -250,7 +251,7 @@ export class Page {
                 directCandidate,
                 makeCandidate(
                     'tests/unrelated.spec.ts',
-                    `test('other behavior', () => {\n${setup}\nheartbeat();\n});`,
+                    `test('other behavior', () => {\n${setup}\nheartbeat();\n${tail}\nheartbeat();\n});`,
                     cwd
                 ),
             ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
