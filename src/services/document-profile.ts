@@ -541,7 +541,6 @@ function matchesDiffPath(
     const resolvedPath = path.resolve(basePath, diffPath);
     return resolvedPath === absolutePath || (
         fallbackBasePath !== undefined
-        && !existsSync(resolvedPath)
         && path.resolve(fallbackBasePath, diffPath) === absolutePath
     );
 }
@@ -598,7 +597,10 @@ function collectChangedLines(
             continue;
         }
         if (!inHunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
-            let diffPath = decodeGitPath(line.slice(4).split('\t', 1)[0].trim());
+            const headerPath = line.slice(4).split('\t', 1)[0]
+                .replace(/\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?: [+-]\d{4})?$/, '')
+                .trim();
+            let diffPath = decodeGitPath(headerPath);
             const isNewFileHeader = line.startsWith('+++ ');
             const prefix = isNewFileHeader ? gitPrefixes?.[1] : gitPrefixes?.[0];
             if (prefix && diffPath.startsWith(prefix)) {
@@ -775,12 +777,16 @@ function stripCommentsAndStrings(text: string): string {
         .replace(/`([^`\\]|\\.)*`/g, ' ');
 }
 
-function collectLateCallTokens(text: string): string[] {
+function collectLateCallTokens(text: string, contentTokens: string[]): string[] {
     const tokens: string[] = [];
     for (const match of text.matchAll(/\b((?:[A-Za-z_$][A-Za-z0-9_$]*\s*(?:\?\.|\.)\s*)*[A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\?\.)?\(/g)) {
         tokens.push(...tokenizeText(match[1]));
     }
-    return uniqueTokens(tokens.reverse()).slice(0, MAX_LATE_CALL_TOKENS).reverse();
+    const retainedContentTokens = new Set(contentTokens);
+    // ponytail: bounded overflow; use source-aware call matching if 128 unseen call tokens is too small.
+    return uniqueTokens(tokens)
+        .filter((token) => !retainedContentTokens.has(token))
+        .slice(0, MAX_LATE_CALL_TOKENS);
 }
 
 function findGitRoot(cwd: string): string {
@@ -927,7 +933,8 @@ export function buildDocumentProfile(
     const optionTokens = collectOptionTokens(text);
     const contentText = stripCommentsAndStrings(text);
     const contentTokens = uniqueTokens(tokenizeText(contentText));
-    const lateCallTokens = collectLateCallTokens(contentText);
+    const boundedContentTokens = contentTokens.slice(0, 64);
+    const lateCallTokens = collectLateCallTokens(contentText, boundedContentTokens);
 
     const changeSemanticTokens = uniqueTokens([
         ...changeTokens,
@@ -969,7 +976,7 @@ export function buildDocumentProfile(
         testNames,
         commandTokens,
         optionTokens,
-        contentTokens: contentTokens.slice(0, 64),
+        contentTokens: boundedContentTokens,
         lateCallTokens,
         semanticTokens,
     };

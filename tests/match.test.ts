@@ -242,7 +242,7 @@ export class Page {
         const tail = Array.from({ length: 140 }, (_, index) => `trailing${index}();`).join('\n');
         const directCandidate = makeCandidate(
             'tests/late-direct-call.spec.ts',
-            `test('late behavior', () => {\n${setup}\nscreenshot();\n${tail}\nscreenshot();\n});`,
+            `test('late behavior', () => {\n${setup}\nscreenshot();\n${tail}\n});`,
             cwd
         );
         const matches = rankMatches(

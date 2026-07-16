@@ -259,12 +259,12 @@ diff --git a/packages/foo/src/page.ts b/packages/foo/src/page.ts
         assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
     });
 
-    it('matches cwd-relative git paths when run from a subdirectory', () => {
+    it('matches cwd-relative git paths when the same root path exists', () => {
         const cwd = path.join(process.cwd(), 'src');
-        const profile = buildDocumentProfile(path.join(cwd, 'services/document-profile.ts'), '', cwd, `
-diff --git a/services/document-profile.ts b/services/document-profile.ts
---- a/services/document-profile.ts
-+++ b/services/document-profile.ts
+        const profile = buildDocumentProfile(path.join(cwd, 'package.json'), '', cwd, `
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
 @@ -1 +1 @@
 -return capture();
 +return screenshot();
@@ -338,6 +338,18 @@ diff --git old/packages/foo/src/page.ts new/packages/foo/src/page.ts
         const profile = buildDocumentProfile('/repo/src/page.ts', '', '/repo', `
 --- src/page.ts\t2026-07-14 10:00:00
 +++ src/page.ts\t2026-07-14 10:01:00
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
+    it('accepts space-separated timestamps in plain unified diff headers', () => {
+        const profile = buildDocumentProfile('/repo/src/page.ts', '', '/repo', `
+--- src/page.ts 2026-07-14 10:00:00
++++ src/page.ts 2026-07-14 10:01:00
 @@ -1 +1 @@
 -return capture();
 +return screenshot();
