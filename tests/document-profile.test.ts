@@ -104,6 +104,19 @@ diff --git a/src dir/page file.ts b/src dir/page file.ts
         assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
     });
 
+    it('accepts diff-root-relative Git paths containing spaces', () => {
+        const profile = buildDocumentProfile('/repo/packages/foo/src dir/page file.ts', '', '/repo', `
+diff --git a/src dir/page file.ts b/src dir/page file.ts
+--- a/src dir/page file.ts
++++ b/src dir/page file.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`, '/repo/packages/foo');
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
     it('strips complete multi-segment custom git prefixes', () => {
         const profile = buildDocumentProfile('/repo/src/page.ts', '', '/repo', `
 diff --git a/old/src/page.ts b/new/src/page.ts
@@ -151,6 +164,32 @@ diff --git old/src/page.ts new/src/page.ts
 
             const target = buildDocumentProfile(path.join(root, 'new/src/page.ts'), '', root, diff);
             const unrelated = buildDocumentProfile(path.join(root, 'src/page.ts'), '', root, diff);
+
+            assert.deepEqual(target.changeTokens, ['screenshot', 'capture']);
+            assert.deepEqual(unrelated.changeTokens, []);
+        } finally {
+            await fs.rm(root, { recursive: true, force: true });
+        }
+    });
+
+    it('strips canonical Git prefixes when matching top-level dirs exist', async () => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'semantic-profile-'));
+        try {
+            await fs.mkdir(path.join(root, 'src'), { recursive: true });
+            await fs.mkdir(path.join(root, 'b/src'), { recursive: true });
+            await fs.writeFile(path.join(root, 'src/page.ts'), 'export const screenshot = true;');
+            await fs.writeFile(path.join(root, 'b/src/page.ts'), 'export const unrelated = true;');
+            const diff = `
+diff --git a/src/page.ts b/src/page.ts
+--- a/src/page.ts
++++ b/src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`;
+
+            const target = buildDocumentProfile(path.join(root, 'src/page.ts'), '', root, diff);
+            const unrelated = buildDocumentProfile(path.join(root, 'b/src/page.ts'), '', root, diff);
 
             assert.deepEqual(target.changeTokens, ['screenshot', 'capture']);
             assert.deepEqual(unrelated.changeTokens, []);
@@ -292,6 +331,18 @@ diff --git "a/src/caf\\303\\251.ts" "b/src/caf\\303\\251.ts"
 diff --git a/packages/foo/src/page.ts b/packages/foo/src/page.ts
 --- a/packages/foo/src/page.ts
 +++ b/packages/foo/src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`, '/repo');
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
+    it('honors an explicit diff root for plain unified headers', () => {
+        const profile = buildDocumentProfile('/repo/packages/foo/src/page.ts', '', '/repo/packages/foo', `
+--- packages/foo/src/page.ts
++++ packages/foo/src/page.ts
 @@ -1 +1 @@
 -return capture();
 +return screenshot();

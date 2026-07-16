@@ -575,6 +575,7 @@ function collectChangedLines(
     let gitPrefixes: GitPrefixes | undefined;
     let copySection = false;
     const absolutePath = path.resolve(cwd, relativePath);
+    const diffRootRelativePath = path.relative(gitRoot, absolutePath).replace(/\\/g, '/');
     for (const line of diffText.split(/\r?\n/)) {
         if (line.startsWith('diff --git ')) {
             currentFileMatches = false;
@@ -582,7 +583,10 @@ function collectChangedLines(
             structuredDiff = true;
             plainOldPath = undefined;
             gitDiffLine = line;
-            gitPaths = parseGitDiffPaths(line, relativePath);
+            gitPaths = parseGitDiffPaths(line, diffRootRelativePath);
+            if (!gitPaths && diffRootRelativePath !== relativePath) {
+                gitPaths = parseGitDiffPaths(line, relativePath);
+            }
             gitLogicalPaths = [undefined, undefined];
             gitPrefixes = gitPaths ? inferGitPrefixes(gitPaths) : undefined;
             copySection = false;
@@ -608,16 +612,25 @@ function collectChangedLines(
                 .trim();
             let diffPath = decodeGitPath(headerPath);
             const isNewFileHeader = line.startsWith('+++ ');
-            const diffBase = gitDiffLine ? gitRoot : cwd;
+            const diffBase = gitDiffLine || !allowCwdRelativeGitPaths ? gitRoot : cwd;
             const prefixedPathExists = gitPaths?.some(candidatePath => (
                 existsSync(path.resolve(diffBase, candidatePath))
             )) ?? false;
+            const prefixIsSynthetic = Boolean(
+                gitLogicalPaths[0] !== undefined && gitLogicalPaths[1] !== undefined
+                || gitPaths
+                    && gitPaths[0].startsWith('a/')
+                    && gitPaths[1].startsWith('b/')
+                    && gitPaths[0].slice(2) === gitPaths[1].slice(2)
+            );
             const prefix = isNewFileHeader ? gitPrefixes?.[1] : gitPrefixes?.[0];
             if (
                 prefix
                 && diffPath.startsWith(prefix)
-                && !prefixedPathExists
-                && !matchesDiffPath(diffPath, absolutePath, diffBase)
+                && (
+                    prefixIsSynthetic
+                    || !prefixedPathExists && !matchesDiffPath(diffPath, absolutePath, diffBase)
+                )
             ) {
                 diffPath = diffPath.slice(prefix.length);
             }
@@ -629,12 +642,12 @@ function collectChangedLines(
                 && plainOldPath?.startsWith('a/')
                 && diffPath.startsWith('b/')
                 && plainOldPath.slice(2) === diffPath.slice(2)
-                && !matchesDiffPath(plainOldPath, absolutePath, cwd)
-                && !matchesDiffPath(diffPath, absolutePath, cwd)
+                && !matchesDiffPath(plainOldPath, absolutePath, diffBase)
+                && !matchesDiffPath(diffPath, absolutePath, diffBase)
             ) {
                 plainOldPath = plainOldPath.slice(2);
                 diffPath = diffPath.slice(2);
-                currentFileMatches = matchesDiffPath(plainOldPath, absolutePath, cwd);
+                currentFileMatches = matchesDiffPath(plainOldPath, absolutePath, diffBase);
             }
             const diffPathMatches = matchesDiffPath(
                 diffPath,
