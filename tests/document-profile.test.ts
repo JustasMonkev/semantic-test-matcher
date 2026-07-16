@@ -259,16 +259,22 @@ diff --git a/packages/foo/src/page.ts b/packages/foo/src/page.ts
         assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
     });
 
-    it('matches cwd-relative git paths when the same root path exists', () => {
+    it('requires an explicit root for ambiguous cwd-relative git paths', () => {
         const cwd = path.join(process.cwd(), 'src');
-        const profile = buildDocumentProfile(path.join(cwd, 'package.json'), '', cwd, `
+        const diff = `
 diff --git a/package.json b/package.json
 --- a/package.json
 +++ b/package.json
 @@ -1 +1 @@
 -return capture();
 +return screenshot();
-`);
+`;
+
+        assert.throws(
+            () => buildDocumentProfile(path.join(cwd, 'package.json'), '', cwd, diff),
+            /Ambiguous diff path/
+        );
+        const profile = buildDocumentProfile(path.join(cwd, 'package.json'), '', cwd, diff, cwd);
 
         assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
     });
@@ -403,6 +409,18 @@ diff --git a/src/page.ts a/src/page.ts
 
     it('accepts paired a and b headers in plain unified diffs', () => {
         const profile = buildDocumentProfile('/repo/src/page.ts', '', '/repo', `
+--- a/src/page.ts
++++ b/src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
+    it('preserves real a and b paths in paired plain unified diffs', () => {
+        const profile = buildDocumentProfile('/repo/b/src/page.ts', '', '/repo', `
 --- a/src/page.ts
 +++ b/src/page.ts
 @@ -1 +1 @@

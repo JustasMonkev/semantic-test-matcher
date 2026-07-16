@@ -162,6 +162,8 @@ Useful flags:
 - `--candidates-from-stdin`
 - `--model <path-to-gguf>`
 - `--cache-dir <path>`
+- `--diff-file <path>`
+- `--diff-root <path>` (set the base for relative diff paths, such as `.` for `git diff --relative`)
 - `--json`
 
 How matching works:

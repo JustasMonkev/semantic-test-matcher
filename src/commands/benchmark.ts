@@ -133,6 +133,7 @@ export function registerBenchmarkCommand(program: Command): void {
         .option('--exclude-file <patterns...>', 'Exclude matching files (glob pattern)')
         .option('--model <path>', 'Path to a local GGUF embedding model')
         .option('--cache-dir <path>', 'Directory used to cache embeddings')
+        .option('--diff-root <path>', 'Base directory for relative paths in case diffs')
         .option('-t, --threshold <number>', 'Minimum similarity threshold')
         .option('--min-score <number>', 'Minimum similarity score override')
         .option('--json', 'Print machine-readable output')
@@ -143,6 +144,7 @@ export function registerBenchmarkCommand(program: Command): void {
             excludeFile?: string[];
             model?: string;
             cacheDir?: string;
+            diffRoot?: string;
             threshold?: string;
             minScore?: string;
             json?: boolean;
@@ -197,7 +199,13 @@ export function registerBenchmarkCommand(program: Command): void {
             for (const entry of cases) {
                 const sourcePath = path.resolve(cwd, entry.source);
                 const sourceText = await fs.readFile(sourcePath, 'utf8');
-                const sourceProfile = buildDocumentProfile(sourcePath, sourceText, cwd, entry.diffText);
+                const sourceProfile = buildDocumentProfile(
+                    sourcePath,
+                    sourceText,
+                    cwd,
+                    entry.diffText,
+                    options.diffRoot
+                );
                 const sourceVector = await embeddingSession.embed(sourceProfile.embeddingText);
                 sourceEmbeddings.push({
                     backend: sourceVector.backend,

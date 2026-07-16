@@ -539,10 +539,16 @@ function matchesDiffPath(
         return path.resolve(diffPath) === absolutePath;
     }
     const resolvedPath = path.resolve(basePath, diffPath);
-    return resolvedPath === absolutePath || (
-        fallbackBasePath !== undefined
-        && path.resolve(fallbackBasePath, diffPath) === absolutePath
-    );
+    if (resolvedPath === absolutePath) {
+        return true;
+    }
+    if (fallbackBasePath === undefined || path.resolve(fallbackBasePath, diffPath) !== absolutePath) {
+        return false;
+    }
+    if (existsSync(resolvedPath)) {
+        throw new Error(`Ambiguous diff path "${diffPath}"; use --diff-root to select its base directory`);
+    }
+    return true;
 }
 
 function collectChangedLines(
@@ -614,6 +620,8 @@ function collectChangedLines(
                 && plainOldPath?.startsWith('a/')
                 && diffPath.startsWith('b/')
                 && plainOldPath.slice(2) === diffPath.slice(2)
+                && !matchesDiffPath(plainOldPath, absolutePath, cwd)
+                && !matchesDiffPath(diffPath, absolutePath, cwd)
             ) {
                 plainOldPath = plainOldPath.slice(2);
                 diffPath = diffPath.slice(2);
