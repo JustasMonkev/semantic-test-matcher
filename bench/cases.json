@@ -4,7 +4,7 @@
   { "source": "src/services/embeddings.ts", "expectedTop1": "tests/embeddings.test.ts" },
   { "source": "src/services/text-utils.ts", "expectedTop1": "tests/text-utils.test.ts" },
   { "source": "src/services/document-profile.ts", "expectedTop1": "tests/document-profile.test.ts" },
-  { "source": "src/services/embedding-provider.ts", "expectedTop1": "tests/embedding-provider.test.ts" },
+  { "source": "src/services/embedding-provider.ts", "expectedTop1": "tests/embeddings.test.ts" },
   { "source": "src/utils/async.ts", "expectedTop1": "tests/async.test.ts" },
   { "source": "src/utils/io.ts", "expectedTop1": "tests/io.test.ts" },
   { "source": "src/utils/files.ts", "expectedTop1": "tests/files.test.ts" },
@@ -13,7 +13,7 @@
   { "source": "src/commands/benchmark.ts", "expectedTop1": "tests/benchmark.test.ts" },
   {
     "source": "src/services/embedding-types.ts",
-    "expectedTop3": ["tests/embeddings.test.ts", "tests/embedding-provider.test.ts"]
+    "expectedTop3": ["tests/embeddings.test.ts"]
   },
   {
     "source": "src/commands/match.ts",

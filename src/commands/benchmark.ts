@@ -102,6 +102,21 @@ async function loadBenchmarkCases(filePath: string): Promise<BenchmarkCase[]> {
     }));
 }
 
+// An expectation naming a file outside the candidate set can never be hit, so it
+// would silently depress the reported rates instead of failing the run.
+function assertExpectationsAreReachable(cases: BenchmarkCase[], candidateFiles: string[]): void {
+    const available = new Set(candidateFiles);
+    const unreachable = cases.flatMap((entry) =>
+        uniqueExpectedFiles(getExpectedTop1(entry), getExpectedTop3(entry), entry.expectedTop10Includes ?? [])
+            .filter((file) => !available.has(file))
+            .map((file) => `  ${entry.source} -> ${file}`)
+    );
+
+    if (unreachable.length) {
+        throw new Error(`Benchmark expectations name files outside the candidate set:\n${unreachable.join('\n')}`);
+    }
+}
+
 async function prepareCandidates(
     candidateFiles: string[],
     session: EmbeddingSession,
@@ -180,6 +195,10 @@ export function registerBenchmarkCommand(program: Command): void {
                 config.match.includePatterns,
                 config.match.excludePatterns,
                 cwd
+            );
+            assertExpectationsAreReachable(
+                cases,
+                candidateResult.files.map((file) => normalizeRelativePath(path.relative(cwd, file)))
             );
             const embeddingSession = new EmbeddingSession({
                 model: config.model,

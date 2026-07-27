@@ -65,4 +65,26 @@ describe('benchmark command', () => {
             { top1Cases: 0, top3Cases: 1, top3Rate: 0, threshold: 1, minScore: 1 }
         );
     });
+
+    it('fails loudly when an expectation names a file outside the candidate set', async () => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-benchmark-'));
+        await fs.mkdir(path.join(root, 'src'));
+        await fs.mkdir(path.join(root, 'tests'));
+        await fs.writeFile(path.join(root, 'src/price.ts'), 'export const price = total => total;');
+        await fs.writeFile(path.join(root, 'tests/price.test.ts'), "import { price } from '../src/price'; test('price', () => price(1));");
+        await fs.writeFile(path.join(root, 'cases.json'), JSON.stringify([
+            { source: 'src/price.ts', expectedTop1: 'tests/missing.test.ts' },
+        ]));
+        process.chdir(root);
+
+        const program = new Command();
+        registerBenchmarkCommand(program);
+        await assert.rejects(
+            program.parseAsync([
+                'benchmark', '--cases', 'cases.json', '--candidates', 'tests',
+                '--model', 'stub', '--min-score', '0', '--json',
+            ], { from: 'user' }),
+            /tests\/missing\.test\.ts/
+        );
+    });
 });
