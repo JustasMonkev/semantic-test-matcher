@@ -638,3 +638,52 @@ diff --git a/src/page.ts a/src/page.ts
         assert.match(testSections[testSections.length - 1] || '', /\bbehavior39\b/);
     });
 });
+
+describe('token evidence hygiene', () => {
+    const profileOf = (file: string, text: string, diff?: string) =>
+        buildDocumentProfile(`/repo/${file}`, text, '/repo', diff);
+
+    it('keeps every compound anchor rather than filling the cap with fragments', () => {
+        // 60 distinct compounds expand well past the 96-token cap; the last
+        // one must still survive, or long files lose their anchor evidence.
+        const source = Array.from(
+            { length: 60 },
+            (_, index) => `export function resolveLedgerEntry${index}(x: string) { return x; }`
+        ).join('\n');
+        const profile = profileOf('src/ledger.ts', source);
+
+        assert.ok(profile.rareAnchorTokens.includes('resolveledgerentry59'));
+    });
+
+    it('anchors distinctive compounds but not all-stop-word ones', () => {
+        assert.deepEqual(profileOf('src/a.ts', 'const return_value = 1;').rareAnchorTokens, []);
+        assert.ok(
+            profileOf('src/b.ts', 'const reconcileLedgerEntry = 1;')
+                .rareAnchorTokens.includes('reconcileledgerentry')
+        );
+    });
+
+    it('reads dotted filenames but not lowercase prose from string literals', () => {
+        assert.ok(profileOf('src/a.ts', "const a = 'config.json';").phraseTokens.includes('configjson'));
+        assert.deepEqual(profileOf('src/b.ts', "const b = 'returns an empty array';").phraseTokens, []);
+    });
+
+    it('shares the acronym fragment across lower-camel identifiers', () => {
+        const options = profileOf('src/a.ts', 'export const cliOptions = 1;').phraseTokens;
+        const parser = profileOf('src/b.ts', 'export const cliParser = 1;').phraseTokens;
+
+        assert.ok(options.includes('cli') && parser.includes('cli'));
+    });
+
+    it('does not report the unchanged filename as change evidence', () => {
+        const diff = [
+            '--- a/src/order-service.ts',
+            '+++ b/src/order-service.ts',
+            '@@ -1 +1 @@',
+            '-const x = 1;',
+            '+const x = 2;',
+        ].join('\n');
+
+        assert.deepEqual(profileOf('src/order-service.ts', 'export const x = 2;', diff).changePhraseTokens, []);
+    });
+});

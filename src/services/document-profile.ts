@@ -232,14 +232,23 @@ function buildPhraseTokens(parts: string[]): string[] {
     }
     const normalizedParts = pairs.map((pair) => pair.normalized);
 
+    // A lower-camel identifier carries its acronym in the leading fragment
+    // (cliOptions, mcpCommand), which the uppercase test alone would drop and
+    // with it the only token cliOptions and cliParser share.
+    const isCamelPrefix = (index: number) =>
+        index === 0 &&
+        pairs.length > 1 &&
+        /^[a-z][a-z0-9]{2,4}$/.test(pairs[0].raw) &&
+        /^[A-Z]/.test(pairs[1].raw);
+
     const tokens: string[] = [];
-    for (const { raw, normalized } of pairs) {
-        // Long words stand alone; so do all-caps acronyms (CLI, MCP, SSE) that
+    pairs.forEach(({ raw, normalized }, index) => {
+        // Long words stand alone; so do acronyms (CLI, MCP, SSE) that
         // camel-splitting leaves as fragments too short for the length rule.
-        if (normalized.length >= 6 || /^[A-Z0-9]{2,5}$/.test(raw)) {
+        if (normalized.length >= 6 || /^[A-Z0-9]{2,5}$/.test(raw) || isCamelPrefix(index)) {
             tokens.push(normalized);
         }
-    }
+    });
 
     const maxWindow = Math.min(4, normalizedParts.length);
     for (let size = 2; size <= maxWindow; size += 1) {
@@ -268,9 +277,14 @@ function collectPhraseTokens(
 
     for (const match of text.matchAll(/['"`]([^'"`\n]{2,240})['"`]/g)) {
         const value = (match[1] || '').replace(/\$\{[^}]+\}/g, ' ').trim();
-        // Keep string literals that look like identifiers, paths, or flags —
-        // anything with casing, a separator, or enough length to be specific.
-        if (!value || (!/[A-Z:_/-]/.test(value) && value.length < 12)) {
+        // Keep string literals that look like identifiers, paths, or flags.
+        // An unbroken run qualifies on a separator (including the dot in
+        // config.json) or on length; prose only qualifies on casing, so a
+        // lowercase sentence cannot spend the phrase budget on itself.
+        const looksStructured = /\s/.test(value)
+            ? /[A-Z]/.test(value)
+            : /[A-Z.:_/-]/.test(value) || value.length >= 12;
+        if (!value || !looksStructured) {
             continue;
         }
         rawValues.push(value);
@@ -282,7 +296,14 @@ function collectPhraseTokens(
 function isCompoundAnchor(value: string): boolean {
     const bare = value.replace(/^--/, '');
     const parts = splitPhraseParts(bare);
-    return parts.length >= 3 || (parts.length === 2 && bare.length >= 10);
+    if (parts.length < 3 && !(parts.length === 2 && bare.length >= 10)) {
+        return false;
+    }
+
+    // Length alone would admit return_value and expected_result, which are
+    // shape-distinctive but meaning-generic. Require at least one part that
+    // survives stop-word canonicalization.
+    return parts.some((part) => canonicalizeToken(part, { skipStopWords: false }) !== null);
 }
 
 function collectRareAnchorTokens(
@@ -301,9 +322,19 @@ function collectRareAnchorTokens(
         }
     }
 
-    return uniqueTokens(
-        anchors.flatMap((value) => collectIdentifierTokens(value, true))
-    ).slice(0, 96);
+    // Expand in two passes so the cap counts compounds, not fragments. A
+    // fragments-first cap fills up on early identifiers and starves every
+    // compound after it — in this file it ran out before buildDocumentProfile.
+    const whole: string[] = [];
+    const fragments: string[] = [];
+    for (const value of new Set(anchors)) {
+        const collapsed = value.replace(/^--/, '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+        for (const token of collectIdentifierTokens(value, true)) {
+            (token === collapsed ? whole : fragments).push(token);
+        }
+    }
+
+    return uniqueTokens([...whole, ...fragments]).slice(0, 96);
 }
 
 function collectPathSegments(value: string): string[] {
@@ -776,13 +807,16 @@ function collectChangeTokens(changedLines: ChangedLines): string[] {
     ).slice(0, 64);
 }
 
-function collectChangePhraseTokens(changedLines: ChangedLines, relativePath: string): string[] {
+function collectChangePhraseTokens(changedLines: ChangedLines): string[] {
     return collectChangedTokens(changedLines, (lines) => {
         const values = collectChangeSignalValues(lines);
 
+        // No relativePath here: it is identical on the added and removed
+        // sides, so collectChangedTokens' intersection would report the
+        // filename as changed on a diff that only touched whitespace.
         return [
             ...values.flatMap((value) => buildPhraseTokens(splitPhraseParts(value))),
-            ...collectRareAnchorTokens(values.join('\n'), relativePath, values),
+            ...collectRareAnchorTokens(values.join('\n'), '', values),
         ].filter(isUsefulChangeToken);
     }).slice(0, 96);
 }
@@ -942,7 +976,7 @@ export function buildDocumentProfile(
         ? collectChangeTokens(changedLines)
         : [];
     const changePhraseTokens = hasChangedLines
-        ? collectChangePhraseTokens(changedLines, relativePath)
+        ? collectChangePhraseTokens(changedLines)
         : [];
     const kind = determineKind(relativePath);
     const exports = collectExportedSymbols(text);
