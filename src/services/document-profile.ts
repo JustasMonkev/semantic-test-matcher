@@ -41,7 +41,6 @@ const GENERIC_PATH_SEGMENTS = new Set([
     'packag',
     'fixture',
     'fixtures',
-    'playwright',
     'core',
     'spec',
     'ts',
@@ -54,22 +53,10 @@ const GENERIC_PATH_SEGMENTS = new Set([
     'utils',
 ]);
 
-const RARE_ANCHOR_PATTERNS = [
-    /\bgetByTestIdSelector\b/gi,
-    /\bgetByTestId\b/gi,
-    /\btestIdAttributeName\b/gi,
-    /\bresolveCLIConfigForMCP\b/gi,
-    /\bdotenvFileLoader\b/gi,
-    /\bmcpCommand\b/gi,
-    /\bbrowserName\b/gi,
-    /\btoolListChanged\b/gi,
-    /\bbrowser_get_config\b/gi,
-    /--test-id-attribute/gi,
-    /data-testid/gi,
-    /data-tid/gi,
-    /my-test-id/gi,
-    /\bcodegen\b/gi,
-];
+// An anchor is a compound identifier distinctive enough to tie two files
+// together: camelCase, snake_case, kebab-case, or a --long-flag with at least
+// two parts. Single generic words are dropped via GENERIC_ANCHOR_TOKENS.
+const ANCHOR_CANDIDATE_PATTERN = /--[a-z][a-z0-9-]*|\b[A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z0-9]+)*\b/g;
 
 const GENERIC_ANCHOR_TOKENS = new Set([
     'id',
@@ -237,17 +224,20 @@ function normalizePhrasePart(part: string): string | null {
 }
 
 function buildPhraseTokens(parts: string[]): string[] {
-    const normalizedParts = parts
-        .map((part) => normalizePhrasePart(part))
-        .filter((part): part is string => Boolean(part));
-    if (!normalizedParts.length) {
+    const pairs = parts
+        .map((part) => ({ raw: part, normalized: normalizePhrasePart(part) }))
+        .filter((pair): pair is { raw: string; normalized: string } => Boolean(pair.normalized));
+    if (!pairs.length) {
         return [];
     }
+    const normalizedParts = pairs.map((pair) => pair.normalized);
 
     const tokens: string[] = [];
-    for (const part of normalizedParts) {
-        if (part.length >= 6 || part === 'cli' || part === 'mcp' || part === 'sse' || part === 'cdp') {
-            tokens.push(part);
+    for (const { raw, normalized } of pairs) {
+        // Long words stand alone; so do all-caps acronyms (CLI, MCP, SSE) that
+        // camel-splitting leaves as fragments too short for the length rule.
+        if (normalized.length >= 6 || /^[A-Z0-9]{2,5}$/.test(raw)) {
+            tokens.push(normalized);
         }
     }
 
@@ -264,8 +254,7 @@ function buildPhraseTokens(parts: string[]): string[] {
 function collectPhraseTokens(
     text: string,
     relativePath: string,
-    extraValues: string[] = [],
-    allowInternalStrings = false
+    extraValues: string[] = []
 ): string[] {
     const rawValues: string[] = [path.basename(relativePath), ...extraValues];
 
@@ -279,10 +268,9 @@ function collectPhraseTokens(
 
     for (const match of text.matchAll(/['"`]([^'"`\n]{2,240})['"`]/g)) {
         const value = (match[1] || '').replace(/\$\{[^}]+\}/g, ' ').trim();
-        if (!allowInternalStrings && /^internal:/i.test(value)) {
-            continue;
-        }
-        if (!value || (!/[A-Z:-]/.test(value) && !/(testid|selector|codegen|locator|mcp|config|timeout|browser)/i.test(value))) {
+        // Keep string literals that look like identifiers, paths, or flags —
+        // anything with casing, a separator, or enough length to be specific.
+        if (!value || (!/[A-Z:_/-]/.test(value) && value.length < 12)) {
             continue;
         }
         rawValues.push(value);
@@ -291,19 +279,23 @@ function collectPhraseTokens(
     return uniqueTokens(rawValues.flatMap((value) => buildPhraseTokens(splitPhraseParts(value)))).slice(0, 128);
 }
 
+function isCompoundAnchor(value: string): boolean {
+    const bare = value.replace(/^--/, '');
+    const parts = splitPhraseParts(bare);
+    return parts.length >= 3 || (parts.length === 2 && bare.length >= 10);
+}
+
 function collectRareAnchorTokens(
     text: string,
     relativePath: string,
-    extraValues: string[] = [],
-    includeInternalFragments = false
+    extraValues: string[] = []
 ): string[] {
     const rawValues: string[] = [relativePath, path.basename(relativePath), ...extraValues, text];
     const anchors: string[] = [];
 
     for (const value of rawValues) {
-        for (const pattern of RARE_ANCHOR_PATTERNS) {
-            const regex = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`);
-            for (const match of value.matchAll(regex)) {
+        for (const match of value.matchAll(ANCHOR_CANDIDATE_PATTERN)) {
+            if (isCompoundAnchor(match[0])) {
                 anchors.push(match[0]);
             }
         }
@@ -311,9 +303,7 @@ function collectRareAnchorTokens(
 
     return uniqueTokens(
         anchors.flatMap((value) => collectIdentifierTokens(value, true))
-    )
-        .filter((token) => includeInternalFragments || !/(selector|attribute)/i.test(token))
-        .slice(0, 96);
+    ).slice(0, 96);
 }
 
 function collectPathSegments(value: string): string[] {
@@ -792,7 +782,7 @@ function collectChangePhraseTokens(changedLines: ChangedLines, relativePath: str
 
         return [
             ...values.flatMap((value) => buildPhraseTokens(splitPhraseParts(value))),
-            ...collectRareAnchorTokens(values.join('\n'), relativePath, values, true),
+            ...collectRareAnchorTokens(values.join('\n'), relativePath, values),
         ].filter(isUsefulChangeToken);
     }).slice(0, 96);
 }

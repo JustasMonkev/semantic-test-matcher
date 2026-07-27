@@ -1,0 +1,34 @@
+[
+  { "source": "src/services/match.ts", "expectedTop1": "tests/match.test.ts" },
+  { "source": "src/services/cache.ts", "expectedTop1": "tests/cache.test.ts" },
+  { "source": "src/services/embeddings.ts", "expectedTop1": "tests/embeddings.test.ts" },
+  { "source": "src/services/text-utils.ts", "expectedTop1": "tests/text-utils.test.ts" },
+  { "source": "src/services/document-profile.ts", "expectedTop1": "tests/document-profile.test.ts" },
+  { "source": "src/services/embedding-provider.ts", "expectedTop1": "tests/embedding-provider.test.ts" },
+  { "source": "src/utils/async.ts", "expectedTop1": "tests/async.test.ts" },
+  { "source": "src/utils/io.ts", "expectedTop1": "tests/io.test.ts" },
+  { "source": "src/utils/files.ts", "expectedTop1": "tests/files.test.ts" },
+  { "source": "src/utils/patterns.ts", "expectedTop1": "tests/patterns.test.ts" },
+  { "source": "src/config.ts", "expectedTop1": "tests/config.test.ts" },
+  { "source": "src/commands/benchmark.ts", "expectedTop1": "tests/benchmark.test.ts" },
+  {
+    "source": "src/services/embedding-types.ts",
+    "expectedTop3": ["tests/embeddings.test.ts", "tests/embedding-provider.test.ts"]
+  },
+  {
+    "source": "src/commands/match.ts",
+    "expectedTop3": ["tests/match.test.ts", "tests/files.test.ts", "tests/config.test.ts"]
+  },
+  {
+    "source": "src/commands/embed.ts",
+    "expectedTop3": ["tests/embeddings.test.ts", "tests/config.test.ts", "tests/io.test.ts"]
+  },
+  {
+    "source": "src/commands/status.ts",
+    "expectedTop3": ["tests/config.test.ts", "tests/cache.test.ts", "tests/embeddings.test.ts"]
+  },
+  {
+    "source": "src/cli.ts",
+    "expectedTop3": ["tests/config.test.ts", "tests/benchmark.test.ts", "tests/io.test.ts"]
+  }
+]

@@ -417,4 +417,40 @@ export class Page {
         assert.ok(dialog.changeScore > tracing.changeScore);
         assert.equal(matches[0].file, 'tests/prompt.spec.ts');
     });
+
+    it('prefers an exact stem match over a longer name that contains it', () => {
+        const exact = buildDocumentProfile(`${cwd}/src/price.ts`, PRICE_ENGINE_SOURCE, cwd);
+        const exactSource = { profile: exact, vector: textToVector(exact.embeddingText) };
+        const matches = rankMatches(exactSource, [
+            makeCandidate('tests/price-engine.test.ts', PRICE_ENGINE_TEST, cwd),
+            makeCandidate('tests/price.test.ts', PRICE_ENGINE_TEST, cwd),
+        ]);
+
+        assert.equal(matches[0].file, 'tests/price.test.ts');
+        assert.ok(
+            matches[0].stemScore > matches[1].stemScore,
+            'stem score must discriminate subsets, not saturate at 1'
+        );
+    });
+});
+
+describe('anchor extraction generality', () => {
+    it('anchors any compound identifier, not a hardcoded vocabulary', () => {
+        const cwd = '/repo';
+        const body = (symbol: string) => `export function ${symbol}(x: string) { return x; }`;
+
+        // toolListChanged was hardcoded in RARE_ANCHOR_PATTERNS; the others
+        // never were. All are compound identifiers and must anchor alike.
+        for (const symbol of ['toolListChanged', 'orderBatchUpdated', 'reconcileLedgerEntry']) {
+            const profile = buildDocumentProfile(`${cwd}/src/mod.ts`, body(symbol), cwd);
+            assert.ok(
+                profile.rareAnchorTokens.includes(symbol.toLowerCase()),
+                `${symbol} was not anchored`
+            );
+        }
+
+        // A bare generic word is not distinctive enough to anchor on.
+        const generic = buildDocumentProfile(`${cwd}/src/mod.ts`, body('config'), cwd);
+        assert.ok(!generic.rareAnchorTokens.includes('config'));
+    });
 });

@@ -37,6 +37,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/cli.js",
     "test": "node --experimental-strip-types --test \"tests/**/*.test.ts\"",
+    "bench": "node --experimental-strip-types src/cli.ts benchmark --cases bench/cases.json --candidates tests --min-score 0",
     "lint": "tsc -p tsconfig.json --noEmit",
     "prepack": "npm run build"
   },

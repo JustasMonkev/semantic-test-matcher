@@ -46,8 +46,6 @@ export interface RankedMatchCandidate {
     cacheHit?: boolean;
 }
 
-const ANCHOR_KEYWORD_PATTERN = /(testid|codegen|browsername|dotenv|toollist|mcp|selector|config|timeout|internal|attr)/i;
-
 function tokenWeight(token: string): number {
     let weight = 1;
 
@@ -61,10 +59,6 @@ function tokenWeight(token: string): number {
 
     if (token.length >= 12) {
         weight += 0.35;
-    }
-
-    if (ANCHOR_KEYWORD_PATTERN.test(token)) {
-        weight += 0.5;
     }
 
     return weight;
@@ -146,53 +140,19 @@ function interfaceOverlap(source: DocumentProfile, candidate: DocumentProfile): 
         ...candidate.semanticTokens,
         ...candidate.phraseTokens,
     ];
-    const configPathAligned = candidate.pathFamilyTokens.some((token) =>
-        token === 'config' || token.endsWith('/config') || token.includes('config/')
-    );
-    const orchestrationConfigScore = source.optionTokens.length >= 5 && configPathAligned
-        ? Math.max(
-            focusedWeightedOverlap(source.optionTokens, candidateInterfaceTokens),
-            overlapCoefficient(source.optionTokens, candidateInterfaceTokens),
-            0.58
-        )
-        : 0;
-
     return Math.max(
         overlapCoefficient(sourceInterfaceTokens, candidateInterfaceTokens),
         focusedWeightedOverlap(sourceInterfaceTokens, candidateInterfaceTokens),
         weightedOverlap(sourceInterfaceTokens, candidateInterfaceTokens),
-        orchestrationConfigScore,
     );
 }
 
 function pathFamilyOverlap(source: DocumentProfile, candidate: DocumentProfile): number {
-    const baseScore = weightedOverlap(source.pathFamilyTokens, [
+    return weightedOverlap(source.pathFamilyTokens, [
         ...candidate.pathFamilyTokens,
         ...candidate.commandTokens,
         ...candidate.optionTokens,
     ]);
-    const publicQuerySource = source.exports.some((token) => /(getby|findby|queryby|bytext|bylabel|byrole|testid)/i.test(token));
-    const consumerAnchorScore = Math.max(
-        focusedWeightedOverlap(
-            [...source.exports, ...source.rareAnchorTokens],
-            [...candidate.rareAnchorTokens, ...candidate.testNames]
-        ),
-        weightedOverlap(
-            [...source.exports, ...source.rareAnchorTokens],
-            [...candidate.rareAnchorTokens, ...candidate.testNames]
-        ),
-    );
-    const endUserSurfaceScore = publicQuerySource &&
-        consumerAnchorScore > 0.15 &&
-        (
-            candidate.pathFamilyTokens.includes('page') ||
-            candidate.pathFamilyTokens.includes('browser') ||
-            candidate.pathFamilyTokens.includes('client')
-        )
-        ? 0.7
-        : 0;
-
-    return Math.max(baseScore, endUserSurfaceScore);
 }
 
 function changeOverlap(source: DocumentProfile, candidate: DocumentProfile): number {
@@ -200,7 +160,6 @@ function changeOverlap(source: DocumentProfile, candidate: DocumentProfile): num
         return 0;
     }
 
-    const changeTokens = uniqueTokens([...source.changeTokens, ...source.changePhraseTokens]);
     const publicFalloutTokens = uniqueTokens([
         ...candidate.stemTokens,
         ...candidate.testNames,
@@ -224,13 +183,7 @@ function changeOverlap(source: DocumentProfile, candidate: DocumentProfile): num
     );
     const evidenceWeight = sourceIdentityAligned ? 1 : 0.75;
     const publicFalloutScore = changedTokenCoverage(publicFalloutTokens) * evidenceWeight;
-    let internalChangeScore = changedTokenCoverage(internalChangeTokens);
-    if (
-        candidate.pathFamilyTokens.includes('codegen') &&
-        changeTokens.some((token) => /(internal|attr|attribute|testid)/i.test(token))
-    ) {
-        internalChangeScore = Math.min(1, internalChangeScore + 0.35);
-    }
+    const internalChangeScore = changedTokenCoverage(internalChangeTokens);
 
     return Math.max(publicFalloutScore, internalChangeScore * evidenceWeight);
 }
@@ -246,8 +199,11 @@ function structuralScore(source: DocumentProfile, candidate: DocumentProfile): {
     changeScore: number;
     score: number;
 } {
-    const stemScore = overlapCoefficient(source.stemTokens, candidate.stemTokens);
-    const basenameScore = overlapCoefficient(source.basenameTokens, candidate.basenameTokens);
+    // Dice, not overlap: overlap is subset-blind, so `embeddings` scores a
+    // perfect 1 against `embedding-provider`. For filenames a longer name is a
+    // different module, not a superset match.
+    const stemScore = diceCoefficient(source.stemTokens, candidate.stemTokens);
+    const basenameScore = diceCoefficient(source.basenameTokens, candidate.basenameTokens);
     const semanticScore = overlapCoefficient(source.semanticTokens, candidate.semanticTokens);
     const anchorScore = anchorOverlap(source, candidate);
     const interfaceScore = interfaceOverlap(source, candidate);
@@ -255,15 +211,19 @@ function structuralScore(source: DocumentProfile, candidate: DocumentProfile): {
     const pathFamilyScore = pathFamilyOverlap(source, candidate);
     const changeScore = changeOverlap(source, candidate);
 
+    // ponytail: hand-set weights, not learned. stem/basename carry real weight
+    // because `foo.ts` -> `foo.test.ts` is the naming convention every JS test
+    // runner assumes — it is the strongest prior available. The rest are
+    // guesses; fit them against bench/cases.json before trusting them.
     const weights = {
         changeScore: source.changeTokens.length || source.changePhraseTokens.length ? 0.25 : 0,
-        phraseScore: 0.25,
-        anchorScore: 0.18,
+        stemScore: 0.15,
+        phraseScore: 0.15,
+        anchorScore: 0.15,
         semanticScore: 0.12,
         interfaceScore: 0.10,
         pathFamilyScore: 0.07,
-        stemScore: 0.02,
-        basenameScore: 0.01,
+        basenameScore: 0.05,
     };
     const activeWeightTotal = Object.values(weights).reduce((sum, value) => sum + value, 0);
 

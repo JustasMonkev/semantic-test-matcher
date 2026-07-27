@@ -13,6 +13,9 @@ dist-ssr
 *.gguf
 *.local
 
+# default embedding cache dir
+.rbt
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
