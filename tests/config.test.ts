@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { clamp, resolveConfig } from '../src/config.ts';
+import { DEFAULT_RERANK_DEPTH } from '../src/services/match.ts';
 
 const MANAGED_ENV_VARS = [
     'RBT_MODEL',
@@ -17,6 +18,8 @@ const MANAGED_ENV_VARS = [
     'RBT_MATCH_THRESHOLD',
     'RBT_MIN_SCORE',
     'RBT_MATCH_MIN_SCORE',
+    'RBT_RERANK_DEPTH',
+    'RBT_MATCH_RERANK_DEPTH',
 ];
 
 describe('resolveConfig', () => {
@@ -91,6 +94,37 @@ describe('resolveConfig', () => {
         assert.equal(config.match.threshold, 1);
         assert.equal(config.match.minScore, 0);
         assert.equal(config.match.topK, 1);
+    });
+
+    it('defaults rerankDepth to the built-in prefilter depth', async () => {
+        const config = await resolveConfig({}, {});
+        assert.equal(config.match.rerankDepth, DEFAULT_RERANK_DEPTH);
+    });
+
+    it('resolves rerankDepth from flag, then env vars, then the config file', async () => {
+        const configFile = await writeTempConfig({ match: { rerankDepth: 11 } });
+        assert.equal((await resolveConfig({ config: configFile }, {})).match.rerankDepth, 11);
+
+        process.env.RBT_MATCH_RERANK_DEPTH = '22';
+        assert.equal((await resolveConfig({ config: configFile }, {})).match.rerankDepth, 22);
+
+        process.env.RBT_RERANK_DEPTH = '33';
+        assert.equal((await resolveConfig({ config: configFile }, {})).match.rerankDepth, 33);
+
+        const config = await resolveConfig({ config: configFile }, { rerankDepth: '44' });
+        assert.equal(config.match.rerankDepth, 44);
+    });
+
+    it('floors fractional rerankDepth and clamps negatives to 0', async () => {
+        assert.equal((await resolveConfig({}, { rerankDepth: '12.9' })).match.rerankDepth, 12);
+        assert.equal((await resolveConfig({}, { rerankDepth: '-5' })).match.rerankDepth, 0);
+        assert.equal((await resolveConfig({}, { rerankDepth: '0' })).match.rerankDepth, 0);
+    });
+
+    it('ignores non-numeric rerankDepth input', async () => {
+        assert.equal((await resolveConfig({}, { rerankDepth: 'deep' })).match.rerankDepth, DEFAULT_RERANK_DEPTH);
+        process.env.RBT_RERANK_DEPTH = 'Infinity';
+        assert.equal((await resolveConfig({}, {})).match.rerankDepth, DEFAULT_RERANK_DEPTH);
     });
 
     it('rejects an invalid log level', async () => {

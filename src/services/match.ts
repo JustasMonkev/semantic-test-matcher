@@ -48,6 +48,15 @@ export interface RankedMatchCandidate {
 
 const ANCHOR_KEYWORD_PATTERN = /(testid|codegen|browsername|dotenv|toollist|mcp|selector|config|timeout|internal|attr)/i;
 
+/**
+ * Share of the final score taken from embedding cosine; the rest is structural.
+ *
+ * Cosine over this corpus lands in a narrow band (~0.24-0.80) for every
+ * candidate, so it separates far less than the structural signals do. Dropping
+ * it to zero still costs measurable accuracy, so it stays — just smaller.
+ */
+export const EMBEDDING_WEIGHT = 0.1;
+
 function tokenWeight(token: string): number {
     let weight = 1;
 
@@ -130,6 +139,40 @@ function anchorOverlap(source: DocumentProfile, candidate: DocumentProfile): num
         weightedOverlap(source.rareAnchorTokens, candidateAnchorTokens),
         diceCoefficient(source.phraseTokens, candidateAnchorTokens),
     ));
+}
+
+/**
+ * Filename affinity between the changed module and a candidate test.
+ *
+ * Real test suites name files after the module they cover, but the separators
+ * differ: browserContext.ts is exercised by browsercontext-basic.spec.ts. Joining
+ * the canonical stem words and testing containment catches that; requiring the
+ * contained side to be at least two words stops a single generic word ("browser")
+ * from claiming a whole-name match.
+ */
+function stemOverlap(source: DocumentProfile, candidate: DocumentProfile): number {
+    const sourceTokens = uniqueTokens(source.stemTokens);
+    const candidateTokens = uniqueTokens(candidate.stemTokens);
+
+    if (!sourceTokens.length || !candidateTokens.length) {
+        return 0;
+    }
+
+    const sourceCompact = sourceTokens.join('');
+    const candidateCompact = candidateTokens.join('');
+    if (
+        (sourceTokens.length > 1 && candidateCompact.includes(sourceCompact)) ||
+        (candidateTokens.length > 1 && sourceCompact.includes(candidateCompact))
+    ) {
+        return 1;
+    }
+
+    // Coverage of the source name rather than overlap: dividing by the smaller set
+    // lets a one-word test stem score a perfect match on one shared word, which is
+    // how browser.spec.ts used to outrank browsercontext-basic.spec.ts.
+    const candidateSet = new Set(candidateTokens);
+    const shared = sourceTokens.filter((token) => candidateSet.has(token)).length;
+    return shared / sourceTokens.length;
 }
 
 function interfaceOverlap(source: DocumentProfile, candidate: DocumentProfile): number {
@@ -246,7 +289,7 @@ function structuralScore(source: DocumentProfile, candidate: DocumentProfile): {
     changeScore: number;
     score: number;
 } {
-    const stemScore = overlapCoefficient(source.stemTokens, candidate.stemTokens);
+    const stemScore = stemOverlap(source, candidate);
     const basenameScore = overlapCoefficient(source.basenameTokens, candidate.basenameTokens);
     const semanticScore = overlapCoefficient(source.semanticTokens, candidate.semanticTokens);
     const anchorScore = anchorOverlap(source, candidate);
@@ -255,15 +298,19 @@ function structuralScore(source: DocumentProfile, candidate: DocumentProfile): {
     const pathFamilyScore = pathFamilyOverlap(source, candidate);
     const changeScore = changeOverlap(source, candidate);
 
+    // Tuned against bench/playwright.cases.json with a split-half check; see
+    // openwiki/domain/ranking-model.md before moving these. Filename evidence
+    // (stem/basename) is the strongest single real-world signal for test
+    // selection and was previously weighted almost to zero.
     const weights = {
         changeScore: source.changeTokens.length || source.changePhraseTokens.length ? 0.25 : 0,
         phraseScore: 0.25,
-        anchorScore: 0.18,
+        anchorScore: 0.14,
         semanticScore: 0.12,
+        pathFamilyScore: 0.12,
         interfaceScore: 0.10,
-        pathFamilyScore: 0.07,
-        stemScore: 0.02,
-        basenameScore: 0.01,
+        stemScore: 0.10,
+        basenameScore: 0.05,
     };
     const activeWeightTotal = Object.values(weights).reduce((sum, value) => sum + value, 0);
 
@@ -290,6 +337,37 @@ function structuralScore(source: DocumentProfile, candidate: DocumentProfile): {
     };
 }
 
+export const DEFAULT_RERANK_DEPTH = 64;
+
+/**
+ * Cheap first stage of retrieval: score every candidate structurally and keep
+ * only the strongest `depth` for embedding.
+ *
+ * Structural scoring is pure string work, while each embedding costs tens of
+ * milliseconds of local inference and contributes only `EMBEDDING_WEIGHT` of the
+ * final score. Candidates deep in the structural tail cannot climb into the top
+ * results on embedding alone, so embedding them is wasted time.
+ *
+ * A `depth` of 0 (or one that covers every candidate) disables the prefilter and
+ * embeds everything.
+ */
+export function selectRerankCandidates<T extends { file: string; profile: DocumentProfile }>(
+    source: DocumentProfile,
+    candidates: T[],
+    depth: number
+): T[] {
+    if (!Number.isFinite(depth) || depth <= 0 || candidates.length <= depth) {
+        return candidates;
+    }
+
+    return candidates
+        .map((candidate) => ({ candidate, score: structuralScore(source, candidate.profile).score }))
+        .sort((left, right) =>
+            right.score - left.score || left.candidate.file.localeCompare(right.candidate.file))
+        .slice(0, Math.floor(depth))
+        .map((entry) => entry.candidate);
+}
+
 export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCandidate[]): MatchCandidate[] {
     const normalizedSource = normalizeVector(source.vector);
 
@@ -301,7 +379,7 @@ export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCa
                 1,
                 Math.max(
                     0,
-                    (embeddingScore * 0.2) + (structure.score * 0.8)
+                    (embeddingScore * EMBEDDING_WEIGHT) + (structure.score * (1 - EMBEDDING_WEIGHT))
                 )
             );
 

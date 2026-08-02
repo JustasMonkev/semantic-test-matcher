@@ -1,0 +1,249 @@
+[
+  {
+    "source": "packages/playwright-core/src/server/frames.ts",
+    "expectedTop3": [
+      "tests/page/frame-goto.spec.ts",
+      "tests/page/frame-hierarchy.spec.ts",
+      "tests/page/frame-evaluate.spec.ts",
+      "tests/page/frame-frame-element.spec.ts"
+    ],
+    "expectedTop10Includes": ["tests/page/frame-hierarchy.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/download.ts",
+    "expectedTop3": ["tests/library/download.spec.ts", "tests/library/downloads-path.spec.ts"],
+    "expectedTop10Includes": ["tests/library/download.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/dialog.ts",
+    "expectedTop3": ["tests/page/page-dialog.spec.ts", "tests/mcp/dialogs.spec.ts"],
+    "expectedTop10Includes": ["tests/page/page-dialog.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/screenshotter.ts",
+    "expectedTop3": [
+      "tests/page/page-screenshot.spec.ts",
+      "tests/library/screenshot.spec.ts",
+      "tests/page/elementhandle-screenshot.spec.ts"
+    ],
+    "expectedTop10Includes": ["tests/page/page-screenshot.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/clock.ts",
+    "expectedTop3": ["tests/library/page-clock.spec.ts", "tests/library/unit/clock.spec.ts"],
+    "expectedTop10Includes": ["tests/library/page-clock.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/fetch.ts",
+    "expectedTop3": [
+      "tests/library/global-fetch.spec.ts",
+      "tests/library/browsercontext-fetch.spec.ts",
+      "tests/library/fetch-proxy.spec.ts",
+      "tests/library/global-fetch-cookie.spec.ts"
+    ],
+    "expectedTop10Includes": ["tests/library/global-fetch.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/browserContext.ts",
+    "expectedTop3": [
+      "tests/library/browsercontext-basic.spec.ts",
+      "tests/library/browsercontext-events.spec.ts",
+      "tests/library/browsercontext-reuse.spec.ts",
+      "tests/library/browsercontext-pages.spec.ts"
+    ],
+    "expectedTop10Includes": ["tests/library/browsercontext-basic.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/browserType.ts",
+    "expectedTop3": [
+      "tests/library/browsertype-basic.spec.ts",
+      "tests/library/browsertype-launch.spec.ts",
+      "tests/library/browsertype-connect.spec.ts",
+      "tests/library/browsertype-launch-server.spec.ts"
+    ],
+    "expectedTop10Includes": ["tests/library/browsertype-launch.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/fileChooser.ts",
+    "expectedTop1": "tests/page/page-filechooser.spec.ts",
+    "expectedTop10Includes": ["tests/page/page-filechooser.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/console.ts",
+    "expectedTop3": ["tests/page/page-event-console.spec.ts", "tests/mcp/console.spec.ts"],
+    "expectedTop10Includes": ["tests/page/page-event-console.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/debugController.ts",
+    "expectedTop1": "tests/library/debug-controller.spec.ts",
+    "expectedTop10Includes": ["tests/library/debug-controller.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/debugger.ts",
+    "expectedTop3": ["tests/library/debugger.spec.ts", "tests/library/debug-controller.spec.ts"],
+    "expectedTop10Includes": ["tests/library/debugger.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/selectors.ts",
+    "expectedTop3": [
+      "tests/library/selectors-register.spec.ts",
+      "tests/page/selectors-register.spec.ts",
+      "tests/page/selectors-misc.spec.ts"
+    ],
+    "expectedTop10Includes": ["tests/library/selectors-register.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/screencast.ts",
+    "expectedTop3": [
+      "tests/library/screencast.spec.ts",
+      "tests/library/screencast-actions.spec.ts",
+      "tests/library/screencast-overlay.spec.ts"
+    ],
+    "expectedTop10Includes": ["tests/library/screencast.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/videoRecorder.ts",
+    "expectedTop3": ["tests/library/video.spec.ts", "tests/mcp/video.spec.ts", "tests/library/screencast.spec.ts"],
+    "expectedTop10Includes": ["tests/library/video.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/harBackend.ts",
+    "expectedTop3": [
+      "tests/library/har.spec.ts",
+      "tests/library/browsercontext-har.spec.ts",
+      "tests/library/har-websocket.spec.ts"
+    ],
+    "expectedTop10Includes": ["tests/library/har.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/input.ts",
+    "expectedTop3": [
+      "tests/page/page-keyboard.spec.ts",
+      "tests/page/page-mouse.spec.ts",
+      "tests/mcp/cli-keyboard.spec.ts",
+      "tests/mcp/mouse.spec.ts"
+    ],
+    "expectedTop10Includes": ["tests/page/page-keyboard.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/socksClientCertificatesInterceptor.ts",
+    "expectedTop3": ["tests/library/client-certificates.spec.ts"],
+    "expectedTop10Includes": ["tests/library/client-certificates.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/trace/recorder/tracing.ts",
+    "expectedTop3": [
+      "tests/library/tracing.spec.ts",
+      "tests/library/chromium/tracing.spec.ts",
+      "tests/mcp/tracing.spec.ts"
+    ],
+    "expectedTop10Includes": ["tests/library/tracing.spec.ts"]
+  },
+  {
+    "source": "packages/playwright-core/src/server/dispatchers/frameDispatcher.ts",
+    "expectedTop3": [
+      "tests/page/frame-goto.spec.ts",
+      "tests/page/frame-hierarchy.spec.ts",
+      "tests/page/frame-evaluate.spec.ts",
+      "tests/page/frame-frame-element.spec.ts",
+      "tests/library/channels.spec.ts"
+    ]
+  },
+  {
+    "source": "packages/injected/src/selectorGenerator.ts",
+    "expectedTop3": ["tests/library/selector-generator.spec.ts", "tests/library/locator-generator.spec.ts"],
+    "expectedTop10Includes": ["tests/library/selector-generator.spec.ts"]
+  },
+  {
+    "source": "packages/injected/src/roleUtils.ts",
+    "expectedTop3": ["tests/library/role-utils.spec.ts", "tests/page/selectors-role.spec.ts"],
+    "expectedTop10Includes": ["tests/library/role-utils.spec.ts"]
+  },
+  {
+    "source": "packages/injected/src/ariaSnapshot.ts",
+    "expectedTop3": [
+      "tests/page/page-aria-snapshot.spec.ts",
+      "tests/page/to-match-aria-snapshot.spec.ts",
+      "tests/page/page-aria-snapshot-ai.spec.ts"
+    ],
+    "expectedTop10Includes": ["tests/page/page-aria-snapshot.spec.ts"]
+  },
+  {
+    "source": "packages/injected/src/webAuthn.ts",
+    "expectedTop1": "tests/library/browsercontext-webauthn.spec.ts",
+    "expectedTop10Includes": ["tests/library/browsercontext-webauthn.spec.ts"]
+  },
+  {
+    "source": "packages/injected/src/highlight.ts",
+    "expectedTop3": ["tests/page/locator-highlight.spec.ts", "tests/library/locator-highlight.spec.ts"],
+    "expectedTop10Includes": ["tests/page/locator-highlight.spec.ts"]
+  },
+  {
+    "source": "packages/injected/src/webSocketMock.ts",
+    "expectedTop3": ["tests/library/route-web-socket.spec.ts", "tests/library/web-socket.spec.ts"],
+    "expectedTop10Includes": ["tests/library/route-web-socket.spec.ts"]
+  },
+  {
+    "source": "packages/playwright/src/runner/watchMode.ts",
+    "expectedTop3": ["tests/playwright-test/watch.spec.ts", "tests/playwright-test/ui-mode-test-watch.spec.ts"],
+    "expectedTop10Includes": ["tests/playwright-test/watch.spec.ts"]
+  },
+  {
+    "source": "packages/playwright/src/plugins/webServerPlugin.ts",
+    "expectedTop3": ["tests/playwright-test/web-server.spec.ts"],
+    "expectedTop10Includes": ["tests/playwright-test/web-server.spec.ts"]
+  },
+  {
+    "source": "packages/playwright/src/reporters/junit.ts",
+    "expectedTop3": ["tests/playwright-test/reporter-junit.spec.ts"],
+    "expectedTop10Includes": ["tests/playwright-test/reporter-junit.spec.ts"]
+  },
+  {
+    "source": "packages/playwright/src/reporters/html.ts",
+    "expectedTop3": ["tests/playwright-test/reporter-html.spec.ts"],
+    "expectedTop10Includes": ["tests/playwright-test/reporter-html.spec.ts"]
+  },
+  {
+    "source": "packages/playwright/src/reporters/blob.ts",
+    "expectedTop3": ["tests/playwright-test/reporter-blob.spec.ts"],
+    "expectedTop10Includes": ["tests/playwright-test/reporter-blob.spec.ts"]
+  },
+  {
+    "source": "packages/playwright/src/reporters/github.ts",
+    "expectedTop3": ["tests/playwright-test/reporter-github.spec.ts"],
+    "expectedTop10Includes": ["tests/playwright-test/reporter-github.spec.ts"]
+  },
+  {
+    "source": "packages/playwright/src/common/configLoader.ts",
+    "expectedTop3": [
+      "tests/playwright-test/config.spec.ts",
+      "tests/playwright-test/playwright.config.spec.ts",
+      "tests/playwright-test/loader.spec.ts"
+    ]
+  },
+  {
+    "source": "packages/playwright/src/matchers/toMatchAriaSnapshot.ts",
+    "expectedTop3": [
+      "tests/page/to-match-aria-snapshot.spec.ts",
+      "tests/playwright-test/update-aria-snapshot.spec.ts",
+      "tests/playwright-test/aria-snapshot-file.spec.ts"
+    ],
+    "expectedTop10Includes": ["tests/page/to-match-aria-snapshot.spec.ts"]
+  },
+  {
+    "source": "packages/playwright/src/runner/testGroups.ts",
+    "expectedTop3": [
+      "tests/playwright-test/test-parallel.spec.ts",
+      "tests/playwright-test/test-serial.spec.ts",
+      "tests/playwright-test/shard.spec.ts"
+    ]
+  },
+  {
+    "source": "packages/playwright/src/matchers/toHaveURL.ts",
+    "expectedTop3": [
+      "tests/page/expect-misc.spec.ts",
+      "tests/page/page-wait-for-url.spec.ts",
+      "tests/playwright-test/expect.spec.ts"
+    ]
+  }
+]

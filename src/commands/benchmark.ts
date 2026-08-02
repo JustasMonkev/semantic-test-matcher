@@ -5,11 +5,12 @@ import { resolveConfig } from '../config.ts';
 import { EmbeddingSession } from '../services/embeddings.ts';
 import { buildDocumentProfile, type DocumentProfile } from '../services/document-profile.ts';
 import type { EmbeddingBackend } from '../services/embedding-types.ts';
-import { filterMatches, rankMatches } from '../services/match.ts';
+import { filterMatches, rankMatches, selectRerankCandidates } from '../services/match.ts';
 import { collectCandidateFilesDetailed } from '../utils/files.ts';
 import { mapWithConcurrency } from '../utils/async.ts';
 
 const EMBED_CONCURRENCY = 8;
+const PROFILE_CONCURRENCY = 16;
 
 interface BenchmarkCase {
     source: string;
@@ -27,6 +28,11 @@ interface BenchmarkMiss {
     expectedTop10Includes?: string[];
     observedTop10: string[];
     observedRanks: Record<string, number | null>;
+}
+
+interface ProfiledCandidate {
+    file: string;
+    profile: DocumentProfile;
 }
 
 interface PreparedCandidate {
@@ -102,21 +108,25 @@ async function loadBenchmarkCases(filePath: string): Promise<BenchmarkCase[]> {
     }));
 }
 
-async function prepareCandidates(
-    candidateFiles: string[],
-    session: EmbeddingSession,
-    cwd: string
+async function profileCandidates(candidateFiles: string[], cwd: string): Promise<ProfiledCandidate[]> {
+    return mapWithConcurrency(candidateFiles, PROFILE_CONCURRENCY, async (candidatePath) => ({
+        file: normalizeRelativePath(path.relative(cwd, candidatePath)),
+        profile: buildDocumentProfile(candidatePath, await fs.readFile(candidatePath, 'utf8'), cwd),
+    }));
+}
+
+async function embedCandidates(
+    candidates: ProfiledCandidate[],
+    session: EmbeddingSession
 ): Promise<PreparedCandidate[]> {
-    return mapWithConcurrency(candidateFiles, EMBED_CONCURRENCY, async (candidatePath) => {
-        const candidateText = await fs.readFile(candidatePath, 'utf8');
-        const candidateProfile = buildDocumentProfile(candidatePath, candidateText, cwd);
-        const candidateVector = await session.embed(candidateProfile.embeddingText);
+    return mapWithConcurrency(candidates, EMBED_CONCURRENCY, async (candidate) => {
+        const candidateVector = await session.embed(candidate.profile.embeddingText);
 
         return {
-            file: normalizeRelativePath(path.relative(cwd, candidatePath)),
+            file: candidate.file,
             vector: candidateVector.vector,
-            preview: candidateProfile.preview,
-            profile: candidateProfile,
+            preview: candidate.profile.preview,
+            profile: candidate.profile,
             embeddingBackend: candidateVector.backend,
             cacheHit: candidateVector.cacheHit,
         };
@@ -136,6 +146,7 @@ export function registerBenchmarkCommand(program: Command): void {
         .option('--diff-root <path>', 'Base directory for relative paths in case diffs')
         .option('-t, --threshold <number>', 'Minimum similarity threshold')
         .option('--min-score <number>', 'Minimum similarity score override')
+        .option('--rerank-depth <number>', 'Embed only the top N structural candidates (0 embeds all)')
         .option('--json', 'Print machine-readable output')
         .action(async (options: {
             cases: string;
@@ -147,6 +158,7 @@ export function registerBenchmarkCommand(program: Command): void {
             diffRoot?: string;
             threshold?: string;
             minScore?: string;
+            rerankDepth?: string;
             json?: boolean;
         }) => {
             const rootOptions = program.opts();
@@ -168,6 +180,7 @@ export function registerBenchmarkCommand(program: Command): void {
                     cacheDir: options.cacheDir,
                     threshold: options.threshold,
                     minScore: options.minScore,
+                    rerankDepth: options.rerankDepth,
                     json: options.json,
                 },
                 cwd
@@ -185,7 +198,10 @@ export function registerBenchmarkCommand(program: Command): void {
                 model: config.model,
                 cacheDir: config.cacheDir,
             });
-            const preparedCandidates = await prepareCandidates(candidateResult.files, embeddingSession, cwd);
+            // Same two-stage retrieval the match command uses, so the measured
+            // accuracy is the accuracy users actually get.
+            const profiledCandidates = await profileCandidates(candidateResult.files, cwd);
+            const embeddedCandidates: PreparedCandidate[] = [];
 
             let top1Hits = 0;
             let top1Total = 0;
@@ -212,10 +228,18 @@ export function registerBenchmarkCommand(program: Command): void {
                     cacheHit: sourceVector.cacheHit,
                 });
 
+                const shortlist = selectRerankCandidates(
+                    sourceProfile,
+                    profiledCandidates.filter((candidate) => path.resolve(cwd, candidate.file) !== sourcePath),
+                    config.match.rerankDepth
+                );
+                const preparedCandidates = await embedCandidates(shortlist, embeddingSession);
+                embeddedCandidates.push(...preparedCandidates);
+
                 const matches = filterMatches(
                     rankMatches(
                         { profile: sourceProfile, vector: sourceVector.vector },
-                        preparedCandidates.filter((candidate) => path.resolve(cwd, candidate.file) !== sourcePath)
+                        preparedCandidates
                     ),
                     config.match.minScore
                 );
@@ -269,9 +293,11 @@ export function registerBenchmarkCommand(program: Command): void {
 
             await embeddingSession.flush();
 
-            const embeddingSummary = summarizeEmbeddingBackends(sourceEmbeddings, preparedCandidates);
+            const embeddingSummary = summarizeEmbeddingBackends(sourceEmbeddings, embeddedCandidates);
             const summary = {
                 cases: cases.length,
+                candidates: profiledCandidates.length,
+                rerankDepth: config.match.rerankDepth,
                 threshold: config.match.threshold,
                 minScore: config.match.minScore,
                 top1Cases: top1Total,
@@ -291,6 +317,8 @@ export function registerBenchmarkCommand(program: Command): void {
             }
 
             console.log(`cases: ${summary.cases}`);
+            console.log(`candidates: ${summary.candidates}`);
+            console.log(`rerankDepth: ${summary.rerankDepth}`);
             console.log(`top1Cases: ${summary.top1Cases}`);
             console.log(`top1Rate: ${summary.top1Rate.toFixed(4)}`);
             console.log(`top3Cases: ${summary.top3Cases}`);

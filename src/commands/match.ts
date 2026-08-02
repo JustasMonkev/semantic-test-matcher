@@ -6,10 +6,11 @@ import { parseStdinList, readStdinText } from '../utils/io.ts';
 import { mapWithConcurrency } from '../utils/async.ts';
 import { resolveConfig } from '../config.ts';
 import { EmbeddingSession, getCacheEntryCount } from '../services/embeddings.ts';
-import { filterMatches, rankMatches, type RankedMatchCandidate } from '../services/match.ts';
+import { filterMatches, rankMatches, selectRerankCandidates, type RankedMatchCandidate } from '../services/match.ts';
 import { buildDocumentProfile } from '../services/document-profile.ts';
 
 const EMBED_CONCURRENCY = 8;
+const PROFILE_CONCURRENCY = 16;
 
 export function registerMatchCommand(program: Command): void {
     program
@@ -19,6 +20,7 @@ export function registerMatchCommand(program: Command): void {
         .option('-t, --threshold <number>', 'Minimum similarity threshold')
         .option('--min-score <number>', 'Minimum similarity score override')
         .option('--top-k <number>', 'Keep only top K matches')
+        .option('--rerank-depth <number>', 'Embed only the top N structural candidates (0 embeds all)')
         .option('-c, --candidates <patterns...>', 'Candidate file paths, directories, or file globs')
         .option('--include-file <patterns...>', 'Include only matching files (glob pattern)')
         .option('--exclude-file <patterns...>', 'Exclude matching files (glob pattern)')
@@ -34,6 +36,7 @@ export function registerMatchCommand(program: Command): void {
                 threshold?: string;
                 minScore?: string;
                 topK?: string;
+                rerankDepth?: string;
                 candidates?: string[];
                 includeFile?: string[];
                 excludeFile?: string[];
@@ -62,6 +65,7 @@ export function registerMatchCommand(program: Command): void {
                     threshold: options.threshold,
                     minScore: options.minScore,
                     topK: options.topK,
+                    rerankDepth: options.rerankDepth,
                     candidates: options.candidates?.length ? options.candidates : candidatesFromStdin,
                     includeFile: options.includeFile,
                     excludeFile: options.excludeFile,
@@ -90,8 +94,6 @@ export function registerMatchCommand(program: Command): void {
                 cacheDir: config.cacheDir,
             });
 
-            const sourceEmbedding = await embeddingSession.embed(sourceProfile.embeddingText);
-
             const candidateResult = await collectCandidateFilesDetailed(
                 config.match.candidatePaths,
                 config.match.includePatterns,
@@ -102,19 +104,34 @@ export function registerMatchCommand(program: Command): void {
                 (candidatePath) => path.resolve(candidatePath) !== changedPath
             );
 
-            const ranked: RankedMatchCandidate[] = await mapWithConcurrency(
+            // Stage 1: profile every candidate. This is file I/O and string work only.
+            const profiled = await mapWithConcurrency(
                 candidateFiles,
-                EMBED_CONCURRENCY,
+                PROFILE_CONCURRENCY,
                 async (candidatePath) => {
                     const candidateText = await fs.readFile(candidatePath, 'utf8');
-                    const candidateProfile = buildDocumentProfile(candidatePath, candidateText, process.cwd());
-                    const candidateEmbedding = await embeddingSession.embed(candidateProfile.embeddingText);
 
                     return {
                         file: path.relative(process.cwd(), candidatePath),
+                        profile: buildDocumentProfile(candidatePath, candidateText, process.cwd()),
+                    };
+                }
+            );
+
+            // Stage 2: embed only the structurally strongest candidates.
+            const shortlist = selectRerankCandidates(sourceProfile, profiled, config.match.rerankDepth);
+            const sourceEmbedding = await embeddingSession.embed(sourceProfile.embeddingText);
+            const ranked: RankedMatchCandidate[] = await mapWithConcurrency(
+                shortlist,
+                EMBED_CONCURRENCY,
+                async (candidate) => {
+                    const candidateEmbedding = await embeddingSession.embed(candidate.profile.embeddingText);
+
+                    return {
+                        file: candidate.file,
                         vector: candidateEmbedding.vector,
-                        preview: candidateProfile.preview,
-                        profile: candidateProfile,
+                        preview: candidate.profile.preview,
+                        profile: candidate.profile,
                         embeddingBackend: candidateEmbedding.backend,
                         cacheHit: candidateEmbedding.cacheHit,
                     };
@@ -141,6 +158,9 @@ export function registerMatchCommand(program: Command): void {
                         threshold: config.match.threshold,
                         minScore: config.match.minScore,
                         topK: config.match.topK,
+                        scanned: candidateFiles.length,
+                        reranked: shortlist.length,
+                        rerankDepth: config.match.rerankDepth,
                         source: sourceProfile.preview,
                         sourceEmbedding: {
                             backend: sourceEmbedding.backend,
@@ -157,7 +177,7 @@ export function registerMatchCommand(program: Command): void {
 
             if (!config.quiet) {
                 console.log(
-                    `Matched ${topMatches.length}/${matches.length} candidates for ${path.relative(process.cwd(), changedPath)}`
+                    `Matched ${topMatches.length}/${candidateFiles.length} candidates for ${path.relative(process.cwd(), changedPath)}`
                 );
                 if (candidateResult.truncated) {
                     console.log(`Candidate scan truncated at ${MAX_CANDIDATE_FILES} files`);

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { cosineSimilarity, filterMatches, rankMatches, type RankedMatchCandidate } from '../src/services/match.ts';
+import {
+    cosineSimilarity,
+    filterMatches,
+    rankMatches,
+    selectRerankCandidates,
+    type RankedMatchCandidate,
+} from '../src/services/match.ts';
 import { buildDocumentProfile } from '../src/services/document-profile.ts';
 import { textToVector } from '../src/services/text-utils.ts';
 
@@ -416,5 +422,94 @@ export class Page {
         assert.ok(dialog && tracing);
         assert.ok(dialog.changeScore > tracing.changeScore);
         assert.equal(matches[0].file, 'tests/prompt.spec.ts');
+    });
+});
+
+describe('stem affinity', () => {
+    const cwd = '/repo';
+
+    function stemScoreFor(sourceFile: string, candidateFile: string): number {
+        const profile = buildDocumentProfile(`${cwd}/${sourceFile}`, 'export function noop() {}', cwd);
+        const [match] = rankMatches(
+            { profile, vector: [1, 0] },
+            [makeCandidate(candidateFile, "test('noop', () => noop());", cwd)]
+        );
+        return match.stemScore;
+    }
+
+    it('treats a lowercase-concatenated test name as a full-name match', () => {
+        assert.equal(stemScoreFor('src/browserContext.ts', 'tests/browsercontext-basic.spec.ts'), 1);
+        assert.equal(stemScoreFor('src/browserType.ts', 'tests/browsertype-launch.spec.ts'), 1);
+    });
+
+    it('matches a shorter multi-word test name inside a longer module name', () => {
+        assert.equal(
+            stemScoreFor('src/socksClientCertificatesInterceptor.ts', 'tests/client-certificates.spec.ts'),
+            1
+        );
+    });
+
+    it('scores a single shared word as partial coverage, not a full match', () => {
+        assert.equal(stemScoreFor('src/browserContext.ts', 'tests/browser.spec.ts'), 0.5);
+        assert.equal(stemScoreFor('src/browserContext.ts', 'tests/clock.spec.ts'), 0);
+    });
+
+    it('still credits a one-word module fully covered by the test name', () => {
+        assert.equal(stemScoreFor('src/frames.ts', 'tests/frame-goto.spec.ts'), 1);
+        assert.equal(stemScoreFor('src/download.ts', 'tests/download.spec.ts'), 1);
+    });
+
+    it('ranks the full-name test above one sharing a single word', () => {
+        const profile = buildDocumentProfile(`${cwd}/src/browserContext.ts`, 'export class BrowserContext {}', cwd);
+        const matches = rankMatches({ profile, vector: [1, 0] }, [
+            makeCandidate('tests/browser.spec.ts', "test('browser works', () => {});", cwd),
+            makeCandidate('tests/browsercontext-basic.spec.ts', "test('context works', () => {});", cwd),
+        ]);
+        assert.equal(matches[0].file, 'tests/browsercontext-basic.spec.ts');
+    });
+});
+
+describe('selectRerankCandidates', () => {
+    const cwd = '/repo';
+    const sourceProfile = buildDocumentProfile(`${cwd}/src/price-engine.ts`, PRICE_ENGINE_SOURCE, cwd);
+    const related = makeCandidate('tests/price-engine.test.ts', PRICE_ENGINE_TEST, cwd);
+    const unrelated = makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd);
+    const candidates = [unrelated, related];
+
+    it('keeps the structurally strongest candidates', () => {
+        const shortlist = selectRerankCandidates(sourceProfile, candidates, 1);
+        assert.deepEqual(shortlist.map((entry) => entry.file), ['tests/price-engine.test.ts']);
+    });
+
+    it('passes every candidate through when the prefilter is disabled or wide enough', () => {
+        for (const depth of [0, 2, 3, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+            assert.equal(selectRerankCandidates(sourceProfile, candidates, depth), candidates, `depth ${depth}`);
+        }
+    });
+
+    it('floors a fractional depth', () => {
+        assert.equal(selectRerankCandidates(sourceProfile, candidates, 1.9).length, 1);
+    });
+
+    it('handles an empty candidate list', () => {
+        assert.deepEqual(selectRerankCandidates(sourceProfile, [], 5), []);
+    });
+
+    it('breaks ties by file name so the shortlist is stable', () => {
+        const twins = [
+            { ...unrelated, file: 'tests/b.test.ts' },
+            { ...unrelated, file: 'tests/a.test.ts' },
+        ];
+        const shortlist = selectRerankCandidates(sourceProfile, twins, 1);
+        assert.deepEqual(shortlist.map((entry) => entry.file), ['tests/a.test.ts']);
+    });
+
+    it('does not change the ranking of the candidates it keeps', () => {
+        const shortlist = selectRerankCandidates(sourceProfile, candidates, 2);
+        const source = { profile: sourceProfile, vector: textToVector(sourceProfile.embeddingText) };
+        assert.deepEqual(
+            rankMatches(source, shortlist).map((match) => match.file),
+            rankMatches(source, candidates).map((match) => match.file)
+        );
     });
 });

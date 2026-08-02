@@ -40,6 +40,57 @@ describe('canonicalizeToken', () => {
         assert.equal(canonicalizeToken('campus'), 'campus');
         assert.equal(canonicalizeToken('analysis'), 'analysis');
     });
+
+    it('pairs regular plurals with their singular form', () => {
+        for (const [plural, singular] of [
+            ['frames', 'frame'],
+            ['pages', 'page'],
+            ['routes', 'route'],
+            ['cases', 'case'],
+            ['services', 'service'],
+            ['handles', 'handle'],
+            ['databases', 'database'],
+            ['responses', 'response'],
+            ['releases', 'release'],
+            ['licenses', 'license'],
+            ['clauses', 'clause'],
+        ]) {
+            assert.equal(canonicalizeToken(plural), singular, plural);
+            assert.equal(canonicalizeToken(singular), singular, singular);
+        }
+    });
+
+    it('strips -es only from sibilant and consonant+us stems', () => {
+        for (const [plural, singular] of [
+            ['classes', 'class'],
+            ['boxes', 'box'],
+            ['matches', 'match'],
+            ['watches', 'watch'],
+            ['dishes', 'dish'],
+            ['indexes', 'index'],
+            ['processes', 'process'],
+            ['bonuses', 'bonus'],
+            ['buses', 'bus'],
+            ['statuses', 'status'],
+            ['focuses', 'focus'],
+            ['viruses', 'virus'],
+        ]) {
+            assert.equal(canonicalizeToken(plural), singular, plural);
+        }
+    });
+
+    it('leaves vowel+use words on the plain -s path', () => {
+        assert.equal(canonicalizeToken('houses'), 'house');
+        assert.equal(canonicalizeToken('causes'), 'cause');
+        assert.equal(canonicalizeToken('pauses'), 'pause');
+        assert.equal(canonicalizeToken('uses'), 'use');
+    });
+
+    it('leaves words too short to stem alone', () => {
+        assert.equal(canonicalizeToken('is'), 'is');
+        assert.equal(canonicalizeToken('ies'), 'ies');
+        assert.equal(canonicalizeToken('oes'), 'oes');
+    });
 });
 
 describe('tokenizeText', () => {

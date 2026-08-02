@@ -111,6 +111,11 @@ const STOP_WORDS = new Set([
 
 const COMMON_ACRONYMS = new Set(['api', 'cli', 'gui', 'tui', 'ui', 'uri']);
 
+// Stems that really do take an -es plural: sibilants (classes, boxes, matches,
+// dishes) and consonant+us nouns (bonuses, statuses, buses). The consonant guard
+// keeps vowel+use words intact, so houses/causes/pauses still stem to house/cause/pause.
+const SIBILANT_PLURAL_PATTERN = /(?:(?:ss|x|z|ch|sh)|[^aeiou]us)es$/;
+
 function splitIntoParts(value: string): string[] {
     return value
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -135,7 +140,10 @@ export function canonicalizeToken(token: string, options?: { skipStopWords?: boo
         return `${normalized.slice(0, -3)}y`;
     }
 
-    if (normalized.endsWith('es') && normalized.length > 4) {
+    // Only sibilant stems take an -es plural (classes, boxes, matches, dishes).
+    // Everything else is stem + -s, so stripping -es here would break the
+    // singular/plural pairing: frames -> fram would never match frame.
+    if (SIBILANT_PLURAL_PATTERN.test(normalized) && normalized.length > 4) {
         return normalized.slice(0, -2);
     }
 

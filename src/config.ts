@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isParentPath } from './utils/patterns.ts';
+import { DEFAULT_RERANK_DEPTH } from './services/match.ts';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -8,6 +9,7 @@ export interface MatchDefaults {
     topK: number;
     threshold: number;
     minScore: number;
+    rerankDepth: number;
     candidatePaths: string[];
     includePatterns: string[];
     excludePatterns: string[];
@@ -45,6 +47,7 @@ export interface MatchCommandOptions {
     threshold?: string;
     topK?: string;
     minScore?: string;
+    rerankDepth?: string;
     candidates?: string[];
     includeFile?: string[];
     excludeFile?: string[];
@@ -61,6 +64,7 @@ const DEFAULT_CONFIG: AppConfig = {
         topK: 5,
         threshold: 0,
         minScore: 0,
+        rerankDepth: DEFAULT_RERANK_DEPTH,
         candidatePaths: ['test', 'tests'],
         includePatterns: ['**/*'],
         excludePatterns: ['**/dist/**', '**/.git/**', '**/node_modules/**', '**/build/**']
@@ -260,8 +264,18 @@ export async function resolveConfig(
         fileConfig.match?.minScore
     );
 
+    const resolvedRerankDepth = firstFiniteNumber(
+        commandOptions.rerankDepth,
+        process.env.RBT_RERANK_DEPTH,
+        process.env.RBT_MATCH_RERANK_DEPTH,
+        fileConfig.match?.rerankDepth,
+        DEFAULT_CONFIG.match!.rerankDepth
+)!;
+
     const minScore = clamp(configuredMinScore ?? resolvedThreshold, 0, 1);
     const topK = Math.max(1, Math.floor(clamp(resolvedTopK, 1, 1000)));
+    // 0 disables the structural prefilter and embeds every candidate.
+    const rerankDepth = Math.max(0, Math.floor(clamp(resolvedRerankDepth, 0, Number.MAX_SAFE_INTEGER)));
 
     const resolvedCacheDir = commandOptions.cacheDir ??
         rootOptions.cacheDir ??
@@ -315,6 +329,7 @@ export async function resolveConfig(
             topK,
             threshold: clamp(resolvedThreshold, 0, 1),
             minScore,
+            rerankDepth,
             candidatePaths,
             includePatterns,
             excludePatterns

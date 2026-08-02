@@ -156,6 +156,7 @@ Useful flags:
 - `--threshold <number>`
 - `--min-score <number>`
 - `--top-k <number>`
+- `--rerank-depth <number>` (embed only the top N structural candidates; `0` embeds all)
 - `--candidates <paths...>`
 - `--include-file <glob...>`
 - `--exclude-file <glob...>`
@@ -169,10 +170,30 @@ Useful flags:
 How matching works:
 
 1. The changed file is read and converted into a `DocumentProfile`.
-2. Candidate files are collected from configured paths or stdin.
-3. Each profile is embedded locally with the configured GGUF model.
-4. `rankMatches` blends embedding similarity with structural overlap.
-5. Results are filtered by threshold and truncated to `topK`.
+2. Candidate files are collected from configured paths or stdin, then profiled.
+3. `selectRerankCandidates` keeps the `rerankDepth` strongest candidates by structural
+   score, so only those are embedded. Embedding dominates runtime, and candidates deep
+   in the structural tail cannot climb into the top results on cosine alone.
+4. Each shortlisted profile is embedded locally with the configured GGUF model.
+5. `rankMatches` blends embedding similarity with structural overlap.
+6. Results are filtered by threshold and truncated to `topK`.
+
+`--json` output reports `scanned` (candidates profiled), `reranked` (candidates
+embedded), and the `rerankDepth` in effect.
+
+### `benchmark`
+
+Scores the matcher against a case file of known source/test pairs and reports
+top-1, top-3, and top-10 rates plus the cases that missed.
+
+```bash
+rbt benchmark --cases bench/playwright.cases.json --candidates tests
+```
+
+`bench/playwright.cases.json` holds 36 cases with paths relative to a
+[Playwright](https://github.com/microsoft/playwright) checkout; run it from that
+repo's root. The ranking weights in `structuralScore` were tuned against it with
+a split-half check.
 
 ### `status`
 
@@ -217,6 +238,7 @@ Example config:
   "match": {
     "topK": 5,
     "threshold": 0,
+    "rerankDepth": 64,
     "candidatePaths": ["test", "tests"],
     "includePatterns": ["**/*"],
     "excludePatterns": [
@@ -242,6 +264,8 @@ Environment variables used by the resolver include:
 - `RBT_MATCH_THRESHOLD`
 - `RBT_MIN_SCORE`
 - `RBT_MATCH_MIN_SCORE`
+- `RBT_RERANK_DEPTH`
+- `RBT_MATCH_RERANK_DEPTH`
 
 ## Local Embeddings and Caching
 
