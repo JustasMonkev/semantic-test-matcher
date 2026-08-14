@@ -74,6 +74,12 @@ export function clamp(value: number, min: number, max: number): number {
 
 function firstFiniteNumber(...values: Array<unknown>): number | undefined {
     for (const value of values) {
+        // Number(null) and Number('') are both 0, so an unset env var or an explicit
+        // null in the config file would otherwise outrank every lower-priority source.
+        if (value === null || (typeof value === 'string' && !value.trim())) {
+            continue;
+        }
+
         const parsed = Number(value);
         if (Number.isFinite(parsed)) {
             return parsed;
@@ -165,12 +171,12 @@ export interface LoadedConfig {
     filePath?: string;
 }
 
-export async function loadConfig(configPath?: string): Promise<LoadedConfig> {
+export async function loadConfig(configPath?: string, cwd: string = process.cwd()): Promise<LoadedConfig> {
     const candidates = configPath
-        ? [{ filePath: configPath, autoDiscovered: false }]
+        ? [{ filePath: path.resolve(cwd, configPath), autoDiscovered: false }]
         : [
-            { filePath: path.join(process.cwd(), '.rbt', 'config.json'), autoDiscovered: true },
-            { filePath: path.join(process.cwd(), '.rbtconfig'), autoDiscovered: true },
+            { filePath: path.join(cwd, '.rbt', 'config.json'), autoDiscovered: true },
+            { filePath: path.join(cwd, '.rbtconfig'), autoDiscovered: true },
         ];
 
     for (const candidate of candidates) {
@@ -196,8 +202,9 @@ export async function resolveConfig(
     commandOptions: MatchCommandOptions,
     cwd: string = process.cwd()
 ): Promise<RuntimeConfig> {
-    const { config: fileConfig, autoDiscovered, filePath: configFile } = await loadConfig(rootOptions.config);
     const resolvedWorkspace = path.resolve(cwd);
+    const { config: fileConfig, autoDiscovered, filePath: configFile } =
+        await loadConfig(rootOptions.config, resolvedWorkspace);
     const resolvedModel = commandOptions.model ??
         rootOptions.model ??
         process.env.RBT_MODEL ??

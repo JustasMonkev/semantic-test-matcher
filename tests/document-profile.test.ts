@@ -626,6 +626,262 @@ diff --git a/src/page.ts a/src/page.ts
         assert.ok(profile.embeddingText.includes('signals:'));
     });
 
+    it('profiles an empty file without throwing', () => {
+        const profile = buildDocumentProfile('/repo/src/empty.ts', '', '/repo');
+
+        assert.equal(profile.relativePath, 'src/empty.ts');
+        assert.equal(profile.kind, 'source');
+        assert.deepEqual(profile.exports, []);
+        assert.deepEqual(profile.changeTokens, []);
+        assert.ok(profile.embeddingText.includes('path: src/empty.ts'));
+        assert.ok(profile.preview.length > 0);
+    });
+
+    it('profiles a whitespace-only file without throwing', () => {
+        const profile = buildDocumentProfile('/repo/src/blank.ts', '   \n\n\t\n', '/repo');
+
+        assert.deepEqual(profile.contentTokens, []);
+        assert.ok(profile.embeddingText.includes('kind: source'));
+    });
+
+    it('classifies test, fixture, and source paths', () => {
+        const kindOf = (file: string) => buildDocumentProfile(`/repo/${file}`, '', '/repo').kind;
+
+        assert.equal(kindOf('tests/a.ts'), 'test');
+        assert.equal(kindOf('test/a.ts'), 'test');
+        assert.equal(kindOf('src/a.test.ts'), 'test');
+        assert.equal(kindOf('src/a.spec.tsx'), 'test');
+        assert.equal(kindOf('src/a.spec.mjs'), 'test');
+        assert.equal(kindOf('fixtures/a.ts'), 'fixture');
+        assert.equal(kindOf('src/a.fixture.ts'), 'fixture');
+        assert.equal(kindOf('src/a.ts'), 'source');
+        assert.equal(kindOf('src/latest/a.ts'), 'source');
+    });
+
+    it('keeps both ASCII and non-ASCII signal from the same file', () => {
+        const profile = buildDocumentProfile(
+            '/repo/src/café-价格.ts',
+            'export function applyDiscount() { return 价格; } // naïve résumé 🎉',
+            '/repo'
+        );
+
+        assert.equal(profile.relativePath, 'src/café-价格.ts');
+        assert.ok(profile.embeddingText.includes('path: src/café-价格.ts'));
+        assert.deepEqual(profile.exports, ['apply', 'discount', 'applydiscount']);
+        assert.ok(profile.semanticTokens.includes('discount'));
+        assert.ok(profile.basenameTokens.includes('café'), `lost the accented name: ${JSON.stringify(profile.basenameTokens)}`);
+        assert.ok(profile.basenameTokens.includes('价格'), `lost the CJK name: ${JSON.stringify(profile.basenameTokens)}`);
+        assert.ok(
+            profile.semanticTokens.every((token) => !/[\s🎉]/.test(token)),
+            `emoji or whitespace leaked into tokens: ${JSON.stringify(profile.semanticTokens)}`
+        );
+    });
+
+    // Before tokenization understood non-ASCII scripts a fully Japanese module
+    // produced no usable tokens at all, so it could not be matched to its own test.
+    it('matches a non-ASCII module to its own test', () => {
+        const source = buildDocumentProfile(
+            '/repo/src/価格エンジン.ts',
+            'export function 価格を計算(注文) { return 注文.合計; }',
+            '/repo'
+        );
+
+        assert.ok(source.stemTokens.includes('価格エンジン'));
+        assert.ok(source.semanticTokens.includes('注文'));
+        assert.ok(source.semanticTokens.includes('合計'));
+    });
+
+    it('reads CRLF diffs', () => {
+        const diff = [
+            '--- src/page.ts',
+            '+++ src/page.ts',
+            '@@ -1 +1 @@',
+            '-return capture();',
+            '+return screenshot();',
+            '',
+        ].join('\r\n');
+        const profile = buildDocumentProfile('/repo/src/page.ts', '', '/repo', diff);
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
+    it('ignores diff body lines that never reach a hunk header', () => {
+        const profile = buildDocumentProfile(
+            '/repo/src/page.ts',
+            '',
+            '/repo',
+            '--- src/page.ts\n+++ src/page.ts\n+screenshot();\n'
+        );
+
+        assert.deepEqual(profile.changeTokens, []);
+        assert.deepEqual(profile.changePhraseTokens, []);
+    });
+
+    it('reads a headerless diff body as belonging to the profiled file', () => {
+        const profile = buildDocumentProfile(
+            '/repo/src/page.ts',
+            '',
+            '/repo',
+            '-return capture();\n+return screenshot();\n'
+        );
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
+    it('ignores an empty diff', () => {
+        const profile = buildDocumentProfile('/repo/src/page.ts', 'export const a = 1;', '/repo', '');
+
+        assert.deepEqual(profile.changeTokens, []);
+        assert.ok(!profile.embeddingText.includes('changes:'));
+    });
+
+    it('ignores a diff that only touches other files', () => {
+        const profile = buildDocumentProfile(
+            '/repo/src/page.ts',
+            '',
+            '/repo',
+            '--- src/other.ts\n+++ src/other.ts\n@@ -1 +1 @@\n-return capture();\n+return screenshot();\n'
+        );
+
+        assert.deepEqual(profile.changeTokens, []);
+        assert.deepEqual(profile.changePhraseTokens, []);
+    });
+
+    it('decodes git-quoted paths containing escaped control characters', () => {
+        const quoted = 'src/we\\tird.ts';
+        const profile = buildDocumentProfile(
+            '/repo/src/we\tird.ts',
+            '',
+            '/repo',
+            [
+                `diff --git "a/${quoted}" "b/${quoted}"`,
+                `--- "a/${quoted}"`,
+                `+++ "b/${quoted}"`,
+                '@@ -1 +1 @@',
+                '-return capture();',
+                '+return screenshot();',
+                '',
+            ].join('\n')
+        );
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
+    it('decodes git-quoted paths containing an escaped quote', () => {
+        const quoted = 'src/we\\"ird.ts';
+        const profile = buildDocumentProfile(
+            '/repo/src/we"ird.ts',
+            '',
+            '/repo',
+            [
+                `diff --git "a/${quoted}" "b/${quoted}"`,
+                `--- "a/${quoted}"`,
+                `+++ "b/${quoted}"`,
+                '@@ -1 +1 @@',
+                '-return capture();',
+                '+return screenshot();',
+                '',
+            ].join('\n')
+        );
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+    });
+
+    // A "diff --git" line starts a new file section even when the concatenated diff
+    // omits the ---/+++ headers, so hunks after it must stop counting as this file's.
+    it('stops attributing hunks after a bare diff --git header for another file', () => {
+        const profile = buildDocumentProfile(
+            '/repo/src/page.ts',
+            '',
+            '/repo',
+            [
+                '--- src/page.ts',
+                '+++ src/page.ts',
+                '@@ -1 +1 @@',
+                '-return capture();',
+                '+return screenshot();',
+                'diff --git a/src/other.ts b/src/other.ts',
+                '@@ -1 +1 @@',
+                '-return legacyThing();',
+                '+return newThing();',
+                '',
+            ].join('\n')
+        );
+
+        assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
+        assert.ok(!profile.changeTokens.includes('legacy'));
+        assert.ok(!profile.changeTokens.includes('thing'));
+    });
+
+    it('ignores a diff whose hunk contains no additions or removals', () => {
+        const profile = buildDocumentProfile(
+            '/repo/src/page.ts',
+            '',
+            '/repo',
+            '--- src/page.ts\n+++ src/page.ts\n@@ -1,2 +1,2 @@\n unchanged one\n unchanged two\n'
+        );
+
+        assert.deepEqual(profile.changeTokens, []);
+    });
+
+    it('keeps changed tokens for a pure deletion', () => {
+        const profile = buildDocumentProfile(
+            '/repo/src/page.ts',
+            '',
+            '/repo',
+            '--- src/page.ts\n+++ src/page.ts\n@@ -1 +0,0 @@\n-return legacyScreenshot();\n'
+        );
+
+        assert.ok(profile.changeTokens.includes('legacy'));
+        assert.ok(profile.changePhraseTokens.includes('legacyscreenshot'));
+    });
+
+    it('keeps changed tokens for a pure addition', () => {
+        const profile = buildDocumentProfile(
+            '/repo/src/page.ts',
+            '',
+            '/repo',
+            '--- src/page.ts\n+++ src/page.ts\n@@ -0,0 +1 @@\n+export function freshScreenshot() {}\n'
+        );
+
+        assert.ok(profile.changeTokens.includes('fresh'));
+        assert.ok(profile.changePhraseTokens.includes('freshscreenshot'));
+    });
+
+    it('drops tokens whose added and removed counts cancel out', () => {
+        const profile = buildDocumentProfile(
+            '/repo/src/page.ts',
+            '',
+            '/repo',
+            [
+                '--- src/page.ts',
+                '+++ src/page.ts',
+                '@@ -1,2 +1,2 @@',
+                '-const widget = buildWidget(alpha);',
+                '+const widget = buildWidget(beta);',
+                '',
+            ].join('\n')
+        );
+
+        assert.ok(profile.changeTokens.includes('alpha'));
+        assert.ok(profile.changeTokens.includes('beta'));
+        assert.ok(!profile.changeTokens.includes('widget'), 'a token on both sides is not a change signal');
+    });
+
+    it('bounds change tokens for a very large diff', () => {
+        const additions = Array.from({ length: 400 }, (_, index) => `+const generatedSymbol${index} = ${index};`).join('\n');
+        const profile = buildDocumentProfile(
+            '/repo/src/generated.ts',
+            '',
+            '/repo',
+            `--- src/generated.ts\n+++ src/generated.ts\n@@ -0,0 +1,400 @@\n${additions}`
+        );
+
+        assert.ok(profile.changeTokens.length <= 64);
+        assert.ok(profile.changePhraseTokens.length <= 96);
+        assert.ok(profile.embeddingText.split(/\s+/).length <= 512);
+    });
+
     it('keeps all no-diff section tokens when the complete input already fits', () => {
         const tests = Array.from(
             { length: 40 },

@@ -22,6 +22,32 @@ describe('normalizePattern', () => {
         assert.ok(!regex.test('deep/nested/a.test.tsx'));
     });
 
+    it('matches only the empty string for a blank pattern', () => {
+        const regex = normalizePattern('   ');
+        assert.ok(regex.test(''));
+        assert.ok(!regex.test('src/index.ts'));
+    });
+
+    it('treats regex metacharacters as literals', () => {
+        const regex = normalizePattern('src/a+b(c).ts');
+        assert.ok(regex.test('src/a+b(c).ts'));
+        assert.ok(!regex.test('src/aab_c_.ts'));
+    });
+
+    it('treats bracket expressions as literals rather than character classes', () => {
+        const regex = normalizePattern('src/[ab].ts');
+        assert.ok(regex.test('src/[ab].ts'));
+        assert.ok(!regex.test('src/a.ts'));
+    });
+
+    it('matches case-insensitively', () => {
+        assert.ok(normalizePattern('**/*.TS').test('src/index.ts'));
+    });
+
+    it('normalizes backslashes inside the pattern itself', () => {
+        assert.ok(normalizePattern('src\\utils\\*.ts').test('src/utils/io.ts'));
+    });
+
     it('supports ? as a single character and comma-separated lists', () => {
         const regex = normalizePattern('file?.ts, other.ts');
         assert.ok(regex.test('file1.ts'));

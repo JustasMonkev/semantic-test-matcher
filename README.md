@@ -100,7 +100,7 @@ rbt embed "discount and tax edge cases" --json
 Match a changed file to likely tests:
 
 ```bash
-rbt match prompts-idea/src/price-engine.ts --candidates prompts-idea/tests --json
+rbt match src/services/text-utils.ts --candidates tests --json
 ```
 
 Inspect resolved settings:
@@ -141,14 +141,26 @@ Ranks likely candidate files for a changed source file.
 Examples:
 
 ```bash
-rbt match prompts-idea/src/price-engine.ts --candidates prompts-idea/tests
+rbt match src/services/text-utils.ts --candidates tests
 
-cat prompts-idea/candidate-list.txt | \
-  rbt match prompts-idea/src/price-engine.ts \
+git diff --name-only HEAD -- 'tests/*.ts' | \
+  rbt match src/services/text-utils.ts \
     --candidates-from-stdin \
     --top-k 4 \
     --threshold 0.35 \
     --json
+```
+
+To rank against a change rather than a whole file, pass the diff:
+
+```bash
+git diff HEAD -- src/services/text-utils.ts > change.diff
+
+rbt match src/services/text-utils.ts \
+  --candidates tests \
+  --diff-file change.diff \
+  --diff-root . \
+  --json
 ```
 
 Useful flags:
@@ -256,6 +268,8 @@ Environment variables used by the resolver include:
 - embeddings are cached under `.rbt/cache` by default
 - cache writes are best-effort and do not fail the command if they break
 - `status` reports the current cache entry count
+- entries that fail to parse, or whose vector is missing or non-numeric, are ignored and re-embedded
+- concurrent writers serialize through a lock file; `RBT_CACHE_LOCK_TIMEOUT_MS` overrides the 10s wait
 
 ## Repo Layout
 
@@ -265,33 +279,9 @@ src/
   commands/             Commander subcommands
   services/             embeddings, ranking, document profiling, cache
   utils/                candidate collection, stdin helpers, glob matching
-prompts-idea/
-  src/                  synthetic source files for matching experiments
-  tests/                synthetic tests used as candidates
-  candidate-list.txt    sample stdin input for --candidates-from-stdin
-  README.md             dataset-specific usage notes
+tests/                  node:test suites, one file per module
+models/                 local GGUF file (downloaded separately, git-ignored)
 ```
-
-## Sample Dataset: `prompts-idea/`
-
-`prompts-idea/` is a small synthetic workspace for exercising the matcher. It includes source files, related and unrelated tests, and a candidate list file for stdin-driven matching flows.
-
-Useful commands:
-
-```bash
-npm test
-
-rbt match prompts-idea/src/price-engine.ts \
-  --candidates prompts-idea/tests \
-  --json
-
-cat prompts-idea/candidate-list.txt | \
-  rbt match prompts-idea/src/price-engine.ts \
-    --candidates-from-stdin \
-    --json
-```
-
-For dataset-specific notes, see [prompts-idea/README.md](./prompts-idea/README.md).
 
 ## Development
 

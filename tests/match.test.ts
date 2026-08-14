@@ -97,6 +97,201 @@ describe('rankMatches', () => {
         }
     });
 
+    const COMPONENT_KEYS = [
+        'score',
+        'structuralScore',
+        'embeddingScore',
+        'stemScore',
+        'basenameScore',
+        'semanticScore',
+        'anchorScore',
+        'interfaceScore',
+        'phraseScore',
+        'pathFamilyScore',
+        'changeScore',
+    ] as const;
+
+    it('keeps every reported component finite and within [0, 1] with and without a diff', () => {
+        const diff = [
+            '--- src/price-engine.ts',
+            '+++ src/price-engine.ts',
+            '@@ -1 +1 @@',
+            '-return order.total;',
+            '+return calculateTax(order, region);',
+            '',
+        ].join('\n');
+        const changedProfile = buildDocumentProfile(`${cwd}/src/price-engine.ts`, PRICE_ENGINE_SOURCE, cwd, diff);
+        const candidates = [
+            makeCandidate('tests/price-engine.test.ts', PRICE_ENGINE_TEST, cwd),
+            makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd),
+        ];
+
+        for (const ranked of [
+            rankMatches(source, candidates),
+            rankMatches({ profile: changedProfile, vector: textToVector(changedProfile.embeddingText) }, candidates),
+        ]) {
+            for (const match of ranked) {
+                for (const key of COMPONENT_KEYS) {
+                    const value = match[key];
+                    assert.ok(Number.isFinite(value), `${match.file}.${key} is not finite: ${value}`);
+                    assert.ok(value >= 0 && value <= 1, `${match.file}.${key} out of range: ${value}`);
+                }
+            }
+        }
+    });
+
+    // Nothing else in this suite fails if the embedding term is dropped from the
+    // blend, because structure alone already orders the fixtures correctly.
+    it('lets embedding similarity break a tie between structurally identical candidates', () => {
+        const sharedProfile = buildDocumentProfile(`${cwd}/tests/shared.test.ts`, PRICE_ENGINE_TEST, cwd);
+        const matches = rankMatches(
+            { profile: sourceProfile, vector: [1, 0] },
+            [
+                { file: 'tests/orthogonal.test.ts', vector: [0, 1], preview: '', profile: sharedProfile },
+                { file: 'tests/aligned.test.ts', vector: [1, 0], preview: '', profile: sharedProfile },
+            ]
+        );
+        const aligned = matches.find((match) => match.file === 'tests/aligned.test.ts');
+        const orthogonal = matches.find((match) => match.file === 'tests/orthogonal.test.ts');
+
+        assert.ok(aligned && orthogonal);
+        assert.equal(aligned.structuralScore, orthogonal.structuralScore);
+        assert.equal(aligned.embeddingScore, 1);
+        assert.equal(orthogonal.embeddingScore, 0);
+        assert.ok(
+            aligned.score > orthogonal.score,
+            'embedding similarity must still contribute to the blended score'
+        );
+        assert.equal(matches[0].file, 'tests/aligned.test.ts');
+    });
+
+    it('scores an unrelated candidate with a zero vector without producing NaN', () => {
+        const candidate = makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd);
+        const matches = rankMatches(
+            { profile: sourceProfile, vector: [0, 0, 0] },
+            [{ ...candidate, vector: [0, 0, 0] }]
+        );
+
+        assert.equal(matches[0].embeddingScore, 0);
+        assert.ok(Number.isFinite(matches[0].score));
+    });
+
+    it('treats a mismatched-length candidate vector as zero similarity', () => {
+        const candidate = makeCandidate('tests/price-engine.test.ts', PRICE_ENGINE_TEST, cwd);
+        const matches = rankMatches({ profile: sourceProfile, vector: [1, 0] }, [{ ...candidate, vector: [1, 0, 0] }]);
+
+        assert.equal(matches[0].embeddingScore, 0);
+        assert.ok(matches[0].score > 0, 'structural signal should still be scored');
+    });
+
+    // An option-heavy entrypoint (a CLI surface) is expected to pull config-shaped
+    // tests up even when it shares little else with them.
+    it('boosts a config-path candidate for an option-heavy source', () => {
+        const cliSource = buildDocumentProfile(
+            `${cwd}/src/cli-entry.ts`,
+            `program
+                .option('--browser-name <name>')
+                .option('--test-id-attribute <attr>')
+                .option('--output-dir <dir>')
+                .option('--connect-timeout <ms>')
+                .option('--headless-mode <mode>')
+                .option('--trace-level <level>');`,
+            cwd
+        );
+        const configCandidate = makeCandidate(
+            'tests/config/resolve-config.test.ts',
+            "describe('config resolution', () => { it('reads the browser name option', () => resolveConfig()); });",
+            cwd
+        );
+        const plainCandidate = makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd);
+
+        const matches = rankMatches(
+            { profile: cliSource, vector: textToVector(cliSource.embeddingText) },
+            [plainCandidate, configCandidate]
+        );
+        const config = matches.find((match) => match.file === 'tests/config/resolve-config.test.ts');
+        const plain = matches.find((match) => match.file === 'tests/socket-client.test.ts');
+
+        assert.ok(config && plain);
+        assert.ok(config.interfaceScore >= 0.58, `interfaceScore was ${config.interfaceScore}`);
+        assert.ok(config.score > plain.score);
+        assert.equal(matches[0].file, 'tests/config/resolve-config.test.ts');
+    });
+
+    it('weights long, numeric, and anchor-like tokens above plain ones', () => {
+        const numericSource = buildDocumentProfile(
+            `${cwd}/src/protocol.ts`,
+            'export const browserName = "chromium"; export const retryAfter2Seconds = 2;',
+            cwd
+        );
+        const sharing = makeCandidate(
+            'tests/protocol.test.ts',
+            "describe('protocol', () => { it('uses browserName and retryAfter2Seconds', () => check(browserName, retryAfter2Seconds)); });",
+            cwd
+        );
+        const unrelated = makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd);
+
+        const matches = rankMatches(
+            { profile: numericSource, vector: textToVector(numericSource.embeddingText) },
+            [unrelated, sharing]
+        );
+
+        assert.equal(matches[0].file, 'tests/protocol.test.ts');
+        assert.ok(matches[0].phraseScore > 0);
+    });
+
+    it('produces identical results when ranked twice', () => {
+        const candidates = [
+            makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd),
+            makeCandidate('tests/price-engine.test.ts', PRICE_ENGINE_TEST, cwd),
+        ];
+
+        assert.deepEqual(rankMatches(source, candidates), rankMatches(source, candidates));
+    });
+});
+
+describe('filterMatches', () => {
+    const cwd = '/repo';
+    const sourceProfile = buildDocumentProfile(`${cwd}/src/price-engine.ts`, PRICE_ENGINE_SOURCE, cwd);
+    const source = { profile: sourceProfile, vector: textToVector(sourceProfile.embeddingText) };
+    const candidates = [
+        makeCandidate('tests/price-engine.test.ts', PRICE_ENGINE_TEST, cwd),
+        makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd),
+    ];
+
+    it('keeps a candidate whose score is exactly the minimum', () => {
+        const matches = rankMatches(source, candidates);
+        const exact = matches[0].score;
+
+        assert.ok(filterMatches(matches, exact).some((match) => match.file === matches[0].file));
+    });
+
+    it('drops a candidate just below the minimum', () => {
+        const matches = rankMatches(source, candidates);
+        const justAbove = matches[0].score + Number.EPSILON * 8;
+
+        assert.ok(!filterMatches(matches, justAbove).some((match) => match.file === matches[0].file));
+    });
+
+    it('keeps everything at a minimum of zero', () => {
+        const matches = rankMatches(source, candidates);
+
+        assert.equal(filterMatches(matches, 0).length, matches.length);
+    });
+
+    it('returns an empty list for an unreachable minimum', () => {
+        assert.deepEqual(filterMatches(rankMatches(source, candidates), 1.0000001), []);
+    });
+
+    it('preserves ranking order', () => {
+        const matches = rankMatches(source, candidates);
+
+        assert.deepEqual(
+            filterMatches(matches, 0).map((match) => match.file),
+            matches.map((match) => match.file)
+        );
+    });
+
     it('breaks score ties by file name for stable output', () => {
         const candidateA = makeCandidate('tests/a.test.ts', UNRELATED_TEST, cwd);
         const candidateB = { ...candidateA, file: 'tests/b.test.ts' };

@@ -89,9 +89,30 @@ function getObservedRanks(matches: Array<{ file: string }>, expectedFiles: strin
     return ranks;
 }
 
+function parseBenchmarkCaseFile(raw: string, filePath: string): BenchmarkCase[] {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(raw);
+    } catch (error) {
+        throw new Error(`Failed to parse benchmark case file ${filePath}: ${(error as Error).message}`);
+    }
+
+    if (!Array.isArray(parsed)) {
+        throw new Error(`Benchmark case file ${filePath} must contain a JSON array of cases.`);
+    }
+
+    parsed.forEach((entry, index) => {
+        if (typeof entry !== 'object' || entry === null || typeof (entry as BenchmarkCase).source !== 'string') {
+            throw new Error(`Benchmark case ${index} in ${filePath} must be an object with a "source" string.`);
+        }
+    });
+
+    return parsed as BenchmarkCase[];
+}
+
 async function loadBenchmarkCases(filePath: string): Promise<BenchmarkCase[]> {
     const raw = await fs.readFile(filePath, 'utf8');
-    const parsed = JSON.parse(raw) as BenchmarkCase[];
+    const parsed = parseBenchmarkCaseFile(raw, filePath);
 
     return parsed.map((entry) => ({
         source: normalizeRelativePath(entry.source),

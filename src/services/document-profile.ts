@@ -223,13 +223,13 @@ function collectOptionTokens(text: string): string[] {
 function splitPhraseParts(value: string): string[] {
     return value
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-        .split(/[^A-Za-z0-9]+/)
+        .split(/[^\p{L}\p{N}]+/u)
         .filter(Boolean);
 }
 
 function normalizePhrasePart(part: string): string | null {
-    const normalized = part.toLowerCase().replace(/[^a-z0-9]+/g, '');
-    if (!normalized || normalized.length < 2 || /^\d+$/.test(normalized)) {
+    const normalized = part.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+    if (!normalized || normalized.length < 2 || /^\p{N}+$/u.test(normalized)) {
         return null;
     }
 

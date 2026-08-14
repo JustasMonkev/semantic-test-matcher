@@ -93,6 +93,60 @@ describe('resolveConfig', () => {
         assert.equal(config.match.topK, 1);
     });
 
+    it('reads quiet and verbose from truthy env strings', async () => {
+        for (const truthy of ['1', 'true', 'yes']) {
+            process.env.RBT_QUIET = truthy;
+            process.env.RBT_VERBOSE = truthy;
+            const config = await resolveConfig({}, {});
+            assert.equal(config.quiet, true, `RBT_QUIET=${truthy}`);
+            assert.equal(config.verbose, true, `RBT_VERBOSE=${truthy}`);
+        }
+    });
+
+    it('reads quiet and verbose from falsy env strings', async () => {
+        for (const falsy of ['0', 'false', 'no']) {
+            process.env.RBT_QUIET = falsy;
+            process.env.RBT_VERBOSE = falsy;
+            const config = await resolveConfig({}, {});
+            assert.equal(config.quiet, false, `RBT_QUIET=${falsy}`);
+            assert.equal(config.verbose, false, `RBT_VERBOSE=${falsy}`);
+        }
+    });
+
+    it('falls back to false for an unrecognized boolean env value', async () => {
+        process.env.RBT_QUIET = 'maybe';
+
+        const config = await resolveConfig({}, {});
+        assert.equal(config.quiet, false);
+    });
+
+    it('lets a flag override a falsy env value', async () => {
+        process.env.RBT_QUIET = '0';
+
+        const config = await resolveConfig({ quiet: true }, {});
+        assert.equal(config.quiet, true);
+    });
+
+    it('reads booleans from the config file', async () => {
+        const configFile = await writeTempConfig({ quiet: true, verbose: true });
+
+        const config = await resolveConfig({ config: configFile }, {});
+        assert.equal(config.quiet, true);
+        assert.equal(config.verbose, true);
+    });
+
+    it('treats a blank log level as the default', async () => {
+        process.env.RBT_LOG_LEVEL = '';
+
+        assert.equal((await resolveConfig({}, {})).logLevel, 'info');
+    });
+
+    it('accepts every documented log level', async () => {
+        for (const level of ['debug', 'info', 'warn', 'error'] as const) {
+            assert.equal((await resolveConfig({ logLevel: level.toUpperCase() }, {})).logLevel, level);
+        }
+    });
+
     it('rejects an invalid log level', async () => {
         await assert.rejects(resolveConfig({ logLevel: 'loud' }, {}), /Invalid log level "loud"/);
     });
@@ -106,6 +160,32 @@ describe('resolveConfig', () => {
     it('resolves the cache dir relative to the working directory', async () => {
         const config = await resolveConfig({ cacheDir: 'custom-cache' }, {}, '/workspace-root');
         assert.equal(config.cacheDir, path.resolve('/workspace-root', 'custom-cache'));
+    });
+
+    it('ignores blank numeric env vars instead of reading them as zero', async () => {
+        const configFile = await writeTempConfig({ match: { topK: 20, threshold: 0.4 } });
+        process.env.RBT_TOP_K = '';
+        process.env.RBT_THRESHOLD = '   ';
+
+        const config = await resolveConfig({ config: configFile }, {});
+        assert.equal(config.match.topK, 20);
+        assert.equal(config.match.threshold, 0.4);
+    });
+
+    it('ignores a null value in the config file instead of reading it as zero', async () => {
+        const configFile = await writeTempConfig({ match: { topK: null, threshold: null } });
+
+        const config = await resolveConfig({ config: configFile }, {});
+        assert.equal(config.match.topK, 5);
+        assert.equal(config.match.threshold, 0);
+    });
+
+    it('still reads an explicit zero from an env var', async () => {
+        const configFile = await writeTempConfig({ match: { threshold: 0.4 } });
+        process.env.RBT_THRESHOLD = '0';
+
+        const config = await resolveConfig({ config: configFile }, {});
+        assert.equal(config.match.threshold, 0);
     });
 
     it('uses include patterns from flags and merges exclude patterns with defaults', async () => {

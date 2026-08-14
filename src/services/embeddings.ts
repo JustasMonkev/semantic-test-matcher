@@ -3,6 +3,7 @@ import type { EmbeddingResult } from './embedding-types.ts';
 import {
     buildCacheKey,
     getCacheFile,
+    isUsableCacheEntry,
     loadCache,
     writeCachedEmbeddings,
     type CachedEmbedding,
@@ -61,7 +62,7 @@ export class EmbeddingSession {
         if (!skipCache) {
             const cache = await this.getCache();
             const hit = this.pending[key] ?? cache[key];
-            if (hit?.backend === EMBEDDING_BACKEND) {
+            if (isUsableCacheEntry(hit) && hit.backend === EMBEDDING_BACKEND) {
                 return {
                     vector: hit.vector,
                     backend: hit.backend,

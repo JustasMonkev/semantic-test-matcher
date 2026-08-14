@@ -39,6 +39,21 @@ function isMalformedCache(error: unknown): boolean {
     return error instanceof SyntaxError;
 }
 
+/**
+ * A cache file is local state that can be hand-edited, truncated by a full disk, or
+ * written by an older build, so an entry that survives JSON parsing can still be
+ * unusable. Reject those the same way a malformed file is rejected: treat it as a
+ * miss and re-embed, rather than handing a bad vector to the ranker.
+ */
+export function isUsableCacheEntry(entry: CachedEmbedding | undefined): entry is CachedEmbedding & {
+    backend: EmbeddingBackend;
+} {
+    if (!entry?.backend || !Array.isArray(entry.vector) || !entry.vector.length) {
+        return false;
+    }
+    return entry.vector.every(Number.isFinite);
+}
+
 function getCacheLockFile(filePath: string): string {
     const parsed = path.parse(filePath);
     return path.join(parsed.dir, `${parsed.name}.lock`);
@@ -49,13 +64,18 @@ function getDelayMs(): number {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
+function getLockTimeoutMs(): number {
+    const parsed = Number(process.env.RBT_CACHE_LOCK_TIMEOUT_MS || 0);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : LOCK_TIMEOUT_MS;
+}
+
 async function sleep(ms: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function acquireCacheLock(filePath: string): Promise<{ handle: FileHandle; lockPath: string }> {
     const lockPath = getCacheLockFile(filePath);
-    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    const deadline = Date.now() + getLockTimeoutMs();
 
     await fs.mkdir(path.dirname(filePath), { recursive: true });
 
@@ -155,7 +175,7 @@ export async function readCachedEmbedding(
 ): Promise<{ vector: number[]; backend: EmbeddingBackend } | null> {
     const cache = await loadCache(filePath);
     const hit = cache[buildCacheKey(provider, model, text)];
-    if (!hit || !hit.backend) {
+    if (!isUsableCacheEntry(hit)) {
         return null;
     }
 

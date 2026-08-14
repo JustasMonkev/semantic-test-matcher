@@ -120,10 +120,12 @@ function splitIntoParts(value: string): string[] {
 }
 
 export function canonicalizeToken(token: string, options?: { skipStopWords?: boolean }): string | null {
-    const compact = token.replace(/[^a-z0-9]+/gi, '');
+    // Letters and numbers from any script are kept, so a non-ASCII identifier or test
+    // name still contributes a token instead of collapsing to nothing.
+    const compact = token.replace(/[^\p{L}\p{N}]+/gu, '');
     const normalized = compact.toLowerCase();
     const acronymPlural = /^[A-Z]{2,}s$/.test(compact) || COMMON_ACRONYMS.has(normalized.slice(0, -1));
-    if (!normalized || normalized.length < 2 || /^\d+$/.test(normalized)) {
+    if (!normalized || normalized.length < 2 || /^\p{N}+$/u.test(normalized)) {
         return null;
     }
 

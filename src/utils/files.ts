@@ -46,16 +46,10 @@ async function walkDirectory(
     state: CollectState,
     cwd: string
 ): Promise<void> {
-    if (accumulator.length >= MAX_CANDIDATE_FILES) {
-        state.truncated = true;
-        return;
-    }
-
     const entries = await fs.readdir(current, { withFileTypes: true });
 
     for (const entry of entries) {
-        if (accumulator.length >= MAX_CANDIDATE_FILES) {
-            state.truncated = true;
+        if (state.truncated) {
             break;
         }
 
@@ -81,11 +75,14 @@ async function walkDirectory(
         }
 
         if (includeMatcher(relative) && !seen.has(next)) {
-            seen.add(next);
-            accumulator.push(next);
+            // Only a candidate that cannot be kept proves the scan was truncated;
+            // a tree that lands exactly on the cap has dropped nothing.
             if (accumulator.length >= MAX_CANDIDATE_FILES) {
                 state.truncated = true;
+                break;
             }
+            seen.add(next);
+            accumulator.push(next);
         }
     }
 }
@@ -109,8 +106,7 @@ export async function collectCandidateFilesDetailed(
     const excludeMatcher = createPatternMatcher(excludes, false);
 
     for (const seed of normalizedSeeds) {
-        if (matches.length >= MAX_CANDIDATE_FILES) {
-            state.truncated = true;
+        if (state.truncated) {
             break;
         }
 
@@ -126,11 +122,12 @@ export async function collectCandidateFilesDetailed(
             if (entry.isFile()) {
                 const relative = path.relative(cwd, absolute).replace(/\\/g, '/');
                 if (includeMatcher(relative) && !excludeMatcher(relative) && !seen.has(absolute)) {
-                    seen.add(absolute);
-                    matches.push(absolute);
                     if (matches.length >= MAX_CANDIDATE_FILES) {
                         state.truncated = true;
+                        break;
                     }
+                    seen.add(absolute);
+                    matches.push(absolute);
                 }
                 continue;
             }

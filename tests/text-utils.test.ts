@@ -34,6 +34,20 @@ describe('canonicalizeToken', () => {
         assert.equal(canonicalizeToken('CLIs'), 'cli');
     });
 
+    it('keeps letters and digits from non-Latin scripts', () => {
+        assert.equal(canonicalizeToken('価格'), '価格');
+        assert.equal(canonicalizeToken('Ünterstützung'), 'ünterstützung');
+        assert.equal(canonicalizeToken('café'), 'café');
+        assert.equal(canonicalizeToken('Ελλάδα'), 'ελλάδα');
+    });
+
+    it('still drops punctuation, emoji, and pure numbers in any script', () => {
+        assert.equal(canonicalizeToken('🎉'), null);
+        assert.equal(canonicalizeToken('価格!!'), '価格');
+        assert.equal(canonicalizeToken('---'), null);
+        assert.equal(canonicalizeToken('١٢٣'), null, 'Arabic-Indic digits are still just a number');
+    });
+
     it('does not strip s from singular words ending in us or is', () => {
         assert.equal(canonicalizeToken('status'), 'status');
         assert.equal(canonicalizeToken('focus'), 'focus');

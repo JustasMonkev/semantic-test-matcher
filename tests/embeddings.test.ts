@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createEmbedding, EmbeddingSession } from '../src/services/embeddings.ts';
+import { createEmbedding, EmbeddingSession, getCacheEntryCount } from '../src/services/embeddings.ts';
 import { getCacheFile, loadCache } from '../src/services/cache.ts';
 
 // Stub mode keeps cache tests local and deterministic without loading a GGUF.
@@ -93,6 +93,60 @@ describe('EmbeddingSession (stub)', () => {
             () => new EmbeddingSession({ model: '', cacheDir }),
             /local GGUF embedding model path is required/
         );
+    });
+
+    // The README promises cache writes are best-effort and never fail the command.
+    it('keeps working when the cache cannot be written', async () => {
+        const blocked = path.join(cacheDir, 'blocked');
+        await fs.writeFile(blocked, 'a file where a directory is expected', 'utf8');
+        const session = new EmbeddingSession({ model: 'stub-model', cacheDir: blocked });
+
+        const result = await session.embed('unwritable cache');
+        await session.flush();
+
+        assert.equal(result.cacheHit, false);
+        assert.ok(result.vector.length > 0);
+    });
+
+    it('retries the buffered write on a later flush', async () => {
+        const target = path.join(cacheDir, 'retry');
+        const blocker = path.join(target, 'embeddings.json');
+        await fs.mkdir(blocker, { recursive: true });
+        const session = new EmbeddingSession({ model: 'stub-model', cacheDir: target });
+        await session.embed('deferred');
+        await session.flush();
+
+        await fs.rmdir(blocker);
+        await session.flush();
+
+        assert.equal(Object.keys(await loadCache(getCacheFile(target))).length, 1);
+    });
+
+    it('reports zero cache entries for a missing or unreadable cache', async () => {
+        assert.equal(await getCacheEntryCount(path.join(cacheDir, 'never-created')), 0);
+
+        const malformed = path.join(cacheDir, 'malformed');
+        await fs.mkdir(malformed, { recursive: true });
+        await fs.writeFile(getCacheFile(malformed), 'not json', 'utf8');
+        assert.equal(await getCacheEntryCount(malformed), 0);
+    });
+
+    it('counts persisted cache entries', async () => {
+        const session = makeSession();
+        await session.embed('one');
+        await session.embed('two');
+        await session.flush();
+
+        assert.equal(await getCacheEntryCount(cacheDir), 2);
+    });
+
+    it('keys the cache by model so a model swap misses', async () => {
+        const first = new EmbeddingSession({ model: 'model-a', cacheDir });
+        await first.embed('shared text');
+        await first.flush();
+
+        const second = new EmbeddingSession({ model: 'model-b', cacheDir });
+        assert.equal((await second.embed('shared text')).cacheHit, false);
     });
 
     it('createEmbedding embeds and persists in one call', async () => {
