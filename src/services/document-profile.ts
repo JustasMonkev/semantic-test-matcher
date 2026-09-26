@@ -194,10 +194,61 @@ function collectTestNames(text: string): string[] {
 // The lookbehind skips method calls such as `/\d+/.test('42')`.
 const TEST_TITLE_PATTERN = /(?<![\w$.])(?:test|it|describe)(?:\.(?:describe|only|skip|todo|fixme|fail|failing|slow|serial|parallel|concurrent|sequential))*(?:\.(?:each|for|skipIf|runIf)(?:`[^`]{0,4000}`|\((?:[^()]|\([^()]{0,400}\)){0,4000}\)))?\(\s*(['"`])((?:\\.|(?!\1|\\).)+)\1/g;
 
+// A `/` after one of these starts a regex literal rather than a division.
+const REGEX_PRECEDER = /[(,=:[!&|?{};]/;
+
+/**
+ * The text at the same offsets with comments blanked and string, template, and regex contents
+ * masked, so a match can be checked for being code. A heuristic lexer: a misread literal only
+ * masks up to the end of its line.
+ */
+function maskNonCode(text: string): string {
+    let masked = '';
+    let previousCode = '';
+    let index = 0;
+    while (index < text.length) {
+        const character = text[index];
+        const next = text[index + 1];
+        if (character === '/' && (next === '/' || next === '*')) {
+            const close = next === '/' ? text.indexOf('\n', index) : text.indexOf('*/', index + 2);
+            const end = close === -1 ? text.length : next === '/' ? close : close + 2;
+            masked += text.slice(index, end).replace(/[^\n]/g, ' ');
+            index = end;
+            continue;
+        }
+        const opensLiteral = character === '"' || character === "'" || character === '`'
+            || (character === '/' && (previousCode === '' || REGEX_PRECEDER.test(previousCode)));
+        if (opensLiteral) {
+            let end = index + 1;
+            // Only template literals span lines.
+            while (end < text.length && text[end] !== character && (character === '`' || text[end] !== '\n')) {
+                end += text[end] === '\\' ? 2 : 1;
+            }
+            end = Math.min(end, text.length);
+            const closed = text[end] === character;
+            masked += character + text.slice(index + 1, end).replace(/[^\n]/g, 'x') + (closed ? character : '');
+            index = closed ? end + 1 : end;
+            previousCode = 'x';
+            continue;
+        }
+        masked += character;
+        if (!/\s/.test(character)) {
+            previousCode = character;
+        }
+        index += 1;
+    }
+    return masked;
+}
+
 /** Raw test titles, kept verbatim for consumers that read them as prose. */
 function collectTestTitles(text: string): string[] {
     const titles: string[] = [];
+    const code = maskNonCode(text);
     for (const match of text.matchAll(TEST_TITLE_PATTERN)) {
+        // A call inside a comment or string, such as `// test('example')`, declares no test.
+        if (code[match.index] !== text[match.index]) {
+            continue;
+        }
         const title = match[2].trim().slice(0, MAX_TITLE_LENGTH);
         if (title) {
             titles.push(title);

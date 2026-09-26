@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { buildDocumentProfile, listDiffFiles } from '../src/services/document-profile.ts';
+import { buildDocumentProfile, isTestLike, listDiffFiles } from '../src/services/document-profile.ts';
 
 describe('buildDocumentProfile', () => {
     it('keeps raw test titles, including describe blocks and modifiers', () => {
@@ -136,6 +136,23 @@ diff --git a/src/socket.ts b/src/socket.ts
             buildDocumentProfile('/repo/src/gone.ts', '', '/repo', diff, '.').diffExcerpt,
             '@@ -1 +0,0 @@\n-export const goneTotal = 1;'
         );
+    });
+
+    it('ignores test calls inside comments and strings, so a source module is not test-like', () => {
+        const profile = buildDocumentProfile('/repo/src/checkout.ts', [
+            "// test('commented out', () => {});",
+            "/* describe('in a block comment', () => {}) */",
+            'const usage = "it(\'is documentation\', () => {})";',
+            "const pattern = /test('in a regex')/;",
+            "const template = `test('in a template')`;",
+            "export const total = (price: number) => price * 2; // divides / nothing",
+        ].join('\n'), '/repo');
+
+        assert.deepEqual(profile.testTitles, []);
+        assert.equal(isTestLike(profile), false);
+        const withCall = buildDocumentProfile('/repo/e2e/checkout.ts', "const a = b / 2; test('checks out', () => {});", '/repo');
+        assert.deepEqual(withCall.testTitles, ['checks out']);
+        assert.equal(isTestLike(withCall), true);
     });
 
     it('treats files under __tests__ as tests', () => {
