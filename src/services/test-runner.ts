@@ -95,9 +95,10 @@ export async function runSelectedTests(command: string, files: string[], cwd: st
     if (!files.length) return 0;
     const [executable, ...args] = commandArguments(command);
     const testPaths = [...new Set(files.map(file => path.resolve(cwd, file)))];
-    // The Jev key is for ranking only; the project's tests never need it.
-    const env = { ...process.env };
-    delete env[JEV_API_KEY_ENV];
+    // The Jev key is for ranking only; the project's tests never need it. Windows names are case-insensitive.
+    const env = Object.fromEntries(
+        Object.entries(process.env).filter(([name]) => name.toUpperCase() !== JEV_API_KEY_ENV)
+    );
     return new Promise((resolve, reject) => {
         const child = spawn(executable, [...args, ...testPaths], { cwd, env, stdio: 'inherit', shell: false });
         const interrupt = () => { child.kill('SIGINT'); };

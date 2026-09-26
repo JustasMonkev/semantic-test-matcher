@@ -39,3 +39,15 @@ export async function isWorkspaceContainedPath(targetPath: string, workspace: st
     return isParentPath(workspace, targetPath) &&
         isParentPath(workspace, await resolveRealPath(targetPath));
 }
+
+/** The files that leave root, directly or through a symlink. */
+export async function findPathsOutside(files: string[], root: string): Promise<string[]> {
+    const realRoot = await resolveRealPath(root);
+    const outside: string[] = [];
+    for (const file of files) {
+        if (!isParentPath(root, file) || !isParentPath(realRoot, await resolveRealPath(file))) {
+            outside.push(file);
+        }
+    }
+    return outside;
+}

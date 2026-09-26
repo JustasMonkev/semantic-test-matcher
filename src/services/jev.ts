@@ -31,6 +31,8 @@ const CRITERIA = {
 export interface JevSource {
     profile: DocumentProfile;
     text: string;
+    /** A diff was supplied for this file, so only its hunks may be sent, never its source. */
+    diffOnly?: boolean;
 }
 
 export interface JevCandidate {
@@ -109,7 +111,7 @@ export function buildJevState(source: JevSource): { changed_file: Record<string,
     };
     if (source.profile.diffExcerpt) {
         changedFile.diff = truncate(source.profile.diffExcerpt, MAX_DIFF_CHARS);
-    } else {
+    } else if (!source.diffOnly) {
         // Drop a leading license/doc block so the excerpt spends its budget on code.
         changedFile.source_code = truncate(source.text.replace(/^\s*\/\*[\s\S]*?\*\/\s*/, ''), MAX_SOURCE_CHARS);
     }

@@ -10,6 +10,9 @@ interface Entry {
     value: number;
 }
 
+// Older than the 10 minutes after which a lock whose writer cannot be checked is taken over.
+const ABANDONED_AGE_MS = 11 * 60_000;
+
 async function makeTempCacheFile(): Promise<string> {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-cache-'));
     return path.join(dir, 'cache.json');
@@ -89,17 +92,33 @@ describe('writeCacheEntries', () => {
         assert.deepEqual(await loadCache<Entry>(cacheFile), { key: { value: 1 } });
     });
 
-    it('replaces a stale lock left by a crashed writer', async () => {
+    it('replaces an abandoned lock whose writer cannot be checked', async () => {
         const cacheFile = await makeTempCacheFile();
         const lockFile = path.join(path.dirname(cacheFile), 'cache.lock');
         await fs.writeFile(lockFile, 'crashed writer', 'utf8');
-        const longAgo = new Date(Date.now() - 60_000);
+        const longAgo = new Date(Date.now() - ABANDONED_AGE_MS);
         await fs.utimes(lockFile, longAgo, longAgo);
 
         await writeCacheEntries<Entry>(cacheFile, { key: { value: 1 } });
 
         assert.deepEqual(await loadCache<Entry>(cacheFile), { key: { value: 1 } });
         assert.deepEqual(await fs.readdir(path.dirname(cacheFile)), ['cache.json']);
+    });
+
+    it('keeps a lock whose writer cannot be checked until it is abandoned', async () => {
+        const cacheFile = await makeTempCacheFile();
+        const lockFile = path.join(path.dirname(cacheFile), 'cache.lock');
+        await fs.writeFile(lockFile, `12345\nanother-host\nremote-writer\n`, 'utf8');
+        const longAgo = new Date(Date.now() - 60_000);
+        await fs.utimes(lockFile, longAgo, longAgo);
+
+        const write = writeCacheEntries<Entry>(cacheFile, { key: { value: 1 } });
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        await assert.rejects(fs.stat(cacheFile), (error: NodeJS.ErrnoException) => error.code === 'ENOENT');
+
+        await fs.unlink(lockFile);
+        await write;
+        assert.deepEqual(await loadCache<Entry>(cacheFile), { key: { value: 1 } });
     });
 
     it('keeps an old lock while the writer that holds it is still running', async () => {
@@ -137,7 +156,7 @@ describe('writeCacheEntries', () => {
             const cacheFile = await makeTempCacheFile();
             const lockFile = path.join(path.dirname(cacheFile), 'cache.lock');
             await fs.writeFile(lockFile, 'crashed writer', 'utf8');
-            const longAgo = new Date(Date.now() - 60_000);
+            const longAgo = new Date(Date.now() - ABANDONED_AGE_MS);
             await fs.utimes(lockFile, longAgo, longAgo);
 
             await Promise.all(Array.from({ length: 8 }, (_, index) =>
@@ -152,7 +171,7 @@ describe('writeCacheEntries', () => {
     it('clears a takeover lock left by a crash', async () => {
         const cacheFile = await makeTempCacheFile();
         const lockFile = path.join(path.dirname(cacheFile), 'cache.lock');
-        const longAgo = new Date(Date.now() - 60_000);
+        const longAgo = new Date(Date.now() - ABANDONED_AGE_MS);
         for (const file of [lockFile, `${lockFile}.takeover`]) {
             await fs.writeFile(file, 'crashed writer', 'utf8');
             await fs.utimes(file, longAgo, longAgo);

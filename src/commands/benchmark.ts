@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { normalizePathSeparators } from '../utils/paths.ts';
+import { findPathsOutside, normalizePathSeparators } from '../utils/paths.ts';
 import { resolveConfig } from '../config.ts';
 import { buildDocumentProfile, isTestLike } from '../services/document-profile.ts';
 import { JEV_API_KEY_ENV, JevScorer } from '../services/jev.ts';
@@ -160,6 +160,12 @@ export function registerBenchmarkCommand(program: Command): void {
             let top10IncludeTotal = 0;
             const misses: BenchmarkMiss[] = [];
 
+            // A cases file may come from an untrusted checkout; its sources are read and sent to Jev.
+            const [outsideSource] = await findPathsOutside([...sourcePaths], cwd);
+            if (outsideSource) {
+                throw new Error(`Benchmark source ${outsideSource} is outside the workspace ${cwd}`);
+            }
+
             // Flush even when a later case fails, so answers already paid for stay cached.
             try {
                 for (const entry of cases) {
@@ -180,7 +186,10 @@ export function registerBenchmarkCommand(program: Command): void {
                         (candidate) => path.resolve(cwd, candidate.file) !== sourcePath
                     );
                     if (jevScorer) {
-                        const result = await jevScorer.score({ profile: sourceProfile, text: sourceText }, caseCandidates);
+                        const result = await jevScorer.score(
+                            { profile: sourceProfile, text: sourceText, diffOnly: entry.diffText !== undefined },
+                            caseCandidates
+                        );
                         jevStats.requests += result.requests;
                         jevStats.cacheHits += result.cacheHits;
                         jevStats.inputTokens += result.inputTokens;

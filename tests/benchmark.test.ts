@@ -178,6 +178,25 @@ describe('benchmark command', () => {
         assert.deepEqual(summary.jev.models, ['jev-1.14.0', 'jev-1.15.0']);
     });
 
+    it('rejects benchmark sources outside the workspace before reading them', async () => {
+        await makeWorkspace();
+        const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-outside-'));
+        await fs.writeFile(path.join(outside, 'secret.ts'), 'export const secret = 1;');
+        await fs.symlink(outside, 'linked');
+        const escaping = path.relative(process.cwd(), path.join(outside, 'secret.ts'));
+        for (const source of [escaping, path.join(outside, 'secret.ts'), 'linked/secret.ts']) {
+            await fs.writeFile('cases.json', JSON.stringify([{ source, expectedTop1: 'tests/price.test.ts' }]));
+            const program = new Command();
+            registerBenchmarkCommand(program);
+            await assert.rejects(
+                program.parseAsync(['benchmark', '--cases', 'cases.json', '--candidates', 'tests', '--ranker', 'heuristics'], { from: 'user' }),
+                /is outside the workspace/,
+                source
+            );
+        }
+        await fs.rm(outside, { recursive: true, force: true });
+    });
+
     it('scores a deleted source from its diff and rejects one without a diff', async () => {
         await makeWorkspace();
         await fs.writeFile('tests/reconcile.test.ts', "test('reconciles the ledger balance', () => {});");

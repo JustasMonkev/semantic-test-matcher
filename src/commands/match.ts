@@ -24,7 +24,7 @@ import { buildDocumentProfile, isTestLike, isTestLikeSource, listDiffFiles, reso
 import { readGitChanges } from '../services/git-changes.ts';
 import { detectTestCommand, promptAndRunTests } from '../services/test-runner.ts';
 import { quoteShellArgument } from '../utils/shell.ts';
-import { isParentPath, resolveRealPath } from '../utils/paths.ts';
+import { findPathsOutside } from '../utils/paths.ts';
 
 const READ_CONCURRENCY = 8;
 
@@ -167,21 +167,7 @@ async function resolveChangedFiles(files: string[], options: MatchOptions, cwd: 
     return { automatic, paths, diffText, diffRoot };
 }
 
-/**
- * Discovered changed files are read and may be sent to Jev, so a path that leaves its root,
- * directly or through a symlink, must not be.
- */
-async function findPathsOutside(files: string[], root: string): Promise<string[]> {
-    const realRoot = await resolveRealPath(root);
-    const outside: string[] = [];
-    for (const file of files) {
-        if (!isParentPath(root, file) || !isParentPath(realRoot, await resolveRealPath(file))) {
-            outside.push(file);
-        }
-    }
-    return outside;
-}
-
+// Discovered changed files are read and may be sent to Jev, so none may leave its root.
 async function listContainedDiffFiles(diffText: string, cwd: string, diffRoot: string | undefined): Promise<string[]> {
     const root = resolveDiffRoot(cwd, diffRoot);
     const files = listDiffFiles(diffText, cwd, diffRoot).filter(isAllowedFile);
@@ -269,7 +255,9 @@ async function matchChangedFiles(
                 cacheDir: config.cacheDir,
             });
             for (const { source, fileCandidates } of changed) {
-                jevResults.push(await scorer.score({ profile: source.profile, text: source.text }, fileCandidates));
+                // A supplied --diff-file limits what is sent to its hunks; automatic mode may send a new file's text.
+                const diffOnly = !changes.automatic && changes.diffText !== undefined;
+                jevResults.push(await scorer.score({ profile: source.profile, text: source.text, diffOnly }, fileCandidates));
             }
         } catch (error) {
             if (!(error instanceof JevError)) {

@@ -46,17 +46,20 @@ describe('selected test execution', () => {
     it('does not pass the Jev API key to the test runner', async () => {
         await fs.writeFile(path.join(root, 'env.mjs'), [
             "import fs from 'node:fs';",
-            "fs.writeFileSync('env.json', JSON.stringify({ key: process.env.TYPESAFE_API_KEY ?? null, path: Boolean(process.env.PATH) }));",
+            "fs.writeFileSync('env.json', JSON.stringify({ key: process.env.TYPESAFE_API_KEY ?? null, lowerKey: process.env.typesafe_api_key ?? null, path: Boolean(process.env.PATH) }));",
         ].join('\n'));
         const savedKey = process.env.TYPESAFE_API_KEY;
         process.env.TYPESAFE_API_KEY = 'secret-key';
+        // Windows matches environment names case-insensitively, so every spelling is dropped.
+        process.env.typesafe_api_key = 'secret-key';
         try {
             assert.equal(await runSelectedTests(`"${process.execPath}" env.mjs`, ['tests/price.test.ts'], root), 0);
         } finally {
             if (savedKey === undefined) delete process.env.TYPESAFE_API_KEY;
             else process.env.TYPESAFE_API_KEY = savedKey;
+            delete process.env.typesafe_api_key;
         }
-        assert.deepEqual(JSON.parse(await fs.readFile(path.join(root, 'env.json'), 'utf8')), { key: null, path: true });
+        assert.deepEqual(JSON.parse(await fs.readFile(path.join(root, 'env.json'), 'utf8')), { key: null, lowerKey: null, path: true });
         assert.equal(process.env.TYPESAFE_API_KEY, savedKey);
     });
 

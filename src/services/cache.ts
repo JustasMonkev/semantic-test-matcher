@@ -59,8 +59,8 @@ async function tryCreateLock(lockPath: string): Promise<CacheLock | undefined> {
     }
 }
 
-/** Whether a lock's writer is known to be running: same host, and its PID answers signal 0. */
-function isLockOwnerRunning(contents: string): boolean {
+/** Whether a lock's writer is known to have exited: same host, and its PID no longer exists. */
+function hasLockOwnerExited(contents: string): boolean {
     const [pidLine, host] = contents.split('\n');
     const pid = Number(pidLine);
     if (!Number.isInteger(pid) || pid <= 0 || host !== os.hostname()) {
@@ -68,9 +68,9 @@ function isLockOwnerRunning(contents: string): boolean {
     }
     try {
         process.kill(pid, 0);
-        return true;
+        return false;
     } catch (error) {
-        return (error as NodeJS.ErrnoException).code === 'EPERM';
+        return (error as NodeJS.ErrnoException).code === 'ESRCH';
     }
 }
 
@@ -86,7 +86,9 @@ async function readLockSnapshot(lockPath: string): Promise<LockSnapshot> {
 
 /**
  * True when the held lock is already gone or was stale and removed, so a retry can go at once.
- * A slow writer that is still running keeps its lock; only one that exited (or is unknown) loses it.
+ * A lock is only taken over when its writer has exited, or after ABANDONED_LOCK_MS when its writer
+ * cannot be checked (another host, an unknown format) or its PID may have been reused. Such a writer
+ * can no longer release the lock, so it cannot vanish and be replaced while it is being removed.
  */
 async function clearStaleLock(lockPath: string): Promise<boolean> {
     let stale: LockSnapshot;
@@ -99,7 +101,7 @@ async function clearStaleLock(lockPath: string): Promise<boolean> {
         throw error;
     }
     const ageMs = Date.now() - stale.mtimeMs;
-    if (ageMs <= STALE_LOCK_MS || (ageMs <= ABANDONED_LOCK_MS && isLockOwnerRunning(stale.contents))) {
+    if (ageMs <= STALE_LOCK_MS || (ageMs <= ABANDONED_LOCK_MS && !hasLockOwnerExited(stale.contents))) {
         return false;
     }
     return removeStaleLock(lockPath, stale);
