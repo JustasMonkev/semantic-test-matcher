@@ -11,6 +11,7 @@ const LOCK_TIMEOUT_MS = 10_000;
 const STALE_LOCK_MS = 30_000;
 // A lock whose owner still runs is only taken over after this long, in case its PID was reused.
 const ABANDONED_LOCK_MS = 10 * 60_000;
+const STALE_TAKEOVER_MS = 5_000;
 
 interface CacheLock {
     handle: FileHandle;
@@ -73,26 +74,74 @@ function isLockOwnerRunning(contents: string): boolean {
     }
 }
 
+interface LockSnapshot {
+    contents: string;
+    mtimeMs: number;
+}
+
+async function readLockSnapshot(lockPath: string): Promise<LockSnapshot> {
+    const { mtimeMs } = await fs.stat(lockPath);
+    return { contents: await fs.readFile(lockPath, 'utf8'), mtimeMs };
+}
+
 /**
  * True when the held lock is already gone or was stale and removed, so a retry can go at once.
  * A slow writer that is still running keeps its lock; only one that exited (or is unknown) loses it.
  */
 async function clearStaleLock(lockPath: string): Promise<boolean> {
+    let stale: LockSnapshot;
     try {
-        const ageMs = Date.now() - (await fs.stat(lockPath)).mtimeMs;
-        if (ageMs <= STALE_LOCK_MS) {
+        stale = await readLockSnapshot(lockPath);
+    } catch (error) {
+        if (isMissingFile(error)) {
+            return true;
+        }
+        throw error;
+    }
+    const ageMs = Date.now() - stale.mtimeMs;
+    if (ageMs <= STALE_LOCK_MS || (ageMs <= ABANDONED_LOCK_MS && isLockOwnerRunning(stale.contents))) {
+        return false;
+    }
+    return removeStaleLock(lockPath, stale);
+}
+
+/**
+ * Removes a stale lock while holding a separate takeover lock, so writers never remove it in parallel,
+ * and only if a re-read shows the same stale lock. No writer can create a lock while one exists, and a
+ * stale lock's owner is gone, so the lock cannot change between that re-read and its removal.
+ */
+async function removeStaleLock(lockPath: string, stale: LockSnapshot): Promise<boolean> {
+    const takeoverPath = `${lockPath}.takeover`;
+    let takeover: FileHandle;
+    try {
+        takeover = await fs.open(takeoverPath, 'wx');
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+            throw error;
+        }
+        // Another writer is removing it. A takeover lock is held for a few file operations,
+        // so an old one was left by a crash.
+        const takeoverAgeMs = Date.now() - ((await fs.stat(takeoverPath).catch(() => undefined))?.mtimeMs ?? Date.now());
+        if (takeoverAgeMs > STALE_TAKEOVER_MS) {
+            await fs.unlink(takeoverPath).catch(() => {});
+        }
+        return false;
+    }
+    try {
+        const current = await readLockSnapshot(lockPath);
+        if (current.contents !== stale.contents || current.mtimeMs !== stale.mtimeMs) {
             return false;
         }
-        if (ageMs <= ABANDONED_LOCK_MS && isLockOwnerRunning(await fs.readFile(lockPath, 'utf8'))) {
-            return false;
-        }
-        await fs.unlink(lockPath).catch(() => {});
+        await fs.unlink(lockPath);
         return true;
     } catch (error) {
         if (isMissingFile(error)) {
             return true;
         }
         throw error;
+    } finally {
+        await takeover.close();
+        await fs.unlink(takeoverPath).catch(() => {});
     }
 }
 

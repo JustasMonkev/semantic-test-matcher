@@ -131,6 +131,38 @@ describe('writeCacheEntries', () => {
         assert.deepEqual(await fs.readdir(path.dirname(cacheFile)), ['cache.json']);
     });
 
+    it('lets exactly one writer at a time take over a stale lock, so concurrent writes all persist', async () => {
+        // The race is timing-dependent; several rounds made the previous removal lose entries reliably.
+        for (let round = 0; round < 20; round += 1) {
+            const cacheFile = await makeTempCacheFile();
+            const lockFile = path.join(path.dirname(cacheFile), 'cache.lock');
+            await fs.writeFile(lockFile, 'crashed writer', 'utf8');
+            const longAgo = new Date(Date.now() - 60_000);
+            await fs.utimes(lockFile, longAgo, longAgo);
+
+            await Promise.all(Array.from({ length: 8 }, (_, index) =>
+                writeCacheEntries<Entry>(cacheFile, { [`key${index}`]: { value: index } })
+            ));
+
+            assert.equal(Object.keys(await loadCache<Entry>(cacheFile)).length, 8, `round ${round}`);
+            assert.deepEqual(await fs.readdir(path.dirname(cacheFile)), ['cache.json']);
+        }
+    });
+
+    it('clears a takeover lock left by a crash', async () => {
+        const cacheFile = await makeTempCacheFile();
+        const lockFile = path.join(path.dirname(cacheFile), 'cache.lock');
+        const longAgo = new Date(Date.now() - 60_000);
+        for (const file of [lockFile, `${lockFile}.takeover`]) {
+            await fs.writeFile(file, 'crashed writer', 'utf8');
+            await fs.utimes(file, longAgo, longAgo);
+        }
+
+        await writeCacheEntries<Entry>(cacheFile, { key: { value: 1 } });
+
+        assert.deepEqual(await fs.readdir(path.dirname(cacheFile)), ['cache.json']);
+    });
+
     it('leaves a lock that another writer took over in place', async () => {
         const cacheFile = await makeTempCacheFile();
         const lockFile = path.join(path.dirname(cacheFile), 'cache.lock');

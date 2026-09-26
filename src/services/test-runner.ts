@@ -1,4 +1,6 @@
-import { spawn } from 'node:child_process';
+// Windows runs .cmd shims such as npx.cmd only through cmd.exe; cross-spawn does that with escaped
+// arguments and is plain child_process.spawn elsewhere.
+import spawn from 'cross-spawn';
 import fs from 'node:fs/promises';
 import { constants } from 'node:os';
 import path from 'node:path';
