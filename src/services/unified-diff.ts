@@ -262,7 +262,8 @@ function findGitRoot(cwd: string): string {
     }
 }
 
-function resolveDiffRoot(cwd: string, diffRoot: string | undefined): string {
+/** The directory relative diff paths resolve from: `--diff-root`, else the enclosing Git root. */
+export function resolveDiffRoot(cwd: string, diffRoot: string | undefined): string {
     return diffRoot ? path.resolve(cwd, diffRoot) : findGitRoot(cwd);
 }
 

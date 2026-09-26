@@ -4,7 +4,7 @@ import { normalizePathSeparators } from '../utils/paths.ts';
 import { canonicalizeToken, splitIntoParts, tokenizeText, uniqueTokens } from './text-utils.ts';
 import { collectChangedLines, type ChangedLines } from './unified-diff.ts';
 
-export { listDiffFiles } from './unified-diff.ts';
+export { listDiffFiles, resolveDiffRoot } from './unified-diff.ts';
 
 export type DocumentKind = 'source' | 'test' | 'fixture' | 'unknown';
 
@@ -189,7 +189,9 @@ function collectTestNames(text: string): string[] {
     return uniqueTokens(names);
 }
 
-const TEST_TITLE_PATTERN = /\b(?:test|it|describe)(?:\.(?:describe|only|skip|fixme|fail|slow|serial|parallel))*\(\s*(['"`])((?:\\.|(?!\1|\\).)+)\1/g;
+// `.each(table)`, `.each`table``, `.for(table)`, and `.skipIf(condition)` call once before the title;
+// the bounded table keeps an unclosed call cheap to reject.
+const TEST_TITLE_PATTERN = /\b(?:test|it|describe)(?:\.(?:describe|only|skip|todo|fixme|fail|failing|slow|serial|parallel|concurrent|sequential))*(?:\.(?:each|for|skipIf|runIf)(?:`[^`]{0,4000}`|\((?:[^()]|\([^()]{0,400}\)){0,4000}\)))?\(\s*(['"`])((?:\\.|(?!\1|\\).)+)\1/g;
 
 /** Raw test titles, kept verbatim for consumers that read them as prose. */
 function collectTestTitles(text: string): string[] {

@@ -281,6 +281,55 @@ describe('match command rankers', () => {
             }
         });
 
+        it('ranks every file with heuristics when Jev fails on a later file', async () => {
+            process.env.TYPESAFE_API_KEY = 'test-key';
+            let requests = 0;
+            globalThis.fetch = async (_url, init) => {
+                requests += 1;
+                if (requests > 1) {
+                    return new Response('bad request', { status: 400 });
+                }
+                // SAFETY: the match command's JevScorer serializes the request with this questions map.
+                const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> };
+                return Response.json({
+                    model: 'jev-1.13.0',
+                    answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { type: 'noul', noul: 0.9 }])),
+                });
+            };
+            const { lines, warnings } = await runCli('src/price.ts', 'src/socket.ts', '--json');
+            // SAFETY: --json makes the command's last log line its serialized result.
+            const output = JSON.parse(lines[lines.length - 1]) as { results: MatchOutput['results']; changes: MatchOutput[] };
+
+            assert.equal(requests, 2);
+            assert.equal(warnings.length, 1);
+            assert.deepEqual(output.changes.map((change) => change.ranker), ['heuristics', 'heuristics']);
+            assert.ok(output.changes.every((change) => /HTTP 400/.test(change.rankerFallback ?? '')));
+            assert.ok(output.results.every((result) => result.jevScore === undefined && result.score === result.structuralScore));
+        });
+
+        it('rejects --diff-file paths outside the diff root', async () => {
+            const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-outside-'));
+            await fs.writeFile(path.join(outside, 'secret.ts'), 'export const secret = 1;');
+            const escaping = path.relative(process.cwd(), path.join(outside, 'secret.ts'));
+            await fs.symlink(outside, 'linked');
+            for (const target of [escaping, path.join(outside, 'secret.ts'), 'linked/secret.ts']) {
+                await fs.writeFile('escape.diff', [
+                    `--- ${target}`,
+                    `+++ ${target}`,
+                    '@@ -1 +1 @@',
+                    '-export const secret = 0;',
+                    '+export const secret = 1;',
+                    '',
+                ].join('\n'));
+                await assert.rejects(
+                    runCli('--diff-file', 'escape.diff', '--diff-root', '.', '--ranker', 'heuristics', '--json'),
+                    /outside its diff root/,
+                    target
+                );
+            }
+            await fs.rm(outside, { recursive: true, force: true });
+        });
+
         it('warns once when Jev is unavailable for several files', async () => {
             const { warnings } = await runCli('src/price.ts', 'src/socket.ts', '--json');
 

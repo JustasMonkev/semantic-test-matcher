@@ -107,6 +107,41 @@ describe('benchmark command', () => {
         assert.equal(await getJevCacheEntryCount('.rbt/cache'), 1);
     });
 
+    it('never asks Jev about another case\'s source module', async (t) => {
+        await makeWorkspace();
+        await fs.writeFile('src/tax.ts', 'export const tax = total => total * 0.2;');
+        await fs.writeFile('cases.json', JSON.stringify([
+            { source: 'src/price.ts', expectedTop3: ['tests/price.test.ts'] },
+            { source: 'src/tax.ts', expectedTop3: ['tests/price.test.ts'] },
+        ]));
+        process.env.TYPESAFE_API_KEY = 'test-key';
+        const askedAbout = new Set<string>();
+        t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+            // SAFETY: JevScorer always sends a JSON body with a questions map.
+            const { questions } = JSON.parse(String(init?.body)) as {
+                questions: Record<string, { instructions: { test_file: { path: string } } }>;
+            };
+            for (const question of Object.values(questions)) {
+                askedAbout.add(question.instructions.test_file.path);
+            }
+            return Response.json({
+                model: 'jev-1.13.0',
+                answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.9 }])),
+            });
+        });
+        const originalLog = console.log;
+        console.log = () => {};
+        try {
+            const program = new Command();
+            registerBenchmarkCommand(program);
+            await program.parseAsync(['benchmark', '--cases', 'cases.json', '--candidates', 'src', 'tests', '--json'], { from: 'user' });
+        } finally {
+            console.log = originalLog;
+        }
+
+        assert.deepEqual([...askedAbout], ['tests/price.test.ts']);
+    });
+
     it('scores a deleted source from its diff and rejects one without a diff', async () => {
         await makeWorkspace();
         await fs.writeFile('tests/reconcile.test.ts', "test('reconciles the ledger balance', () => {});");

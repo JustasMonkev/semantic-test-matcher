@@ -38,6 +38,14 @@ describe('loadCache', () => {
         await fs.writeFile(cacheFile, 'not json', 'utf8');
         assert.deepEqual(await loadCache<Entry>(cacheFile), {});
     });
+
+    it('ignores a cache file whose JSON is not an object', async () => {
+        const cacheFile = await makeTempCacheFile();
+        for (const json of ['null', '[]', '42', '"text"']) {
+            await fs.writeFile(cacheFile, json, 'utf8');
+            assert.deepEqual(await loadCache<Entry>(cacheFile), {}, json);
+        }
+    });
 });
 
 describe('writeCacheEntries', () => {

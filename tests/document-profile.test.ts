@@ -629,6 +629,19 @@ diff --git a/src/page.ts a/src/page.ts
         assert.ok(profile.semanticTokens.includes('critical'));
     });
 
+    it('keeps titles of parameterized, concurrent, and conditional tests', () => {
+        const profile = buildDocumentProfile('/workspace/tests/price.test.ts', [
+            "test.each([[1, 2], [total(3), 4]])('applies discount %i', () => {});",
+            'it.concurrent("works concurrently", async () => {});',
+            'describe.each`\n  a | b\n  ${1} | ${2}\n`(\'adds $a\', () => {});',
+            "test.skipIf(process.env.CI)('skips on CI', () => {});",
+            "it.concurrent.each(cases)('runs case %s', async () => {});",
+            "test.step('is a step, not a test', async () => {});",
+        ].join('\n'), '/workspace');
+
+        assert.deepEqual(profile.testTitles, ['applies discount %i', 'works concurrently', 'adds $a', 'skips on CI', 'runs case %s']);
+    });
+
     it('keeps escaped quotes inside test titles', () => {
         const profile = buildDocumentProfile('/workspace/tests/a.spec.ts', 'test("says \\"hi\\"", () => {});', '/workspace');
 
@@ -638,6 +651,7 @@ diff --git a/src/page.ts a/src/page.ts
     // Each payload took seconds, or hung, when a regex could backtrack over it.
     for (const [name, text, diffText] of [
         ['an unterminated test title of backslashes', `test("${'\\'.repeat(40)}`, undefined],
+        ['many unclosed parameterized tests', `test.each(${'a'.repeat(3000)} `.repeat(300), undefined],
         ['many escaped quotes', "\\'aaaaaaaaaa".repeat(20_000), undefined],
         ['a quoted diff header of backslashes', 'export const a = 1;', `diff --git "${'\\'.repeat(48)}\n`],
     ] as const) {

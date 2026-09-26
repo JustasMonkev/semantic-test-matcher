@@ -101,8 +101,13 @@ async function releaseCacheLock(lockPath: string, handle: FileHandle): Promise<v
 
 export async function loadCache<T>(filePath: string): Promise<Record<string, T>> {
     try {
-        const raw = await fs.readFile(filePath, 'utf8');
-        return JSON.parse(raw) as Record<string, T>;
+        const parsed: unknown = JSON.parse(await fs.readFile(filePath, 'utf8'));
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+            debugCache(`Ignoring cache file at ${filePath} that is not a JSON object`);
+            return {};
+        }
+        // SAFETY: entries are checked where they are read (e.g. JevScorer checks model and noul).
+        return parsed as Record<string, T>;
     } catch (error) {
         if (isMissingFile(error)) {
             return {};

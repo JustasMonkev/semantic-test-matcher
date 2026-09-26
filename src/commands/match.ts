@@ -20,10 +20,11 @@ import {
     type MatchCandidate,
     type RankedMatchCandidate,
 } from '../services/match.ts';
-import { buildDocumentProfile, listDiffFiles } from '../services/document-profile.ts';
+import { buildDocumentProfile, listDiffFiles, resolveDiffRoot } from '../services/document-profile.ts';
 import { readGitChanges } from '../services/git-changes.ts';
 import { detectTestCommand, promptAndRunTests } from '../services/test-runner.ts';
 import { quoteShellArgument } from '../utils/shell.ts';
+import { isParentPath, resolveRealPath } from '../utils/paths.ts';
 
 const READ_CONCURRENCY = 8;
 
@@ -157,11 +158,24 @@ async function resolveChangedFiles(files: string[], options: MatchOptions, cwd: 
     const diffRoot = gitChanges?.root ?? options.diffRoot;
     const paths = files.length
         ? files.map((file) => path.resolve(cwd, file))
-        : gitChanges?.files ?? listDiffFiles(diffText ?? '', cwd, diffRoot).filter(isAllowedFile);
+        : gitChanges?.files ?? await listContainedDiffFiles(diffText ?? '', cwd, diffRoot);
     if (!paths.length && !automatic) {
         throw new Error('The --diff-file changes no source files');
     }
     return { automatic, paths, diffText, diffRoot };
+}
+
+/** A --diff-file is untrusted: a path outside its root could send an unrelated file's text to Jev. */
+async function listContainedDiffFiles(diffText: string, cwd: string, diffRoot: string | undefined): Promise<string[]> {
+    const root = resolveDiffRoot(cwd, diffRoot);
+    const realRoot = await resolveRealPath(root);
+    const files = listDiffFiles(diffText, cwd, diffRoot).filter(isAllowedFile);
+    for (const file of files) {
+        if (!isParentPath(root, file) || !isParentPath(realRoot, await resolveRealPath(file))) {
+            throw new Error(`The --diff-file changes ${file}, which is outside its diff root ${root}`);
+        }
+    }
+    return files;
 }
 
 async function loadCandidates(candidateFiles: string[], cwd: string) {
@@ -191,49 +205,56 @@ async function matchChangedFiles(
     candidateLimitReached: boolean,
     cwd: string
 ) {
-    let ranker = config.ranker;
-    let rankerFallback: string | undefined;
-    let scorer: JevScorer | undefined;
-    const reports: ChangeReport[] = [];
     const changedPaths = new Set(changes.paths);
     // A changed source module is never a test to run; a changed test stays a candidate for the other files.
     const unchangedOrTests = candidates.filter((candidate) =>
         candidate.profile.kind === 'test' || !changedPaths.has(path.resolve(cwd, candidate.file))
     );
-    try {
-        // One at a time: a Jev failure switches every later file to heuristics.
-        for (const changedPath of changes.paths) {
-            const source = await readChangedFile(changedPath, changes, cwd);
+    const changed: Array<{ source: ChangedSource; fileCandidates: RankedMatchCandidate[] }> = [];
+    for (const changedPath of changes.paths) {
+        changed.push({
+            source: await readChangedFile(changedPath, changes, cwd),
             // Automatic mode also selects an edited test for itself, so it runs.
-            const fileCandidates = changes.automatic
+            fileCandidates: changes.automatic
                 ? unchangedOrTests
-                : unchangedOrTests.filter((candidate) => path.resolve(cwd, candidate.file) !== changedPath);
-
-            let jevResult: JevScoreResult | undefined;
-            if (ranker === 'jev') {
-                try {
-                    scorer ??= new JevScorer({
-                        apiKey: process.env[JEV_API_KEY_ENV] ?? '',
-                        model: config.jevModel,
-                        cacheDir: config.cacheDir,
-                    });
-                    jevResult = await scorer.score({ profile: source.profile, text: source.text }, fileCandidates);
-                } catch (error) {
-                    if (!(error instanceof JevError)) {
-                        throw error;
-                    }
-                    // Keep test selection working (e.g. CI without the secret); report the downgrade.
-                    rankerFallback = error.message;
-                    ranker = 'heuristics';
-                    console.warn(`Warning: jev ranker unavailable (${error.message}); ranking with heuristics only`);
-                }
-            }
-            reports.push(rankChangedFile(source, fileCandidates, { ranker, rankerFallback, jevResult }, config, candidateLimitReached));
-        }
-    } finally {
-        await scorer?.flush();
+                : unchangedOrTests.filter((candidate) => path.resolve(cwd, candidate.file) !== changedPath),
+        });
     }
-    return reports;
+
+    let ranker = config.ranker;
+    let rankerFallback: string | undefined;
+    const jevResults: JevScoreResult[] = [];
+    if (ranker === 'jev') {
+        let scorer: JevScorer | undefined;
+        try {
+            scorer = new JevScorer({
+                apiKey: process.env[JEV_API_KEY_ENV] ?? '',
+                model: config.jevModel,
+                cacheDir: config.cacheDir,
+            });
+            for (const { source, fileCandidates } of changed) {
+                jevResults.push(await scorer.score({ profile: source.profile, text: source.text }, fileCandidates));
+            }
+        } catch (error) {
+            if (!(error instanceof JevError)) {
+                throw error;
+            }
+            // Keep test selection working (e.g. CI without the secret); report the downgrade.
+            // The whole run falls back, so merged scores never mix Jev-blended and heuristic-only files.
+            rankerFallback = error.message;
+            ranker = 'heuristics';
+            console.warn(`Warning: jev ranker unavailable (${error.message}); ranking with heuristics only`);
+        } finally {
+            await scorer?.flush();
+        }
+    }
+    return changed.map(({ source, fileCandidates }, index) => rankChangedFile(
+        source,
+        fileCandidates,
+        { ranker, rankerFallback, jevResult: ranker === 'jev' ? jevResults[index] : undefined },
+        config,
+        candidateLimitReached
+    ));
 }
 
 async function readChangedFile(changedPath: string, changes: ChangedFiles, cwd: string) {

@@ -145,7 +145,11 @@ export function registerBenchmarkCommand(program: Command): void {
                 })
                 : undefined;
             const jevStats = { requests: 0, cacheHits: 0, inputTokens: 0 };
-            const preparedCandidates = await prepareCandidates(candidateResult.files, cwd);
+            const sourcePaths = new Set(cases.map((entry) => path.resolve(cwd, entry.source)));
+            // As in match, no case's source module is a candidate test; a test-like source stays one.
+            const preparedCandidates = (await prepareCandidates(candidateResult.files, cwd)).filter((candidate) =>
+                candidate.profile.kind === 'test' || !sourcePaths.has(path.resolve(cwd, candidate.file))
+            );
 
             let top1Hits = 0;
             let top1Total = 0;

@@ -148,7 +148,7 @@ Useful flags:
 - `--json`
 - `--paths-only` (print only the selected test paths, one per line)
 
-A deleted file can still be matched: pass a `--diff-file` that contains its deletion. Candidate files larger than 1 MB are skipped with a warning. In text output, a `Why:` line explains fallback selections, such as widening coverage when neither Jev nor the structural score is confident.
+A deleted file can still be matched: pass a `--diff-file` that contains its deletion. Every path a `--diff-file` changes must stay inside its diff root (`--diff-root`, else the Git root); a diff that names a file outside it is rejected. Candidate files larger than 1 MB are skipped with a warning. In text output, a `Why:` line explains fallback selections, such as widening coverage when neither Jev nor the structural score is confident.
 
 How matching works:
 
