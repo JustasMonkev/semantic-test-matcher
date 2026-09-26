@@ -47,7 +47,7 @@ flowchart TD
     F2 --> K
 
     K --> L["Scoring blend"]
-    L --> L1["Jev probability (20%)"]
+    L --> L1["Jev probability (60%)"]
     L --> L2["Change, phrase, and anchor overlap"]
     L --> L3["Semantic token and interface overlap"]
     L --> L4["Path family and basename overlap"]
@@ -103,12 +103,24 @@ rbt completion zsh
 
 ### `match`
 
-Ranks likely candidate files for a changed source file.
+Ranks likely candidate files for one or more changed source files and merges the selections; a test picked for several files keeps its best score.
+
+With no file arguments or `--diff-file`, `rbt match` detects local Git changes under the current directory (staged, unstaged, deleted, and non-ignored untracked JS/TS files). It shows the selected tests, then asks which test command to run. Enter a command such as `npx playwright test`, `npx vitest run`, or `node --test`; press Enter to skip. Selected absolute paths are appended as separate arguments, and RBT returns the runner's exit code. The command accepts quoted arguments, but does not interpret shell operators, variable expansion, or pipelines. Use an executable or wrapper script that accepts test paths as trailing arguments.
+
+This is a one-shot flow, not a watcher. A clean tree or empty selection runs nothing. `--json` and `--paths-only` only report selections and never prompt or execute tests; use these modes without an interactive terminal. Explicit files and `--diff-file` retain their selection-only behavior. Committed branch changes still require a supplied diff.
 
 Examples:
 
 ```bash
+# Detect local changes, select tests, and ask which test command to run
+rbt match --candidates tests
+
 rbt match prompts-idea/src/price-engine.ts --candidates prompts-idea/tests
+
+git diff main > pr.diff
+rbt match --diff-file pr.diff --candidates tests
+
+npx playwright test $(rbt match --diff-file pr.diff --paths-only)
 
 cat prompts-idea/candidate-list.txt | \
   rbt match prompts-idea/src/price-engine.ts \
@@ -122,7 +134,8 @@ Useful flags:
 
 - `--threshold <number>`
 - `--min-score <number>`
-- `--top-k <number>`
+- `--top-k <number>` (optional cap on selected files)
+- `--selection-policy <adaptive|conservative|targeted>`
 - `--candidates <paths...>`
 - `--include-file <glob...>`
 - `--exclude-file <glob...>`
@@ -133,14 +146,19 @@ Useful flags:
 - `--diff-file <path>`
 - `--diff-root <path>` (set the base for relative diff paths, such as `.` for `git diff --relative`)
 - `--json`
+- `--paths-only` (print only the selected test paths, one per line)
+
+A deleted file can still be matched: pass a `--diff-file` that contains its deletion. Candidate files larger than 1 MB are skipped with a warning. In text output, a `Why:` line explains fallback selections, such as widening coverage when neither Jev nor the structural score is confident.
 
 How matching works:
 
 1. The changed file (and its hunks from `--diff-file`) is read and converted into a `DocumentProfile`.
 2. Candidate files are collected from configured paths or stdin.
 3. Jev asks one yes/no question per candidate, "should the tests in this file be re-run to check this change?", and returns a probability. All candidates go in one request; larger suites are batched.
-4. `rankMatches` blends the Jev probability (20%) with structural overlap (80%). With `--ranker heuristics`, or when Jev is unavailable, the structural score is used alone.
-5. Results are filtered by threshold and truncated to `topK`.
+4. `rankMatches` blends the Jev probability (60%) with structural overlap (40%). With `--ranker heuristics`, or when Jev is unavailable, the structural score is used alone.
+5. Results are filtered by the configured minimum score. The default `adaptive` policy selects every Jev-affirmative candidate (probability at least 0.5) plus structurally strong neighbors: candidates in the top structural decile with structural score at least 0.2. When no Jev score reaches 0.7, it widens the structural band to the top quartile; if structural evidence is also weak, it retains all candidates. Without Jev, the wider structural rule applies. These are selection heuristics, not inferred test dependencies or calibrated probabilities. A shared-code change can therefore select more files than a localized change.
+
+There is no default count cap for `adaptive`. `--top-k` (or its config/environment equivalent) limits output after eligibility is computed and may exclude useful tests; JSON reports `eligibleCount`, `selectionLimit`, `selectionTruncated`, and `selectionEvidence`. Explicit `conservative` retains the blended top five by default. Explicit `targeted` retains up to five Jev-affirmative candidates by default and falls back to conservative selection when Jev is unavailable or has no affirmative answers. Both legacy policies also honor an explicit `--top-k`. The fixed bands above are uncalibrated; [the Playwright evaluation](evaluation/playwright/RESULTS.md) records their measured coverage and cost.
 
 ### How Jev is used
 
@@ -152,7 +170,7 @@ How matching works:
 
 ### `benchmark`
 
-Runs the matcher over a JSON file of cases (`source`, optional `diffText`, and `expectedTop1`, `expectedTop3`, or `expectedTop10Includes`) and reports hit rates. It takes the same `--ranker`, `--jev-model`, candidate, and threshold flags as `match`.
+Runs the matcher over a JSON file of cases (`source`, optional `diffText`, and `expectedTop1`, `expectedTop3`, or `expectedTop10Includes`) and reports hit rates. It takes the same `--ranker`, `--jev-model`, candidate, and threshold flags as `match`. Benchmark reports ranking hit rates; it does not apply `match` selection policies.
 
 ```bash
 rbt benchmark --cases cases.json --candidates tests --json
@@ -201,8 +219,8 @@ Example config:
   "cacheDir": ".rbt/cache",
   "logLevel": "info",
   "match": {
-    "topK": 5,
     "threshold": 0,
+    "selectionPolicy": "adaptive",
     "candidatePaths": ["test", "tests"],
     "includePatterns": ["**/*"],
     "excludePatterns": [
@@ -229,6 +247,9 @@ Environment variables used by the resolver include:
 - `RBT_MATCH_THRESHOLD`
 - `RBT_MIN_SCORE`
 - `RBT_MATCH_MIN_SCORE`
+- `RBT_SELECTION_POLICY`
+
+A variable set to an empty string counts as unset, so config and defaults still apply.
 
 `TYPESAFE_API_KEY` supplies the Jev API key. It is only read from the environment, never from config files.
 

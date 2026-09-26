@@ -19,6 +19,7 @@ const MAX_QUESTION_CHARS_PER_REQUEST = 160_000;
 const REQUEST_CONCURRENCY = 4;
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_ATTEMPTS = 5;
+const MAX_RETRY_AFTER_MS = 30_000;
 
 const QUESTION_WITH_DIFF = 'Should the tests in `test_file` be re-run to check the code change shown in `changed_file`?';
 const QUESTION_WITHOUT_DIFF = 'Do the tests in `test_file` exercise the behavior implemented in `changed_file`?';
@@ -66,6 +67,8 @@ interface JevResponse {
     answers: Record<string, { type: string; noul?: number }>;
     usage?: { input_tokens?: number; output_tokens?: number };
 }
+
+type JevAttempt = { response: JevResponse } | { failure: string; retryAfterMs: number };
 
 interface CachedJevAnswer {
     createdAt: string;
@@ -159,6 +162,19 @@ function describeFailure(status: number, body: string): string {
     return `HTTP ${status}${hint}: ${body.slice(0, 200)}`;
 }
 
+// Honors the server's Retry-After (capped) but never waits less than exponential backoff.
+function retryDelayMs(attempt: number, retryAfterMs: number, retryBaseMs: number): number {
+    return Math.max(
+        Math.min(Number.isFinite(retryAfterMs) ? retryAfterMs : 0, MAX_RETRY_AFTER_MS),
+        retryBaseMs * 2 ** (attempt - 1)
+    );
+}
+
+// Batch questions are keyed by candidate index so answers map back to candidates.
+function questionId(index: number): string {
+    return `t${index}`;
+}
+
 async function sleep(ms: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -169,7 +185,8 @@ async function sleep(ms: number): Promise<void> {
  * Each candidate is one Noul question ("should this test file be re-run?") evaluated
  * against a shared state describing the change, so a whole candidate list usually
  * costs one request. Answers are cached per question: the cache is read once per
- * scorer and new answers are written in one locked write on flush().
+ * scorer and new answers are written in one locked write on flush(), which score()
+ * also calls before rethrowing a failure so answers already paid for are kept.
  */
 export class JevScorer {
     private cachePromise?: Promise<Record<string, CachedJevAnswer>>;
@@ -223,31 +240,36 @@ export class JevScorer {
             inputTokens: 0,
         };
 
-        await mapWithConcurrency(batchQuestions(uncached, questions), REQUEST_CONCURRENCY, async (batch) => {
-            const response = await this.request({
-                state,
-                questions: Object.fromEntries(batch.map((index) => [`t${index}`, questions[index]])),
-            });
-            result.requests += 1;
-            result.inputTokens += response.usage?.input_tokens ?? 0;
-            result.model = response.model;
+        try {
+            await mapWithConcurrency(batchQuestions(uncached, questions), REQUEST_CONCURRENCY, async (batch) => {
+                const response = await this.request({
+                    state,
+                    questions: Object.fromEntries(batch.map((index) => [questionId(index), questions[index]])),
+                });
+                result.requests += 1;
+                result.inputTokens += response.usage?.input_tokens ?? 0;
+                result.model = response.model;
 
-            for (const index of batch) {
-                const noul = response.answers?.[`t${index}`]?.noul;
-                if (typeof noul !== 'number' || !Number.isFinite(noul)) {
-                    throw new JevError(`Jev response has no answer for ${candidates[index].file}`);
+                for (const index of batch) {
+                    const noul = response.answers?.[questionId(index)]?.noul;
+                    if (typeof noul !== 'number' || !Number.isFinite(noul)) {
+                        throw new JevError(`Jev response has no answer for ${candidates[index].file}`);
+                    }
+                    scores.set(candidates[index].file, noul);
+                    if (!this.options.skipCache) {
+                        this.pending[keys[index]] = {
+                            createdAt: new Date().toISOString(),
+                            provider: JEV_PROVIDER,
+                            model: response.model,
+                            noul,
+                        };
+                    }
                 }
-                scores.set(candidates[index].file, noul);
-                if (!this.options.skipCache) {
-                    this.pending[keys[index]] = {
-                        createdAt: new Date().toISOString(),
-                        provider: JEV_PROVIDER,
-                        model: response.model,
-                        noul,
-                    };
-                }
-            }
-        });
+            });
+        } catch (error) {
+            await this.flush();
+            throw error;
+        }
 
         return result;
     }
@@ -257,40 +279,47 @@ export class JevScorer {
         const retryBaseMs = this.options.retryBaseMs ?? 500;
 
         for (let attempt = 1; ; attempt += 1) {
-            let failure: string;
-            let retryAfterMs = 0;
-            try {
-                const response = await this.fetchImpl(JEV_ENDPOINT, {
-                    method: 'POST',
-                    headers: {
-                        Authorization: `Bearer ${this.options.apiKey}`,
-                        'Content-Type': 'application/json',
-                    },
-                    body: payload,
-                    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-                });
-                if (response.ok) {
-                    return await response.json() as JevResponse;
-                }
-                failure = describeFailure(response.status, await response.text());
-                if (!isRetryableStatus(response.status)) {
-                    throw new JevError(`Jev request failed (${failure})`);
-                }
-                retryAfterMs = Number(response.headers.get('retry-after') ?? 0) * 1000;
-            } catch (error) {
-                if (error instanceof JevError) {
-                    throw error;
-                }
-                failure = (error as Error).message;
+            const outcome = await this.attempt(payload);
+            if ('response' in outcome) {
+                return outcome.response;
             }
-
             if (attempt >= MAX_ATTEMPTS) {
-                throw new JevError(`Jev request failed after ${attempt} attempts (${failure})`);
+                throw new JevError(`Jev request failed after ${attempt} attempts (${outcome.failure})`);
             }
             if (isDebug()) {
-                console.warn(`Jev request attempt ${attempt} failed (${failure}); retrying`);
+                console.warn(`Jev request attempt ${attempt} failed (${outcome.failure}); retrying`);
             }
-            await sleep(Math.max(Number.isFinite(retryAfterMs) ? retryAfterMs : 0, retryBaseMs * 2 ** (attempt - 1)));
+            await sleep(retryDelayMs(attempt, outcome.retryAfterMs, retryBaseMs));
+        }
+    }
+
+    /** Sends one request. Retryable failures are returned; others throw JevError. */
+    private async attempt(payload: string): Promise<JevAttempt> {
+        try {
+            const response = await this.fetchImpl(JEV_ENDPOINT, {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${this.options.apiKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: payload,
+                signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+            });
+            if (response.ok) {
+                // SAFETY: trusted API contract; score() still checks each answer's noul before use.
+                return { response: await response.json() as JevResponse };
+            }
+            const failure = describeFailure(response.status, await response.text());
+            if (!isRetryableStatus(response.status)) {
+                throw new JevError(`Jev request failed (${failure})`);
+            }
+            return { failure, retryAfterMs: Number(response.headers.get('retry-after') ?? 0) * 1000 };
+        } catch (error) {
+            // Network, timeout, and body-read errors are retryable; our own JevError is final.
+            if (error instanceof JevError) {
+                throw error;
+            }
+            return { failure: (error as Error).message, retryAfterMs: 0 };
         }
     }
 

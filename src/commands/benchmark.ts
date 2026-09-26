@@ -5,8 +5,9 @@ import { resolveConfig } from '../config.ts';
 import { buildDocumentProfile, type DocumentProfile } from '../services/document-profile.ts';
 import { JEV_API_KEY_ENV, JevScorer } from '../services/jev.ts';
 import { filterMatches, rankMatches } from '../services/match.ts';
-import { collectCandidateFilesDetailed } from '../utils/files.ts';
+import { collectCandidateFilesDetailed, readCandidateText } from '../utils/files.ts';
 import { mapWithConcurrency } from '../utils/async.ts';
+import { readFileIfExists } from '../utils/io.ts';
 
 const READ_CONCURRENCY = 8;
 
@@ -78,8 +79,11 @@ async function loadBenchmarkCases(filePath: string): Promise<BenchmarkCase[]> {
 }
 
 async function prepareCandidates(candidateFiles: string[], cwd: string): Promise<PreparedCandidate[]> {
-    return mapWithConcurrency(candidateFiles, READ_CONCURRENCY, async (candidatePath) => {
-        const candidateText = await fs.readFile(candidatePath, 'utf8');
+    const candidates = await mapWithConcurrency(candidateFiles, READ_CONCURRENCY, async (candidatePath) => {
+        const candidateText = await readCandidateText(candidatePath);
+        if (candidateText === undefined) {
+            return undefined;
+        }
         const candidateProfile = buildDocumentProfile(candidatePath, candidateText, cwd);
         return {
             file: normalizeRelativePath(path.relative(cwd, candidatePath)),
@@ -87,6 +91,7 @@ async function prepareCandidates(candidateFiles: string[], cwd: string): Promise
             profile: candidateProfile,
         };
     });
+    return candidates.filter((candidate) => candidate !== undefined);
 }
 
 export function registerBenchmarkCommand(program: Command): void {
@@ -170,7 +175,8 @@ export function registerBenchmarkCommand(program: Command): void {
 
             for (const entry of cases) {
                 const sourcePath = path.resolve(cwd, entry.source);
-                const sourceText = await fs.readFile(sourcePath, 'utf8');
+                const sourceFileText = await readFileIfExists(sourcePath);
+                const sourceText = sourceFileText ?? '';
                 const sourceProfile = buildDocumentProfile(
                     sourcePath,
                     sourceText,
@@ -178,6 +184,9 @@ export function registerBenchmarkCommand(program: Command): void {
                     entry.diffText,
                     options.diffRoot
                 );
+                if (sourceFileText === undefined && !sourceProfile.diffExcerpt) {
+                    throw new Error(`Benchmark source not found: ${entry.source} (add a diffText that deletes it)`);
+                }
                 let caseCandidates = preparedCandidates.filter(
                     (candidate) => path.resolve(cwd, candidate.file) !== sourcePath
                 );

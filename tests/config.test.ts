@@ -18,6 +18,7 @@ const MANAGED_ENV_VARS = [
     'RBT_MATCH_MIN_SCORE',
     'RBT_RANKER',
     'RBT_JEV_MODEL',
+    'RBT_SELECTION_POLICY',
 ];
 
 describe('resolveConfig', () => {
@@ -45,9 +46,10 @@ describe('resolveConfig', () => {
         const config = await resolveConfig({}, {});
         assert.equal(config.cacheDir, path.resolve('.rbt/cache'));
         assert.equal(config.logLevel, 'info');
-        assert.equal(config.match.topK, 5);
+        assert.equal(config.match.topK, undefined);
         assert.equal(config.match.threshold, 0);
         assert.equal(config.match.minScore, 0);
+        assert.equal(config.match.selectionPolicy, 'adaptive');
         assert.deepEqual(config.match.candidatePaths, ['test', 'tests']);
     });
 
@@ -82,6 +84,15 @@ describe('resolveConfig', () => {
         await assert.rejects(resolveConfig({}, { ranker: 'embedding' }), /Invalid ranker "embedding"/);
     });
 
+    it('resolves selection policy from config, environment, then command options', async () => {
+        const configFile = await writeTempConfig({ match: { selectionPolicy: 'targeted' } });
+        assert.equal((await resolveConfig({ config: configFile }, {})).match.selectionPolicy, 'targeted');
+        process.env.RBT_SELECTION_POLICY = 'conservative';
+        assert.equal((await resolveConfig({ config: configFile }, {})).match.selectionPolicy, 'conservative');
+        assert.equal((await resolveConfig({ config: configFile }, { selectionPolicy: 'targeted' })).match.selectionPolicy, 'targeted');
+        await assert.rejects(resolveConfig({}, { selectionPolicy: 'unsafe' }), /Invalid selection policy/);
+    });
+
     it('prefers command options over root options and env vars', async () => {
         process.env.RBT_TOP_K = '9';
         const config = await resolveConfig(
@@ -90,6 +101,69 @@ describe('resolveConfig', () => {
         );
         assert.equal(config.cacheDir, path.resolve('command-cache'));
         assert.equal(config.match.topK, 3);
+    });
+
+    it('leaves adaptive selection uncapped until a config, env, or CLI limit is supplied', async () => {
+        assert.equal((await resolveConfig({}, {})).match.topK, undefined);
+        const configFile = await writeTempConfig({ match: { topK: 7 } });
+        assert.equal((await resolveConfig({ config: configFile }, {})).match.topK, 7);
+        process.env.RBT_TOP_K = '4';
+        assert.equal((await resolveConfig({ config: configFile }, {})).match.topK, 4);
+        assert.equal((await resolveConfig({ config: configFile }, { topK: '2' })).match.topK, 2);
+    });
+
+    it('treats empty numeric env vars and null config values as unset', async () => {
+        process.env.RBT_TOP_K = '';
+        process.env.RBT_THRESHOLD = ' ';
+        process.env.RBT_MIN_SCORE = '';
+        const configFile = await writeTempConfig({ match: { topK: null, threshold: 0.4 } });
+        const config = await resolveConfig({ config: configFile }, {});
+        assert.equal(config.match.topK, undefined);
+        assert.equal(config.match.threshold, 0.4);
+        assert.equal(config.match.minScore, 0.4);
+    });
+
+    it('keeps explicit zero numeric values', async () => {
+        process.env.RBT_MIN_SCORE = '0';
+        const configFile = await writeTempConfig({ match: { threshold: 0, minScore: 0.5 } });
+        assert.equal((await resolveConfig({ config: configFile }, { threshold: '0.4' })).match.minScore, 0);
+        assert.equal((await resolveConfig({ config: configFile }, {})).match.threshold, 0);
+    });
+
+    it('treats empty string env vars as unset', async () => {
+        for (const name of ['RBT_RANKER', 'RBT_JEV_MODEL', 'RBT_LOG_LEVEL', 'RBT_QUIET', 'RBT_VERBOSE', 'RBT_CACHE_DIR', 'RBT_SELECTION_POLICY']) {
+            process.env[name] = '';
+        }
+        const configFile = await writeTempConfig({
+            ranker: 'heuristics',
+            jevModel: 'jev-file',
+            logLevel: 'warn',
+            quiet: true,
+            verbose: true,
+            cacheDir: 'file-cache',
+            match: { selectionPolicy: 'targeted' },
+        });
+        const config = await resolveConfig({ config: configFile }, {});
+        assert.equal(config.ranker, 'heuristics');
+        assert.equal(config.jevModel, 'jev-file');
+        assert.equal(config.logLevel, 'warn');
+        assert.equal(config.quiet, true);
+        assert.equal(config.verbose, true);
+        assert.equal(config.cacheDir, path.resolve('file-cache'));
+        assert.equal(config.match.selectionPolicy, 'targeted');
+    });
+
+    it('keeps the auto-discovered cacheDir guard when RBT_CACHE_DIR is empty', async () => {
+        const cwd = process.cwd();
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-config-'));
+        await fs.writeFile(path.join(root, '.rbtconfig'), JSON.stringify({ cacheDir: '../outside' }), 'utf8');
+        process.env.RBT_CACHE_DIR = '';
+        process.chdir(root);
+        try {
+            await assert.rejects(resolveConfig({}, {}, root), /cannot set cacheDir outside the workspace/);
+        } finally {
+            process.chdir(cwd);
+        }
     });
 
     it('prefers env vars over the config file', async () => {

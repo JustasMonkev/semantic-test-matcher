@@ -419,8 +419,35 @@ describe('rankMatches Jev blending', () => {
 
         for (const match of matches) {
             assert.ok(match.jevScore !== undefined);
-            assert.ok(Math.abs(match.score - ((match.jevScore * 0.2) + (match.structuralScore * 0.8))) < 1e-12);
+            assert.ok(Math.abs(match.score - ((match.jevScore * 0.6) + (match.structuralScore * 0.4))) < 1e-12);
         }
+    });
+
+    it('recovers a behavior test when a path-matched distractor has much weaker Jev evidence', () => {
+        const pathDistractor = makeCandidate(
+            'tests/price-engine.test.ts',
+            "test('price engine metadata snapshot', () => {});",
+            cwd
+        );
+        const behaviorTest = makeCandidate(
+            'tests/checkout-flow.test.ts',
+            "test('coupon discount changes the total', () => expect(applyDiscount(order, coupon)).toBe(90));",
+            cwd
+        );
+        const matches = rankMatches({ profile: source }, [
+            { ...pathDistractor, jevScore: 0.3 },
+            { ...behaviorTest, jevScore: 0.7 },
+        ]);
+        const distractor = matches.find(x => x.file === pathDistractor.file)!;
+        const behavior = matches.find(x => x.file === behaviorTest.file)!;
+
+        assert.ok(distractor.structuralScore > behavior.structuralScore);
+        assert.ok(
+            (distractor.structuralScore * 0.8 + distractor.jevScore! * 0.2) >
+            (behavior.structuralScore * 0.8 + behavior.jevScore! * 0.2),
+            'the former 20% Jev blend should prefer the path distractor'
+        );
+        assert.equal(matches[0].file, behaviorTest.file);
     });
 
     it('ranks by structural score alone without Jev scores', () => {

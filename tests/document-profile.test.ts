@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { buildDocumentProfile } from '../src/services/document-profile.ts';
+import { buildDocumentProfile, listDiffFiles } from '../src/services/document-profile.ts';
 
 describe('buildDocumentProfile', () => {
     it('keeps raw test titles, including describe blocks and modifiers', () => {
@@ -622,5 +622,86 @@ diff --git a/src/page.ts a/src/page.ts
         assert.ok(profile.semanticTokens.includes('widget'));
         assert.ok(profile.semanticTokens.includes('render'));
         assert.ok(profile.semanticTokens.includes('critical'));
+    });
+
+    it('keeps escaped quotes inside test titles', () => {
+        const profile = buildDocumentProfile('/workspace/tests/a.spec.ts', 'test("says \\"hi\\"", () => {});', '/workspace');
+
+        assert.deepEqual(profile.testTitles, ['says \\"hi\\"']);
+    });
+
+    // Each payload took seconds, or hung, when a regex could backtrack over it.
+    for (const [name, text, diffText] of [
+        ['an unterminated test title of backslashes', `test("${'\\'.repeat(40)}`, undefined],
+        ['many escaped quotes', "\\'aaaaaaaaaa".repeat(20_000), undefined],
+        ['a quoted diff header of backslashes', 'export const a = 1;', `diff --git "${'\\'.repeat(48)}\n`],
+    ] as const) {
+        it(`profiles ${name} quickly`, () => {
+            const started = performance.now();
+            buildDocumentProfile('/workspace/src/evil.spec.ts', text, '/workspace', diffText);
+
+            assert.ok(performance.now() - started < 1000);
+        });
+    }
+});
+
+describe('listDiffFiles', () => {
+    it('lists changed, added, renamed, and deleted files from a Git diff', () => {
+        const diff = [
+            'diff --git a/src/price.ts b/src/price.ts',
+            '--- a/src/price.ts',
+            '+++ b/src/price.ts',
+            '@@ -1,2 +1,2 @@',
+            '--- a removed line that looks like a header',
+            '+++ an added line that looks like a header',
+            ' unchanged',
+            'diff --git a/src/new.ts b/src/new.ts',
+            'new file mode 100644',
+            '--- /dev/null',
+            '+++ b/src/new.ts',
+            '@@ -0,0 +1 @@',
+            '+export const created = true;',
+            'diff --git a/src/old-name.ts b/src/new-name.ts',
+            'similarity index 90%',
+            'rename from src/old-name.ts',
+            'rename to src/new-name.ts',
+            '--- a/src/old-name.ts',
+            '+++ b/src/new-name.ts',
+            '@@ -1 +1 @@',
+            '-export const name = 1;',
+            '+export const name = 2;',
+            'diff --git a/src/gone.ts b/src/gone.ts',
+            'deleted file mode 100644',
+            '--- a/src/gone.ts',
+            '+++ /dev/null',
+            '@@ -1 +0,0 @@',
+            '-export const gone = true;',
+            'diff --git "a/src/caf\\303\\251.ts" "b/src/caf\\303\\251.ts"',
+            '--- "a/src/caf\\303\\251.ts"',
+            '+++ "b/src/caf\\303\\251.ts"',
+            '@@ -1 +1 @@',
+            '-a',
+            '+b',
+        ].join('\n');
+
+        assert.deepEqual(listDiffFiles(diff, '/repo', '.'), [
+            '/repo/src/price.ts',
+            '/repo/src/new.ts',
+            '/repo/src/new-name.ts',
+            '/repo/src/gone.ts',
+            '/repo/src/café.ts',
+        ]);
+    });
+
+    it('keeps plain unified diff paths and drops their timestamps', () => {
+        const diff = [
+            '--- a/src/price.ts\t2026-01-01 00:00:00.000000000 +0000',
+            '+++ a/src/price.ts\t2026-01-02 00:00:00.000000000 +0000',
+            '@@ -1 +1 @@',
+            '-1',
+            '+2',
+        ].join('\n');
+
+        assert.deepEqual(listDiffFiles(diff, '/repo', 'root'), ['/repo/root/a/src/price.ts']);
     });
 });

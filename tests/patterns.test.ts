@@ -46,6 +46,22 @@ describe('createPatternMatcher', () => {
         const matcher = createPatternMatcher(['src/**/*.ts']);
         assert.ok(matcher('src\\utils\\io.ts'));
     });
+
+    it('includes and excludes paths with astral characters', () => {
+        assert.ok(createPatternMatcher(['**/🧪.spec.ts'], true)('tests/🧪.spec.ts'));
+        assert.ok(createPatternMatcher(['tests/🧪*'], false)('tests/🧪.spec.ts'));
+        assert.ok(!createPatternMatcher(['**/🧫.spec.ts'], false)('tests/🧪.spec.ts'));
+    });
+
+    it('rejects wildcard-heavy patterns quickly', () => {
+        // Auto-discovered repo config can supply these; a backtracking regex hung here.
+        const matcher = createPatternMatcher(['*'.repeat(24) + 'zz_no_match_zz', '**/a**a**a**a**a**a**a**a**z']);
+        const started = performance.now();
+
+        assert.ok(!matcher('a/'.repeat(60)));
+        assert.ok(!matcher('a'.repeat(200)));
+        assert.ok(performance.now() - started < 1000);
+    });
 });
 
 describe('isParentPath', () => {

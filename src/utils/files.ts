@@ -26,68 +26,26 @@ const ALLOWED_EXTENSIONS = new Set([
 ]);
 
 export const MAX_CANDIDATE_FILES = 1000;
+// Real test files stay well under this (Playwright's largest is ~180 KB).
+export const MAX_CANDIDATE_BYTES = 1_000_000;
 
-type Matcher = (candidate: string) => boolean;
-type CollectState = {
-    truncated: boolean;
-};
-
-function isAllowedFile(filePath: string): boolean {
-    const ext = path.extname(filePath);
-    return ALLOWED_EXTENSIONS.has(ext);
+/** Reads a candidate file, or warns and returns undefined when it is too large to profile. */
+export async function readCandidateText(filePath: string): Promise<string | undefined> {
+    const handle = await fs.open(filePath, 'r');
+    try {
+        if ((await handle.stat()).size > MAX_CANDIDATE_BYTES) {
+            console.warn(`Warning: skipped ${filePath} (larger than ${MAX_CANDIDATE_BYTES} bytes)`);
+            return undefined;
+        }
+        return await handle.readFile('utf8');
+    } finally {
+        await handle.close();
+    }
 }
 
-async function walkDirectory(
-    current: string,
-    accumulator: string[],
-    seen: Set<string>,
-    includeMatcher: Matcher,
-    excludeMatcher: Matcher,
-    state: CollectState,
-    cwd: string
-): Promise<void> {
-    if (accumulator.length >= MAX_CANDIDATE_FILES) {
-        state.truncated = true;
-        return;
-    }
-
-    const entries = await fs.readdir(current, { withFileTypes: true });
-
-    for (const entry of entries) {
-        if (accumulator.length >= MAX_CANDIDATE_FILES) {
-            state.truncated = true;
-            break;
-        }
-
-        const next = path.join(current, entry.name);
-        const relative = path.relative(cwd, next).replace(/\\/g, '/');
-
-        if (entry.isDirectory()) {
-            if (SKIP_DIRS.has(entry.name) || relative.startsWith('.')) {
-                continue;
-            }
-            if (!excludeMatcher(relative)) {
-                await walkDirectory(next, accumulator, seen, includeMatcher, excludeMatcher, state, cwd);
-            }
-            continue;
-        }
-
-        if (!entry.isFile() || !isAllowedFile(next)) {
-            continue;
-        }
-
-        if (excludeMatcher(relative)) {
-            continue;
-        }
-
-        if (includeMatcher(relative) && !seen.has(next)) {
-            seen.add(next);
-            accumulator.push(next);
-            if (accumulator.length >= MAX_CANDIDATE_FILES) {
-                state.truncated = true;
-            }
-        }
-    }
+export function isAllowedFile(filePath: string): boolean {
+    const ext = path.extname(filePath);
+    return ALLOWED_EXTENSIONS.has(ext);
 }
 
 export interface CollectCandidateFilesResult {
@@ -101,50 +59,56 @@ export async function collectCandidateFilesDetailed(
     excludes: string[],
     cwd: string
 ): Promise<CollectCandidateFilesResult> {
-    const matches: string[] = [];
-    const seen = new Set<string>();
-    const state: CollectState = { truncated: false };
-    const normalizedSeeds = seeds.length ? seeds : [cwd];
+    // A Set keeps discovery order and drops files reachable through several seeds.
+    const files = new Set<string>();
+    const isFull = () => files.size >= MAX_CANDIDATE_FILES;
     const includeMatcher = createPatternMatcher(includes, true);
     const excludeMatcher = createPatternMatcher(excludes, false);
+    const relativePath = (absolute: string) => path.relative(cwd, absolute).replace(/\\/g, '/');
 
-    for (const seed of normalizedSeeds) {
-        if (matches.length >= MAX_CANDIDATE_FILES) {
-            state.truncated = true;
+    const addFile = (absolute: string) => {
+        const relative = relativePath(absolute);
+        if (includeMatcher(relative) && !excludeMatcher(relative)) {
+            files.add(absolute);
+        }
+    };
+
+    const walkDirectory = async (directory: string): Promise<void> => {
+        for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+            if (isFull()) {
+                return;
+            }
+            const next = path.join(directory, entry.name);
+            if (entry.isDirectory()) {
+                const relative = relativePath(next);
+                if (!SKIP_DIRS.has(entry.name) && !relative.startsWith('.') && !excludeMatcher(relative)) {
+                    await walkDirectory(next);
+                }
+            } else if (entry.isFile() && isAllowedFile(next)) {
+                addFile(next);
+            }
+        }
+    };
+
+    for (const seed of seeds.length ? seeds : [cwd]) {
+        if (isFull()) {
             break;
         }
-
         const absolute = path.resolve(cwd, seed);
-
         try {
             const entry = await fs.lstat(absolute);
             if (entry.isDirectory()) {
-                await walkDirectory(absolute, matches, seen, includeMatcher, excludeMatcher, state, cwd);
-                continue;
-            }
-
-            if (entry.isFile()) {
-                const relative = path.relative(cwd, absolute).replace(/\\/g, '/');
-                if (includeMatcher(relative) && !excludeMatcher(relative) && !seen.has(absolute)) {
-                    seen.add(absolute);
-                    matches.push(absolute);
-                    if (matches.length >= MAX_CANDIDATE_FILES) {
-                        state.truncated = true;
-                    }
-                }
-                continue;
+                await walkDirectory(absolute);
+            } else if (entry.isFile()) {
+                addFile(absolute);
             }
         } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-                continue;
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+                throw error;
             }
-            throw error;
         }
     }
 
-    return {
-        files: matches,
-        truncated: state.truncated,
-    };
+    // Reaching the cap counts as truncated even when nothing was left to collect.
+    return { files: [...files], truncated: isFull() };
 }
-

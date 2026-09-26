@@ -1,10 +1,10 @@
 import { Command } from 'commander';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { collectCandidateFilesDetailed, MAX_CANDIDATE_FILES } from '../utils/files.ts';
-import { parseStdinList, readStdinText } from '../utils/io.ts';
+import { collectCandidateFilesDetailed, isAllowedFile, MAX_CANDIDATE_FILES, readCandidateText } from '../utils/files.ts';
+import { parseStdinList, readFileIfExists, readStdinText } from '../utils/io.ts';
 import { mapWithConcurrency } from '../utils/async.ts';
-import { resolveConfig } from '../config.ts';
+import { resolveConfig, type Ranker, type RootOptions, type RuntimeConfig } from '../config.ts';
 import {
     getJevCacheEntryCount,
     JEV_API_KEY_ENV,
@@ -12,19 +12,58 @@ import {
     JevScorer,
     type JevScoreResult,
 } from '../services/jev.ts';
-import { filterMatches, rankMatches, type RankedMatchCandidate } from '../services/match.ts';
-import { buildDocumentProfile } from '../services/document-profile.ts';
+import {
+    filterMatches,
+    rankMatches,
+    selectMatches,
+    TARGETED_JEV_THRESHOLD,
+    type MatchCandidate,
+    type RankedMatchCandidate,
+} from '../services/match.ts';
+import { buildDocumentProfile, listDiffFiles } from '../services/document-profile.ts';
+import { readGitChanges } from '../services/git-changes.ts';
+import { detectTestCommand, promptAndRunTests, quoteShellArgument } from '../services/test-runner.ts';
 
 const READ_CONCURRENCY = 8;
+
+interface MatchOptions {
+    threshold?: string;
+    minScore?: string;
+    topK?: string;
+    selectionPolicy?: string;
+    candidates?: string[];
+    includeFile?: string[];
+    excludeFile?: string[];
+    ranker?: string;
+    jevModel?: string;
+    cacheDir?: string;
+    diffFile?: string;
+    diffRoot?: string;
+    json?: boolean;
+    pathsOnly?: boolean;
+    candidatesFromStdin?: boolean;
+}
+
+interface ChangedFiles {
+    /** No files and no --diff-file: rank local Git changes, then offer to run the tests. */
+    automatic: boolean;
+    paths: string[];
+    diffText?: string;
+    diffRoot?: string;
+}
+
+type ChangedSource = Awaited<ReturnType<typeof readChangedFile>>;
+type ChangeReport = ReturnType<typeof rankChangedFile>;
 
 export function registerMatchCommand(program: Command): void {
     program
         .command('match')
         .description('Match code change to test cases')
-        .argument('<file>', 'Changed file path')
+        .argument('[files...]', 'Changed file paths (default: --diff-file changes, or local Git changes followed by a test-command prompt)')
         .option('-t, --threshold <number>', 'Minimum similarity threshold')
         .option('--min-score <number>', 'Minimum similarity score override')
-        .option('--top-k <number>', 'Keep only top K matches')
+        .option('--top-k <number>', 'Optional maximum number of selected tests')
+        .option('--selection-policy <name>', 'adaptive (default), conservative (fixed top five), or targeted (affirmative Jev top five)')
         .option('-c, --candidates <patterns...>', 'Candidate file paths, directories, or file globs')
         .option('--include-file <patterns...>', 'Include only matching files (glob pattern)')
         .option('--exclude-file <patterns...>', 'Exclude matching files (glob pattern)')
@@ -35,107 +74,143 @@ export function registerMatchCommand(program: Command): void {
         .option('--diff-file <path>', 'Unified diff file used to enrich change-aware matching')
         .option('--diff-root <path>', 'Base directory for relative paths in --diff-file')
         .option('--json', 'Print machine-readable output')
-        .action(async (
-            file: string,
-            options: {
-                threshold?: string;
-                minScore?: string;
-                topK?: string;
-                candidates?: string[];
-                includeFile?: string[];
-                excludeFile?: string[];
-                ranker?: string;
-                jevModel?: string;
-                cacheDir?: string;
-                diffFile?: string;
-                diffRoot?: string;
-                json?: boolean;
-                candidatesFromStdin?: boolean;
+        .option('--paths-only', 'Print only the selected test paths, one per line')
+        .action(async (files: string[], options: MatchOptions) => {
+            const config = await resolveMatchConfig(program.opts(), options);
+            const cwd = process.cwd();
+            const changes = await resolveChangedFiles(files, options, cwd);
+            if (!changes.paths.length) {
+                if (options.json) console.log(JSON.stringify({ files: [], matched: 0, results: [], changes: [] }));
+                else if (!options.pathsOnly && !config.quiet) console.log('No local source changes. Tests not run.');
+                return;
             }
-        ) => {
-            const rootOptions = program.opts();
-            const candidatesFromStdin = options.candidatesFromStdin
-                ? parseStdinList(await readStdinText())
-                : undefined;
-            const config = await resolveConfig(
-                {
-                    config: rootOptions.config,
-                    cacheDir: rootOptions.cacheDir,
-                    logLevel: rootOptions.logLevel,
-                    verbose: rootOptions.verbose,
-                    quiet: rootOptions.quiet,
-                },
-                {
-                    threshold: options.threshold,
-                    minScore: options.minScore,
-                    topK: options.topK,
-                    candidates: options.candidates?.length ? options.candidates : candidatesFromStdin,
-                    includeFile: options.includeFile,
-                    excludeFile: options.excludeFile,
-                    ranker: options.ranker,
-                    jevModel: options.jevModel,
-                    cacheDir: options.cacheDir,
-                    json: options.json,
-                },
-            );
 
-            const changedPath = path.resolve(process.cwd(), file);
-            const diffPath = options.diffFile ? path.resolve(process.cwd(), options.diffFile) : undefined;
-            const [changedText, diffText] = await Promise.all([
-                fs.readFile(changedPath, 'utf8'),
-                diffPath ? fs.readFile(diffPath, 'utf8') : Promise.resolve(undefined),
-            ]);
-            const sourceProfile = buildDocumentProfile(
-                changedPath,
-                changedText,
-                process.cwd(),
-                diffText,
-                options.diffRoot
-            );
-
-            const candidateResult = await collectCandidateFilesDetailed(
+            const candidateScan = await collectCandidateFilesDetailed(
                 config.match.candidatePaths,
                 config.match.includePatterns,
                 config.match.excludePatterns,
-                process.cwd()
+                cwd
             );
-            const candidateFiles = candidateResult.files.filter(
-                (candidatePath) => path.resolve(candidatePath) !== changedPath
-            );
+            const candidates = await loadCandidates(candidateScan.files, cwd);
+            const reports = await matchChangedFiles(changes, candidates, config, candidateScan.truncated, cwd);
+            const cacheEntries = await getJevCacheEntryCount(config.cacheDir);
+            const selected = mergeSelections(reports);
 
-            const candidates: RankedMatchCandidate[] = await mapWithConcurrency(
-                candidateFiles,
-                READ_CONCURRENCY,
-                async (candidatePath) => {
-                    const candidateText = await fs.readFile(candidatePath, 'utf8');
-                    const candidateProfile = buildDocumentProfile(candidatePath, candidateText, process.cwd());
-                    return {
-                        file: path.relative(process.cwd(), candidatePath),
-                        preview: candidateProfile.preview,
-                        profile: candidateProfile,
-                    };
+            if (options.json) {
+                printJson(reports, selected, cacheEntries);
+                return;
+            }
+            if (options.pathsOnly) {
+                for (const match of selected) {
+                    console.log(match.file);
                 }
-            );
+                return;
+            }
+            printText(reports, selected, config, candidateScan.truncated);
+            if (!selected.length) {
+                return;
+            }
+            if (changes.automatic) {
+                process.exitCode = await promptAndRunTests(selected.map((match) => match.file), cwd);
+            } else if (!config.quiet) {
+                const testCommand = await detectTestCommand(cwd);
+                if (testCommand) {
+                    console.log(`\nRun: ${testCommand} ${selected.map((match) => quoteShellArgument(match.file)).join(' ')}`);
+                }
+            }
+        });
+}
 
-            let ranker = config.ranker;
-            let rankerFallback: string | undefined;
+async function resolveMatchConfig(rootOptions: RootOptions, options: MatchOptions) {
+    const candidatesFromStdin = options.candidatesFromStdin
+        ? parseStdinList(await readStdinText())
+        : undefined;
+    return resolveConfig(
+        {
+            config: rootOptions.config,
+            cacheDir: rootOptions.cacheDir,
+            logLevel: rootOptions.logLevel,
+            verbose: rootOptions.verbose,
+            quiet: rootOptions.quiet,
+        },
+        {
+            threshold: options.threshold,
+            minScore: options.minScore,
+            topK: options.topK,
+            selectionPolicy: options.selectionPolicy,
+            candidates: options.candidates?.length ? options.candidates : candidatesFromStdin,
+            includeFile: options.includeFile,
+            excludeFile: options.excludeFile,
+            ranker: options.ranker,
+            jevModel: options.jevModel,
+            cacheDir: options.cacheDir,
+            json: options.json,
+        },
+    );
+}
+
+async function resolveChangedFiles(files: string[], options: MatchOptions, cwd: string): Promise<ChangedFiles> {
+    const automatic = !files.length && !options.diffFile;
+    const gitChanges = automatic ? await readGitChanges(cwd) : undefined;
+    const diffText = options.diffFile ? await fs.readFile(path.resolve(cwd, options.diffFile), 'utf8') : gitChanges?.diffText;
+    const diffRoot = gitChanges?.root ?? options.diffRoot;
+    const paths = files.length
+        ? files.map((file) => path.resolve(cwd, file))
+        : gitChanges?.files ?? listDiffFiles(diffText ?? '', cwd, diffRoot).filter(isAllowedFile);
+    if (!paths.length && !automatic) {
+        throw new Error('The --diff-file changes no source files');
+    }
+    return { automatic, paths, diffText, diffRoot };
+}
+
+async function loadCandidates(candidateFiles: string[], cwd: string) {
+    const candidates = await mapWithConcurrency(
+        candidateFiles,
+        READ_CONCURRENCY,
+        async (candidatePath): Promise<RankedMatchCandidate | undefined> => {
+            const candidateText = await readCandidateText(candidatePath);
+            if (candidateText === undefined) {
+                return undefined;
+            }
+            const candidateProfile = buildDocumentProfile(candidatePath, candidateText, cwd);
+            return {
+                file: path.relative(cwd, candidatePath),
+                preview: candidateProfile.preview,
+                profile: candidateProfile,
+            };
+        }
+    );
+    return candidates.filter((candidate) => candidate !== undefined);
+}
+
+async function matchChangedFiles(
+    changes: ChangedFiles,
+    candidates: RankedMatchCandidate[],
+    config: RuntimeConfig,
+    candidateLimitReached: boolean,
+    cwd: string
+) {
+    let ranker = config.ranker;
+    let rankerFallback: string | undefined;
+    let scorer: JevScorer | undefined;
+    const reports: ChangeReport[] = [];
+    try {
+        // One at a time: a Jev failure switches every later file to heuristics.
+        for (const changedPath of changes.paths) {
+            const source = await readChangedFile(changedPath, changes, cwd);
+            // In the automatic flow, an edited test is itself a candidate to rerun.
+            const fileCandidates = changes.automatic ? candidates
+                : candidates.filter((candidate) => path.resolve(cwd, candidate.file) !== changedPath);
+
             let jevResult: JevScoreResult | undefined;
-            let ranked = candidates;
-
             if (ranker === 'jev') {
                 try {
-                    const scorer = new JevScorer({
+                    scorer ??= new JevScorer({
                         apiKey: process.env[JEV_API_KEY_ENV] ?? '',
                         model: config.jevModel,
                         cacheDir: config.cacheDir,
                     });
-                    const result = await scorer.score({ profile: sourceProfile, text: changedText }, candidates);
-                    await scorer.flush();
-                    jevResult = result;
-                    ranked = candidates.map((candidate) => ({
-                        ...candidate,
-                        jevScore: result.scores.get(candidate.file),
-                    }));
+                    jevResult = await scorer.score({ profile: source.profile, text: source.text }, fileCandidates);
                 } catch (error) {
                     if (!(error instanceof JevError)) {
                         throw error;
@@ -146,58 +221,121 @@ export function registerMatchCommand(program: Command): void {
                     console.warn(`Warning: jev ranker unavailable (${error.message}); ranking with heuristics only`);
                 }
             }
+            reports.push(rankChangedFile(source, fileCandidates, { ranker, rankerFallback, jevResult }, config, candidateLimitReached));
+        }
+    } finally {
+        await scorer?.flush();
+    }
+    return reports;
+}
 
-            const matches = rankMatches({ profile: sourceProfile }, ranked);
-            const filtered = filterMatches(matches, config.match.minScore);
-            const topMatches = filtered.slice(0, config.match.topK);
-            const cacheEntries = await getJevCacheEntryCount(config.cacheDir);
+async function readChangedFile(changedPath: string, changes: ChangedFiles, cwd: string) {
+    const file = path.relative(cwd, changedPath);
+    const fileText = await readFileIfExists(changedPath);
+    // A deleted file has no text; its profile comes from the path and the diff.
+    const text = fileText ?? '';
+    const profile = buildDocumentProfile(changedPath, text, cwd, changes.diffText, changes.diffRoot);
+    if (fileText === undefined && !profile.diffExcerpt) {
+        throw new Error(`Changed file not found: ${file} (pass a --diff-file that deletes it)`);
+    }
+    return { file, text, profile };
+}
 
-            if (options.json) {
-                console.log(
-                    JSON.stringify({
-                        file: path.relative(process.cwd(), changedPath),
-                        ranker,
-                        rankerFallback,
-                        model: ranker === 'jev' ? jevResult?.model ?? config.jevModel : undefined,
-                        matched: topMatches.length,
-                        threshold: config.match.threshold,
-                        minScore: config.match.minScore,
-                        topK: config.match.topK,
-                        source: sourceProfile.preview,
-                        jev: jevResult && {
-                            requests: jevResult.requests,
-                            cacheHits: jevResult.cacheHits,
-                            inputTokens: jevResult.inputTokens,
-                        },
-                        cacheEntries,
-                        candidateLimitReached: candidateResult.truncated,
-                        results: topMatches,
-                    })
-                );
-                return;
+function rankChangedFile(
+    source: ChangedSource,
+    candidates: RankedMatchCandidate[],
+    { ranker, rankerFallback, jevResult }: { ranker: Ranker; rankerFallback?: string; jevResult?: JevScoreResult },
+    config: RuntimeConfig,
+    candidateLimitReached: boolean
+) {
+    const ranked = jevResult
+        ? candidates.map((candidate) => ({ ...candidate, jevScore: jevResult.scores.get(candidate.file) }))
+        : candidates;
+    const matches = rankMatches({ profile: source.profile }, ranked);
+    const filtered = filterMatches(matches, config.match.minScore);
+    const selection = selectMatches(filtered, config.match.topK, config.match.selectionPolicy, ranker);
+    return {
+        file: source.file,
+        ranker,
+        rankerFallback,
+        model: ranker === 'jev' ? jevResult?.model ?? config.jevModel : undefined,
+        matched: selection.results.length,
+        candidateCount: matches.length,
+        threshold: config.match.threshold,
+        minScore: config.match.minScore,
+        topK: config.match.topK ?? null,
+        selectionLimit: selection.effectiveLimit,
+        selectionPolicy: config.match.selectionPolicy,
+        selectionFallback: selection.reason,
+        eligibleCount: selection.eligibleCount,
+        selectionTruncated: selection.truncated,
+        selectionEvidence: selection.evidence,
+        targetedJevThreshold: config.match.selectionPolicy === 'targeted' ? TARGETED_JEV_THRESHOLD : undefined,
+        source: source.profile.preview,
+        jev: jevResult && {
+            requests: jevResult.requests,
+            cacheHits: jevResult.cacheHits,
+            inputTokens: jevResult.inputTokens,
+        },
+        candidateLimitReached,
+        results: selection.results,
+    };
+}
+
+// A test selected for several changed files keeps its best score.
+function mergeSelections(reports: ChangeReport[]) {
+    const bestByFile = new Map<string, MatchCandidate>();
+    for (const match of reports.flatMap((report) => report.results)) {
+        if ((bestByFile.get(match.file)?.score ?? -1) < match.score) {
+            bestByFile.set(match.file, match);
+        }
+    }
+    return [...bestByFile.values()].sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
+}
+
+function printJson(reports: ChangeReport[], selected: MatchCandidate[], cacheEntries: number) {
+    console.log(JSON.stringify(reports.length === 1
+        ? { ...reports[0], cacheEntries }
+        : {
+            files: reports.map((report) => report.file),
+            matched: selected.length,
+            cacheEntries,
+            results: selected,
+            changes: reports,
+        }));
+}
+
+function printText(
+    reports: ChangeReport[],
+    selected: MatchCandidate[],
+    config: RuntimeConfig,
+    candidateLimitReached: boolean
+) {
+    if (!config.quiet) {
+        for (const report of reports) {
+            console.log(`Matched ${report.matched}/${report.candidateCount} candidates for ${report.file}`);
+            if (report.selectionFallback) {
+                console.log(`  Why: ${report.selectionFallback}`);
             }
-
-            if (!config.quiet) {
-                console.log(
-                    `Matched ${topMatches.length}/${matches.length} candidates for ${path.relative(process.cwd(), changedPath)}`
-                );
-                if (candidateResult.truncated) {
-                    console.log(`Candidate scan truncated at ${MAX_CANDIDATE_FILES} files`);
-                }
+            if (report.selectionTruncated) {
+                console.log(`  Selection capped at ${report.matched} of ${report.eligibleCount} eligible tests`);
             }
+        }
+        if (candidateLimitReached) {
+            console.log(`Candidate scan truncated at ${MAX_CANDIDATE_FILES} files`);
+        }
+        if (reports.length > 1) {
+            console.log(`Selected ${selected.length} tests for ${reports.length} changed files`);
+        }
+    }
 
-            if (!topMatches.length) {
-                if (!config.quiet) {
-                    console.log(`No matches reached minimum score ${config.match.minScore}`);
-                }
-                return;
-            }
-
-            for (const match of topMatches) {
-                console.log(`${match.score.toFixed(4)} ${match.file}`);
-                if (!config.quiet && match.preview) {
-                    console.log(`  ${match.preview}`);
-                }
-            }
-        });
+    if (!selected.length && !config.quiet) {
+        console.log(`No matches reached minimum score ${config.match.minScore}`);
+    }
+    for (const match of selected) {
+        console.log(`${match.score.toFixed(4)} ${match.file}`);
+        if (config.verbose && match.preview) {
+            console.log(`  ${match.preview}`);
+        }
+    }
 }

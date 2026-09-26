@@ -67,7 +67,6 @@ const STOP_WORDS = new Set([
     'spec',
     'src',
     'summary',
-    'module',
     'string',
     'stub',
     'sub',
@@ -111,7 +110,7 @@ const STOP_WORDS = new Set([
 
 const COMMON_ACRONYMS = new Set(['api', 'cli', 'gui', 'tui', 'ui', 'uri']);
 
-function splitIntoParts(value: string): string[] {
+export function splitIntoParts(value: string): string[] {
     return value
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
         .replace(/[_./\\-]+/g, ' ')

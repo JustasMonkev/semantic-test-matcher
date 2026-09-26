@@ -47,7 +47,7 @@ export function registerStatusCommand(program: Command): void {
             console.log(`logLevel: ${config.logLevel}`);
             console.log(`cacheDir: ${config.cacheDir}`);
             console.log(`cache entries: ${cacheEntries}`);
-            console.log(`match.topK: ${config.match.topK}`);
+            console.log(`match.topK: ${config.match.topK ?? 'none'}`);
             console.log(`match.threshold: ${config.match.threshold}`);
             console.log(`config source: ${configFileStatus}`);
             console.log(`candidates: ${config.match.candidatePaths.join(', ')}`);

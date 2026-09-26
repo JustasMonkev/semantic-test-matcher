@@ -40,6 +40,37 @@ async function sleep(ms: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Creates the lock file exclusively; resolves undefined while another writer holds it. */
+async function tryCreateLock(lockPath: string): Promise<FileHandle | undefined> {
+    try {
+        const handle = await fs.open(lockPath, 'wx');
+        await handle.writeFile(`${process.pid}\n${new Date().toISOString()}\n`, 'utf8');
+        return handle;
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+            return undefined;
+        }
+        throw error;
+    }
+}
+
+/** True when the held lock is already gone or was stale and removed, so a retry can go at once. */
+async function clearStaleLock(lockPath: string): Promise<boolean> {
+    try {
+        const stats = await fs.stat(lockPath);
+        if ((Date.now() - stats.mtimeMs) > STALE_LOCK_MS) {
+            await fs.unlink(lockPath).catch(() => {});
+            return true;
+        }
+        return false;
+    } catch (error) {
+        if (isMissingFile(error)) {
+            return true;
+        }
+        throw error;
+    }
+}
+
 async function acquireCacheLock(filePath: string): Promise<{ handle: FileHandle; lockPath: string }> {
     const lockPath = getCacheLockFile(filePath);
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
@@ -47,35 +78,17 @@ async function acquireCacheLock(filePath: string): Promise<{ handle: FileHandle;
     await fs.mkdir(path.dirname(filePath), { recursive: true });
 
     while (true) {
-        try {
-            const handle = await fs.open(lockPath, 'wx');
-            await handle.writeFile(`${process.pid}\n${new Date().toISOString()}\n`, 'utf8');
+        const handle = await tryCreateLock(lockPath);
+        if (handle) {
             return { handle, lockPath };
-        } catch (error) {
-            const code = (error as NodeJS.ErrnoException).code;
-            if (code !== 'EEXIST') {
-                throw error;
-            }
-
-            try {
-                const stats = await fs.stat(lockPath);
-                if ((Date.now() - stats.mtimeMs) > STALE_LOCK_MS) {
-                    await fs.unlink(lockPath).catch(() => {});
-                    continue;
-                }
-            } catch (statError) {
-                if (!isMissingFile(statError)) {
-                    throw statError;
-                }
-                continue;
-            }
-
-            if (Date.now() >= deadline) {
-                throw new Error(`Timed out acquiring cache lock for ${lockPath}`);
-            }
-
-            await sleep(LOCK_POLL_MS);
         }
+        if (await clearStaleLock(lockPath)) {
+            continue;
+        }
+        if (Date.now() >= deadline) {
+            throw new Error(`Timed out acquiring cache lock for ${lockPath}`);
+        }
+        await sleep(LOCK_POLL_MS);
     }
 }
 

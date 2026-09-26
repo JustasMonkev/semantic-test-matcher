@@ -66,6 +66,35 @@ describe('writeCacheEntries', () => {
         assert.deepEqual(await fs.readdir(path.dirname(cacheFile)), ['cache.json']);
     });
 
+    it('waits for another writer to release the lock', async () => {
+        const cacheFile = await makeTempCacheFile();
+        const lockFile = path.join(path.dirname(cacheFile), 'cache.lock');
+        await fs.writeFile(lockFile, 'other writer', 'utf8');
+
+        const write = writeCacheEntries<Entry>(cacheFile, { key: { value: 1 } });
+        // Several 20ms lock polls: long enough that a writer ignoring the lock would have written.
+        const heldLockMs = 60;
+        await new Promise((resolve) => setTimeout(resolve, heldLockMs));
+        await assert.rejects(fs.stat(cacheFile), (error: NodeJS.ErrnoException) => error.code === 'ENOENT');
+
+        await fs.unlink(lockFile);
+        await write;
+        assert.deepEqual(await loadCache<Entry>(cacheFile), { key: { value: 1 } });
+    });
+
+    it('replaces a stale lock left by a crashed writer', async () => {
+        const cacheFile = await makeTempCacheFile();
+        const lockFile = path.join(path.dirname(cacheFile), 'cache.lock');
+        await fs.writeFile(lockFile, 'crashed writer', 'utf8');
+        const longAgo = new Date(Date.now() - 60_000);
+        await fs.utimes(lockFile, longAgo, longAgo);
+
+        await writeCacheEntries<Entry>(cacheFile, { key: { value: 1 } });
+
+        assert.deepEqual(await loadCache<Entry>(cacheFile), { key: { value: 1 } });
+        assert.deepEqual(await fs.readdir(path.dirname(cacheFile)), ['cache.json']);
+    });
+
     it('does nothing for an empty batch', async () => {
         const cacheFile = await makeTempCacheFile();
         await writeCacheEntries<Entry>(cacheFile, {});

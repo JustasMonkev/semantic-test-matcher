@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+
 export async function readStdinText(): Promise<string> {
     return new Promise((resolve, reject) => {
         if (process.stdin.isTTY) {
@@ -34,3 +36,13 @@ export function parseStdinList(raw: string): string[] {
     return trimmed.split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
+export async function readFileIfExists(filePath: string): Promise<string | undefined> {
+    try {
+        return await fs.readFile(filePath, 'utf8');
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            return undefined;
+        }
+        throw error;
+    }
+}

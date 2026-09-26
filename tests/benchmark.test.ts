@@ -80,4 +80,45 @@ describe('benchmark command', () => {
             /TYPESAFE_API_KEY is required/
         );
     });
+
+    it('scores a deleted source from its diff and rejects one without a diff', async () => {
+        await makeWorkspace();
+        await fs.writeFile('tests/reconcile.test.ts', "test('reconciles the ledger balance', () => {});");
+        const diffText = [
+            'diff --git a/src/gone.ts b/src/gone.ts',
+            'deleted file mode 100644',
+            '--- a/src/gone.ts',
+            '+++ /dev/null',
+            '@@ -1,1 +0,0 @@',
+            '-export const reconcileLedgerBalance = entries => entries.length;',
+        ].join('\n');
+        const runBenchmark = async () => {
+            const program = new Command();
+            registerBenchmarkCommand(program);
+            await program.parseAsync([
+                'benchmark', '--cases', 'cases.json', '--candidates', 'tests', '--ranker', 'heuristics', '--json',
+            ], { from: 'user' });
+        };
+
+        await fs.writeFile('cases.json', JSON.stringify([
+            { source: 'src/gone.ts', diffText, expectedTop1: 'tests/reconcile.test.ts' },
+        ]));
+        const output: string[] = [];
+        const originalLog = console.log;
+        console.log = (value?: unknown) => output.push(String(value));
+        try {
+            await runBenchmark();
+        } finally {
+            console.log = originalLog;
+        }
+        // SAFETY: --json makes the benchmark's last log line its serialized summary.
+        assert.equal((JSON.parse(output[output.length - 1]) as { top1Rate: number }).top1Rate, 1);
+
+        for (const missing of [{}, { diffText: '' }, { diffText: diffText.replace(/src\/gone\.ts/g, 'src/other.ts') }]) {
+            await fs.writeFile('cases.json', JSON.stringify([{ source: 'src/gone.ts', ...missing }]));
+            await assert.rejects(runBenchmark(), {
+                message: 'Benchmark source not found: src/gone.ts (add a diffText that deletes it)',
+            });
+        }
+    });
 });

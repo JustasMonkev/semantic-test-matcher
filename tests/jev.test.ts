@@ -6,6 +6,7 @@ import path from 'node:path';
 import { buildDocumentProfile } from '../src/services/document-profile.ts';
 import {
     buildJevState,
+    getJevCacheEntryCount,
     getJevCacheFile,
     JEV_ENDPOINT,
     JevError,
@@ -184,6 +185,50 @@ describe('JevScorer', () => {
 
         assert.equal(calls.length, 3);
         assert.equal(result.scores.get('tests/tabs.spec.ts'), 0.9);
+    });
+
+    it('retries network errors and unreadable response bodies', async () => {
+        const { impl, calls } = fakeFetch((body, call) => {
+            if (call === 0) {
+                throw new TypeError('fetch failed');
+            }
+            return call === 1 ? new Response('not json', { status: 200 }) : answer(body, byTabs);
+        });
+        const result = await makeScorer(impl).score(makeSource(TABS_DIFF), [TABS_TEST]);
+
+        assert.equal(calls.length, 3);
+        assert.equal(result.scores.get('tests/tabs.spec.ts'), 0.9);
+    });
+
+    it('caps a long retry-after', async (t) => {
+        const delays: number[] = [];
+        const realSetTimeout = globalThis.setTimeout;
+        t.mock.method(globalThis, 'setTimeout', (callback: () => void, ms: number) => {
+            delays.push(ms);
+            return realSetTimeout(callback, 0);
+        });
+        const { impl, calls } = fakeFetch((body, call) => (
+            call === 0 ? new Response('slow down', { status: 429, headers: { 'retry-after': '3600' } })
+                : answer(body, byTabs)
+        ));
+        await makeScorer(impl, { skipCache: true }).score(makeSource(TABS_DIFF), [TABS_TEST]);
+
+        assert.equal(calls.length, 2);
+        assert.deepEqual(delays, [30_000]);
+    });
+
+    it('stops sending batches after one fails and caches the answers already received', async () => {
+        const { impl, calls } = fakeFetch((body, call) => (
+            call === 0 ? new Response('bad request', { status: 400 }) : answer(body, () => 0.3)
+        ));
+        const candidates = Array.from({ length: 1250 }, (_, index) => ({
+            file: `tests/generated-${index}.spec.ts`,
+            profile: TABS_TEST.profile,
+        }));
+        await assert.rejects(makeScorer(impl).score(makeSource(TABS_DIFF), candidates), JevError);
+
+        assert.equal(calls.length, 4);
+        assert.equal(await getJevCacheEntryCount(cacheDir), 750);
     });
 
     it('fails fast with a key hint on authentication errors', async () => {

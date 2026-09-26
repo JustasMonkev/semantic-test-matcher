@@ -1,4 +1,5 @@
 import type { DocumentProfile } from './document-profile.ts';
+import type { Ranker, SelectionPolicy } from '../config.ts';
 import { diceCoefficient, overlapCoefficient, uniqueTokens } from './text-utils.ts';
 
 export interface MatchCandidate {
@@ -30,9 +31,26 @@ export interface RankedMatchCandidate {
 }
 
 // Share of the final score given to Jev; the structural heuristics carry the rest.
-const JEV_WEIGHT = 0.2;
+const JEV_WEIGHT = 0.6;
+
+// Jev's Noul yes/no decision boundary. Targeted selection is opt-in; when
+// Jev has no affirmative answers, we retain conservative top-K selection.
+export const TARGETED_JEV_THRESHOLD = 0.5;
+const STRONG_JEV_SCORE = 0.7;
+const MIN_STRUCTURAL_NEIGHBOR_SCORE = 0.2;
+// Share of candidates, by structural rank, that adaptive selection keeps as neighbors.
+const CONFIDENT_NEIGHBOR_SHARE = 0.1;
+const UNCERTAIN_NEIGHBOR_SHARE = 0.25;
+// Result cap for conservative and targeted selection when no top-K is given.
+const DEFAULT_TOP_K = 5;
 
 const ANCHOR_KEYWORD_PATTERN = /(testid|codegen|browsername|dotenv|toollist|mcp|selector|config|timeout|internal|attr)/i;
+const PUBLIC_QUERY_PATTERN = /(getby|findby|queryby|bytext|bylabel|byrole|testid)/i;
+const END_USER_SURFACE_FAMILIES = ['page', 'browser', 'client'];
+
+function hasChangeEvidence(profile: DocumentProfile): boolean {
+    return profile.changeTokens.length > 0 || profile.changePhraseTokens.length > 0;
+}
 
 function tokenWeight(token: string): number {
     let weight = 1;
@@ -70,9 +88,10 @@ function weightedOverlap(left: string[], right: string[]): number {
     let rightWeight = 0;
 
     for (const token of leftTokens) {
-        leftWeight += tokenWeight(token);
+        const weight = tokenWeight(token);
+        leftWeight += weight;
         if (rightSet.has(token)) {
-            sharedWeight += tokenWeight(token);
+            sharedWeight += weight;
         }
     }
 
@@ -107,21 +126,20 @@ function focusedWeightedOverlap(reference: string[], candidate: string[]): numbe
 }
 
 function anchorOverlap(source: DocumentProfile, candidate: DocumentProfile): number {
-    const candidateAnchorTokens = [...candidate.rareAnchorTokens];
-
     return Math.min(0.95, Math.max(
         overlapCoefficient(source.exports, candidate.imports),
         overlapCoefficient(source.exports, candidate.testNames),
-        focusedWeightedOverlap(source.rareAnchorTokens, candidateAnchorTokens),
-        weightedOverlap(source.rareAnchorTokens, candidateAnchorTokens),
-        diceCoefficient(source.phraseTokens, candidateAnchorTokens),
+        focusedWeightedOverlap(source.rareAnchorTokens, candidate.rareAnchorTokens),
+        weightedOverlap(source.rareAnchorTokens, candidate.rareAnchorTokens),
+        diceCoefficient(source.phraseTokens, candidate.rareAnchorTokens),
     ));
 }
 
 function interfaceOverlap(source: DocumentProfile, candidate: DocumentProfile): number {
+    // Imports and anchors only count once the source exposes commands or options.
     const sourceInterfaceTokens = source.commandTokens.length || source.optionTokens.length
         ? [...source.commandTokens, ...source.optionTokens, ...source.imports, ...source.rareAnchorTokens]
-        : [...source.commandTokens, ...source.optionTokens];
+        : [];
     const candidateInterfaceTokens = [
         ...candidate.commandTokens,
         ...candidate.optionTokens,
@@ -157,32 +175,21 @@ function pathFamilyOverlap(source: DocumentProfile, candidate: DocumentProfile):
         ...candidate.commandTokens,
         ...candidate.optionTokens,
     ]);
-    const publicQuerySource = source.exports.some((token) => /(getby|findby|queryby|bytext|bylabel|byrole|testid)/i.test(token));
+    const publicQuerySource = source.exports.some((token) => PUBLIC_QUERY_PATTERN.test(token));
+    const sourceAnchors = [...source.exports, ...source.rareAnchorTokens];
+    const candidateAnchors = [...candidate.rareAnchorTokens, ...candidate.testNames];
     const consumerAnchorScore = Math.max(
-        focusedWeightedOverlap(
-            [...source.exports, ...source.rareAnchorTokens],
-            [...candidate.rareAnchorTokens, ...candidate.testNames]
-        ),
-        weightedOverlap(
-            [...source.exports, ...source.rareAnchorTokens],
-            [...candidate.rareAnchorTokens, ...candidate.testNames]
-        ),
+        focusedWeightedOverlap(sourceAnchors, candidateAnchors),
+        weightedOverlap(sourceAnchors, candidateAnchors),
     );
-    const endUserSurfaceScore = publicQuerySource &&
-        consumerAnchorScore > 0.15 &&
-        (
-            candidate.pathFamilyTokens.includes('page') ||
-            candidate.pathFamilyTokens.includes('browser') ||
-            candidate.pathFamilyTokens.includes('client')
-        )
-        ? 0.7
-        : 0;
+    const endUserSurface = END_USER_SURFACE_FAMILIES.some((family) => candidate.pathFamilyTokens.includes(family));
+    const endUserSurfaceScore = publicQuerySource && consumerAnchorScore > 0.15 && endUserSurface ? 0.7 : 0;
 
     return Math.max(baseScore, endUserSurfaceScore);
 }
 
 function changeOverlap(source: DocumentProfile, candidate: DocumentProfile): number {
-    if (!source.changeTokens.length && !source.changePhraseTokens.length) {
+    if (!hasChangeEvidence(source)) {
         return 0;
     }
 
@@ -221,17 +228,12 @@ function changeOverlap(source: DocumentProfile, candidate: DocumentProfile): num
     return Math.max(publicFalloutScore, internalChangeScore * evidenceWeight);
 }
 
-function structuralScore(source: DocumentProfile, candidate: DocumentProfile): {
-    stemScore: number;
-    basenameScore: number;
-    semanticScore: number;
-    anchorScore: number;
-    interfaceScore: number;
-    phraseScore: number;
-    pathFamilyScore: number;
-    changeScore: number;
+// Each structural signal plus their weighted blend (`score`).
+type StructuralScore = Omit<MatchCandidate, 'file' | 'score' | 'preview' | 'structuralScore' | 'jevScore'> & {
     score: number;
-} {
+};
+
+function structuralScore(source: DocumentProfile, candidate: DocumentProfile): StructuralScore {
     const stemScore = overlapCoefficient(source.stemTokens, candidate.stemTokens);
     const basenameScore = overlapCoefficient(source.basenameTokens, candidate.basenameTokens);
     const semanticScore = overlapCoefficient(source.semanticTokens, candidate.semanticTokens);
@@ -242,7 +244,7 @@ function structuralScore(source: DocumentProfile, candidate: DocumentProfile): {
     const changeScore = changeOverlap(source, candidate);
 
     const weights = {
-        changeScore: source.changeTokens.length || source.changePhraseTokens.length ? 0.25 : 0,
+        changeScore: hasChangeEvidence(source) ? 0.25 : 0,
         phraseScore: 0.25,
         anchorScore: 0.18,
         semanticScore: 0.12,
@@ -279,26 +281,18 @@ function structuralScore(source: DocumentProfile, candidate: DocumentProfile): {
 export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCandidate[]): MatchCandidate[] {
     return candidates
         .map((item) => {
-            const structure = structuralScore(source.profile, item.profile);
+            const { score: structural, ...componentScores } = structuralScore(source.profile, item.profile);
             // Without a Jev score (heuristics-only ranking) the structural score stands alone.
             const blendedScore = item.jevScore === undefined
-                ? structure.score
-                : (item.jevScore * JEV_WEIGHT) + (structure.score * (1 - JEV_WEIGHT));
-            const score = Math.min(1, Math.max(0, blendedScore));
+                ? structural
+                : (item.jevScore * JEV_WEIGHT) + (structural * (1 - JEV_WEIGHT));
 
             return {
                 file: item.file,
-                score,
+                score: Math.min(1, Math.max(0, blendedScore)),
                 preview: item.preview,
-                structuralScore: structure.score,
-                stemScore: structure.stemScore,
-                basenameScore: structure.basenameScore,
-                semanticScore: structure.semanticScore,
-                anchorScore: structure.anchorScore,
-                interfaceScore: structure.interfaceScore,
-                phraseScore: structure.phraseScore,
-                pathFamilyScore: structure.pathFamilyScore,
-                changeScore: structure.changeScore,
+                structuralScore: structural,
+                ...componentScores,
                 jevScore: item.jevScore,
             };
         })
@@ -307,4 +301,105 @@ export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCa
 
 export function filterMatches(matches: MatchCandidate[], minScore: number): MatchCandidate[] {
     return matches.filter((entry) => entry.score >= minScore);
+}
+
+interface SelectionEvidence {
+    affirmativeCount: number;
+    structuralNeighborCount: number;
+    structuralCutoff: number;
+    uncertaintyRetainedCount?: number;
+}
+
+// Non-finite or out-of-range Jev scores count as missing.
+function usableJevScore(match: MatchCandidate): number | undefined {
+    const { jevScore } = match;
+    return jevScore !== undefined && Number.isFinite(jevScore) && jevScore <= 1 ? jevScore : undefined;
+}
+
+function isJevAffirmative(match: MatchCandidate): boolean {
+    return (usableJevScore(match) ?? 0) >= TARGETED_JEV_THRESHOLD;
+}
+
+interface SelectionResult {
+    results: MatchCandidate[];
+    eligibleCount: number;
+    truncated: boolean;
+    effectiveLimit: number | null;
+    reason?: string;
+    evidence?: SelectionEvidence;
+}
+
+function capSelection(
+    eligible: MatchCandidate[],
+    cap: number | undefined,
+    reason?: string,
+    evidence?: SelectionEvidence
+): SelectionResult {
+    return {
+        results: cap === undefined ? eligible : eligible.slice(0, cap),
+        eligibleCount: eligible.length,
+        truncated: cap !== undefined && eligible.length > cap,
+        effectiveLimit: cap ?? null,
+        reason,
+        evidence,
+    };
+}
+
+/**
+ * Keeps every affirmative Jev answer plus the strongest structural neighbors. When
+ * Jev is unavailable or unsure, the neighbor share widens, and with no strong
+ * structural evidence either, every candidate is kept.
+ */
+function selectAdaptive(matches: MatchCandidate[], topK: number | undefined, ranker: Ranker): SelectionResult {
+    const structuralScores = matches.map((match) => match.structuralScore).sort((a, b) => b - a);
+    const strongestStructural = structuralScores[0] ?? 0;
+    const affirmative = ranker === 'jev' ? matches.filter(isJevAffirmative) : [];
+    const strongestJev = matches.reduce((best, match) => Math.max(best, usableJevScore(match) ?? 0), 0);
+    const uncertain = ranker !== 'jev' || strongestJev < STRONG_JEV_SCORE;
+    if (uncertain && strongestStructural < MIN_STRUCTURAL_NEIGHBOR_SCORE) {
+        return capSelection(matches, topK, 'No strong Jev or structural evidence; all candidates retained', {
+            affirmativeCount: affirmative.length,
+            structuralNeighborCount: 0,
+            structuralCutoff: 0,
+            uncertaintyRetainedCount: matches.length - affirmative.length,
+        });
+    }
+
+    const neighborShare = uncertain ? UNCERTAIN_NEIGHBOR_SHARE : CONFIDENT_NEIGHBOR_SHARE;
+    const percentileCutoff = structuralScores[Math.max(0, Math.ceil(structuralScores.length * neighborShare) - 1)] ?? 1;
+    const structuralCutoff = Math.max(MIN_STRUCTURAL_NEIGHBOR_SCORE, percentileCutoff);
+    const affirmativeFiles = new Set(affirmative.map((match) => match.file));
+    const eligible = matches.filter((match) =>
+        affirmativeFiles.has(match.file) || match.structuralScore >= structuralCutoff
+    );
+    return capSelection(eligible, topK, uncertain ? 'No strong Jev answer; structural coverage widened' : undefined, {
+        affirmativeCount: affirmative.length,
+        structuralNeighborCount: eligible.length - affirmative.length,
+        structuralCutoff,
+    });
+}
+
+export function selectMatches(
+    matches: MatchCandidate[],
+    topK: number | undefined,
+    policy: SelectionPolicy,
+    ranker: Ranker
+): SelectionResult {
+    if (policy === 'adaptive') {
+        return selectAdaptive(matches, topK, ranker);
+    }
+
+    const limit = topK ?? DEFAULT_TOP_K;
+    if (policy === 'conservative') {
+        return capSelection(matches, limit);
+    }
+
+    // Targeted: only Jev's affirmative answers, falling back to conservative top-K.
+    if (ranker !== 'jev') {
+        return capSelection(matches, limit, 'Jev is unavailable; conservative selection retained');
+    }
+    const affirmative = matches.filter(isJevAffirmative);
+    return affirmative.length
+        ? capSelection(affirmative, limit)
+        : capSelection(matches, limit, 'No affirmative Jev answer; conservative selection retained');
 }
