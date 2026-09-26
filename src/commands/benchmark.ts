@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { normalizePathSeparators } from '../utils/paths.ts';
 import { resolveConfig } from '../config.ts';
-import { buildDocumentProfile } from '../services/document-profile.ts';
+import { buildDocumentProfile, isTestLike } from '../services/document-profile.ts';
 import { JEV_API_KEY_ENV, JevScorer } from '../services/jev.ts';
 import { filterMatches, rankMatches, type RankedMatchCandidate } from '../services/match.ts';
 import { collectCandidateFilesDetailed, readCandidateText } from '../utils/files.ts';
@@ -149,7 +149,7 @@ export function registerBenchmarkCommand(program: Command): void {
             const sourcePaths = new Set(cases.map((entry) => path.resolve(cwd, entry.source)));
             // As in match, no case's source module is a candidate test; a test-like source stays one.
             const preparedCandidates = (await prepareCandidates(candidateResult.files, cwd)).filter((candidate) =>
-                candidate.profile.kind === 'test' || !sourcePaths.has(path.resolve(cwd, candidate.file))
+                isTestLike(candidate.profile) || !sourcePaths.has(path.resolve(cwd, candidate.file))
             );
 
             let top1Hits = 0;

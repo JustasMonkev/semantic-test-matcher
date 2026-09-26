@@ -659,6 +659,7 @@ diff --git a/src/page.ts a/src/page.ts
             "test.skipIf(process.env.CI)('skips on CI', () => {});",
             "it.concurrent.each(cases)('runs case %s', async () => {});",
             "test.step('is a step, not a test', async () => {});",
+            "const isNumber = /^\\d+$/.test('42');",
         ].join('\n'), '/workspace');
 
         assert.deepEqual(profile.testTitles, ['applies discount %i', 'works concurrently', 'adds $a', 'skips on CI', 'runs case %s']);

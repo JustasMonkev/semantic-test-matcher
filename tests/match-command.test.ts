@@ -491,6 +491,22 @@ describe('match command rankers', () => {
             await fs.rm(outside, { recursive: true, force: true });
         });
 
+        it('only offers test-like files to run from a broad candidate root', async () => {
+            await fs.writeFile('src/tax.ts', 'export function applyTax(total: number) { return total * 1.2; }');
+            await fs.mkdir('e2e');
+            await fs.writeFile('e2e/checkout.ts', "test('applies the discount at checkout', () => {});");
+            await execFileAsync('git', ['add', '.']);
+            await execFileAsync('git', ['-c', 'user.name=RBT test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false', 'commit', '-m', 'more files']);
+            await fs.appendFile('src/price.ts', '\nexport const discountRate = 0.2;');
+            const { lines } = await runCli(
+                '--candidates', '.', '--ranker', 'heuristics', '--selection-policy', 'conservative', '--top-k', '50', '--paths-only'
+            );
+
+            assert.ok(lines.includes('e2e/checkout.ts'), lines.join('\n'));
+            assert.ok(lines.includes('tests/price.test.ts'), lines.join('\n'));
+            assert.ok(lines.every((line) => !line.startsWith('src/')), lines.join('\n'));
+        });
+
         it('selects an edited __tests__ file itself from a broad candidate root', async () => {
             await fs.mkdir('__tests__');
             await fs.writeFile('__tests__/checkout.ts', "test('checks out a cart', () => {});");

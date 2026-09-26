@@ -20,7 +20,7 @@ import {
     type MatchCandidate,
     type RankedMatchCandidate,
 } from '../services/match.ts';
-import { buildDocumentProfile, listDiffFiles, resolveDiffRoot } from '../services/document-profile.ts';
+import { buildDocumentProfile, isTestLike, listDiffFiles, resolveDiffRoot } from '../services/document-profile.ts';
 import { readGitChanges } from '../services/git-changes.ts';
 import { detectTestCommand, promptAndRunTests } from '../services/test-runner.ts';
 import { quoteShellArgument } from '../utils/shell.ts';
@@ -228,9 +228,11 @@ async function matchChangedFiles(
     cwd: string
 ) {
     const changedPaths = new Set(changes.paths);
-    // A changed source module is never a test to run; a changed test stays a candidate for the other files.
-    const unchangedOrTests = candidates.filter((candidate) =>
-        candidate.profile.kind === 'test' || !changedPaths.has(path.resolve(cwd, candidate.file))
+    // Automatic mode runs what it selects, so only test-like files are candidates there. Elsewhere a
+    // changed source module is still never a test to run; a changed test stays a candidate for the other files.
+    const eligible = candidates.filter((candidate) => changes.automatic
+        ? isTestLike(candidate.profile)
+        : isTestLike(candidate.profile) || !changedPaths.has(path.resolve(cwd, candidate.file))
     );
     const changed: Array<{ source: ChangedSource; fileCandidates: RankedMatchCandidate[] }> = [];
     for (const changedPath of changes.paths) {
@@ -238,8 +240,8 @@ async function matchChangedFiles(
             source: await readChangedFile(changedPath, changes, cwd),
             // Automatic mode also selects an edited test for itself, so it runs.
             fileCandidates: changes.automatic
-                ? unchangedOrTests
-                : unchangedOrTests.filter((candidate) => path.resolve(cwd, candidate.file) !== changedPath),
+                ? eligible
+                : eligible.filter((candidate) => path.resolve(cwd, candidate.file) !== changedPath),
         });
     }
 

@@ -191,7 +191,8 @@ function collectTestNames(text: string): string[] {
 
 // `.each(table)`, `.each`table``, `.for(table)`, and `.skipIf(condition)` call once before the title;
 // the bounded table keeps an unclosed call cheap to reject.
-const TEST_TITLE_PATTERN = /\b(?:test|it|describe)(?:\.(?:describe|only|skip|todo|fixme|fail|failing|slow|serial|parallel|concurrent|sequential))*(?:\.(?:each|for|skipIf|runIf)(?:`[^`]{0,4000}`|\((?:[^()]|\([^()]{0,400}\)){0,4000}\)))?\(\s*(['"`])((?:\\.|(?!\1|\\).)+)\1/g;
+// The lookbehind skips method calls such as `/\d+/.test('42')`.
+const TEST_TITLE_PATTERN = /(?<![\w$.])(?:test|it|describe)(?:\.(?:describe|only|skip|todo|fixme|fail|failing|slow|serial|parallel|concurrent|sequential))*(?:\.(?:each|for|skipIf|runIf)(?:`[^`]{0,4000}`|\((?:[^()]|\([^()]{0,400}\)){0,4000}\)))?\(\s*(['"`])((?:\\.|(?!\1|\\).)+)\1/g;
 
 /** Raw test titles, kept verbatim for consumers that read them as prose. */
 function collectTestTitles(text: string): string[] {
@@ -503,6 +504,11 @@ function createSummary(profile: Omit<DocumentProfile, 'summary' | 'preview'>): s
     }
 
     return lines.join('\n');
+}
+
+/** A test file by name or directory, or any file that declares tests, such as `e2e/checkout.ts`. */
+export function isTestLike(profile: DocumentProfile): boolean {
+    return profile.kind === 'test' || profile.testTitles.length > 0;
 }
 
 export function buildDocumentProfile(
