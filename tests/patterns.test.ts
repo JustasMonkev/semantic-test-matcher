@@ -68,10 +68,14 @@ describe('isParentPath', () => {
     it('accepts contained paths and the base itself', () => {
         assert.ok(isParentPath('/repo', '/repo/src/index.ts'));
         assert.ok(isParentPath('/repo', '/repo'));
+        assert.ok(isParentPath('/repo', '/repo/..foo.ts'));
+        assert.ok(isParentPath('/repo', '/repo/src/..hidden/index.ts'));
     });
 
     it('rejects paths outside the base', () => {
         assert.ok(!isParentPath('/repo', '/repo/../secrets'));
         assert.ok(!isParentPath('/repo', '/other'));
+        assert.ok(!isParentPath('/repo', '/'));
+        assert.ok(!isParentPath('/repo/src', '/repo'));
     });
 });

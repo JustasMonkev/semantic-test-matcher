@@ -7,7 +7,8 @@ export function normalizePathSeparators(value: string): string {
 
 export function isParentPath(base: string, target: string): boolean {
     const relative = path.relative(base, target);
-    return !relative.startsWith('..') && !path.isAbsolute(relative);
+    // Only a `..` segment leaves base; a name such as `..foo.ts` stays inside it.
+    return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
 export async function resolveRealPath(targetPath: string): Promise<string> {

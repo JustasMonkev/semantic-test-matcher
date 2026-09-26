@@ -347,6 +347,21 @@ describe('match command rankers', () => {
             assert.ok(output.results.every((result) => result.jevScore === undefined && result.score === result.structuralScore));
         });
 
+        it('accepts a repository-root --diff-file path whose name starts with two dots', async () => {
+            await fs.writeFile('..price.ts', 'export function applyDiscount(total: number) { return total * 0.9; }');
+            await fs.writeFile('dots.diff', [
+                '--- ..price.ts',
+                '+++ ..price.ts',
+                '@@ -1 +1 @@',
+                '-export function applyDiscount(total: number) { return total; }',
+                '+export function applyDiscount(total: number) { return total * 0.9; }',
+                '',
+            ].join('\n'));
+            const { lines } = await runCli('--diff-file', 'dots.diff', '--diff-root', '.', '--ranker', 'heuristics', '--json');
+            // SAFETY: --json makes the command's last log line its serialized result.
+            assert.equal((JSON.parse(lines[lines.length - 1]) as { file: string }).file, '..price.ts');
+        });
+
         it('rejects --diff-file paths outside the diff root', async () => {
             const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-outside-'));
             await fs.writeFile(path.join(outside, 'secret.ts'), 'export const secret = 1;');
