@@ -4,6 +4,13 @@ import { isParentPath } from './utils/patterns.ts';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
+/**
+ * embedding: local GGUF embeddings + structural heuristics (default, fully local).
+ * jev: TypeSafe Jev scores + structural heuristics (sends diffs and test titles to the TypeSafe API).
+ * heuristics: structural heuristics only.
+ */
+export type Ranker = 'embedding' | 'jev' | 'heuristics';
+
 export interface MatchDefaults {
     topK: number;
     threshold: number;
@@ -15,6 +22,8 @@ export interface MatchDefaults {
 
 export interface AppConfig {
     model?: string;
+    ranker?: Ranker;
+    jevModel?: string;
     cacheDir?: string;
     logLevel?: LogLevel;
     quiet?: boolean;
@@ -24,6 +33,8 @@ export interface AppConfig {
 
 export interface RuntimeConfig {
     model: string;
+    ranker: Ranker;
+    jevModel: string;
     cacheDir: string;
     logLevel: LogLevel;
     quiet: boolean;
@@ -49,12 +60,17 @@ export interface MatchCommandOptions {
     includeFile?: string[];
     excludeFile?: string[];
     model?: string;
+    ranker?: string;
+    jevModel?: string;
     cacheDir?: string;
     json?: boolean;
 }
 
 const DEFAULT_CONFIG: AppConfig = {
     model: 'models/embeddinggemma-300M-Q4_0.gguf',
+    ranker: 'embedding',
+    // Pinned so cached answers and tuned thresholds survive `jev-latest` moving.
+    jevModel: 'jev-1.13.0',
     cacheDir: '.rbt/cache',
     logLevel: 'info',
     match: {
@@ -109,6 +125,15 @@ function parseLogLevel(value?: string): LogLevel {
     }
 
     throw new Error(`Invalid log level "${value}". Expected "debug", "info", "warn", or "error".`);
+}
+
+function parseRanker(value: unknown): Ranker {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (normalized === 'embedding' || normalized === 'jev' || normalized === 'heuristics') {
+        return normalized;
+    }
+
+    throw new Error(`Invalid ranker "${value}". Expected "embedding", "jev", or "heuristics".`);
 }
 
 function mergeArrays(left: string[] = [], right: string[] = []): string[] {
@@ -215,6 +240,17 @@ export async function resolveConfig(
         throw new Error('Auto-discovered repo config cannot set the model outside the workspace.');
     }
 
+    const ranker = parseRanker(
+        commandOptions.ranker ??
+        process.env.RBT_RANKER ??
+        fileConfig.ranker ??
+        DEFAULT_CONFIG.ranker
+    );
+    const jevModel = commandOptions.jevModel ??
+        process.env.RBT_JEV_MODEL ??
+        fileConfig.jevModel ??
+        DEFAULT_CONFIG.jevModel!;
+
     const resolvedLogLevel = parseLogLevel(
         rootOptions.logLevel ??
             process.env.RBT_LOG_LEVEL ??
@@ -307,6 +343,8 @@ export async function resolveConfig(
 
     return {
         model,
+        ranker,
+        jevModel,
         cacheDir,
         logLevel: resolvedLogLevel,
         quiet: resolvedQuiet,

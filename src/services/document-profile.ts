@@ -19,11 +19,13 @@ export interface DocumentProfile {
     exports: string[];
     imports: string[];
     testNames: string[];
+    testTitles: string[];
     commandTokens: string[];
     optionTokens: string[];
     contentTokens: string[];
     lateCallTokens: string[];
     semanticTokens: string[];
+    diffExcerpt: string;
     summary: string;
     embeddingText: string;
     preview: string;
@@ -87,6 +89,7 @@ const GENERIC_CHANGE_TOKENS = new Set([...GENERIC_ANCHOR_TOKENS, 'is']);
 interface ChangedLines {
     added: string[];
     removed: string[];
+    hunks: string[];
 }
 
 type GitPrefixes = [string | undefined, string | undefined];
@@ -191,6 +194,20 @@ function collectTestNames(text: string): string[] {
         }
     }
     return uniqueTokens(names);
+}
+
+const TEST_TITLE_PATTERN = /\b(?:test|it|describe)(?:\.(?:describe|only|skip|fixme|fail|slow|serial|parallel))*\(\s*(['"`])((?:\\.|(?!\1).)+)\1/g;
+
+/** Raw test titles, kept verbatim for consumers that read them as prose. */
+function collectTestTitles(text: string): string[] {
+    const titles: string[] = [];
+    for (const match of text.matchAll(TEST_TITLE_PATTERN)) {
+        const title = match[2].trim().slice(0, 160);
+        if (title) {
+            titles.push(title);
+        }
+    }
+    return [...new Set(titles)];
 }
 
 function collectStemTokens(basename: string): string[] {
@@ -558,7 +575,7 @@ function collectChangedLines(
     gitRoot: string,
     allowCwdRelativeGitPaths: boolean
 ): ChangedLines {
-    const changedLines: ChangedLines = { added: [], removed: [] };
+    const changedLines: ChangedLines = { added: [], removed: [], hunks: [] };
     if (!diffText) {
         return changedLines;
     }
@@ -680,6 +697,9 @@ function collectChangedLines(
                 newLinesRemaining = Number(header[2] ?? 1);
                 inHunk = true;
                 structuredDiff = true;
+                if (currentFileMatches) {
+                    changedLines.hunks.push(line);
+                }
             }
             continue;
         }
@@ -687,6 +707,7 @@ function collectChangedLines(
             continue;
         }
         if (currentFileMatches) {
+            changedLines.hunks.push(line);
             if (line.startsWith('+')) {
                 changedLines.added.push(line.slice(1));
             } else if (line.startsWith('-')) {
@@ -958,6 +979,7 @@ export function buildDocumentProfile(
     const exports = collectExportedSymbols(text);
     const imports = collectImportedSymbols(text);
     const testNames = collectTestNames(text);
+    const testTitles = collectTestTitles(text);
     const commandTokens = collectCommandTokens(text);
     const optionTokens = collectOptionTokens(text);
     const contentText = stripCommentsAndStrings(text);
@@ -1003,11 +1025,13 @@ export function buildDocumentProfile(
         exports,
         imports,
         testNames,
+        testTitles,
         commandTokens,
         optionTokens,
         contentTokens: boundedContentTokens,
         lateCallTokens,
         semanticTokens,
+        diffExcerpt: changedLines.hunks.join('\n'),
     };
 
     const summary = createSummary(partialProfile);

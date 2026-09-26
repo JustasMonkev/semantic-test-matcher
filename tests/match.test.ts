@@ -418,3 +418,35 @@ export class Page {
         assert.equal(matches[0].file, 'tests/prompt.spec.ts');
     });
 });
+
+describe('rankMatches semantic signal', () => {
+    const cwd = '/workspace';
+    const source = buildDocumentProfile(`${cwd}/src/price-engine.ts`, PRICE_ENGINE_SOURCE, cwd);
+
+    it('uses a Jev score in place of embedding similarity', () => {
+        const priceTest = makeCandidate('tests/price-engine.test.ts', PRICE_ENGINE_TEST, cwd);
+        const socketTest = makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd);
+        const matches = rankMatches(
+            { profile: source, vector: textToVector(source.embeddingText) },
+            [{ ...priceTest, jevScore: 0.1 }, { ...socketTest, jevScore: 0.9 }]
+        );
+
+        for (const match of matches) {
+            assert.ok(match.jevScore !== undefined);
+            assert.ok(Math.abs(match.score - ((match.jevScore * 0.2) + (match.structuralScore * 0.8))) < 1e-12);
+        }
+    });
+
+    it('ranks by structural score alone without embeddings or Jev scores', () => {
+        const { vector: _priceVector, ...priceTest } = makeCandidate('tests/price-engine.test.ts', PRICE_ENGINE_TEST, cwd);
+        const { vector: _socketVector, ...socketTest } = makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd);
+        const matches = rankMatches({ profile: source }, [socketTest, priceTest]);
+
+        assert.equal(matches[0].file, 'tests/price-engine.test.ts');
+        for (const match of matches) {
+            assert.equal(match.embeddingScore, 0);
+            assert.equal(match.jevScore, undefined);
+            assert.equal(match.score, match.structuralScore);
+        }
+    });
+});

@@ -16,6 +16,7 @@ export interface MatchCandidate {
     phraseScore: number;
     pathFamilyScore: number;
     changeScore: number;
+    jevScore?: number;
     embeddingBackend?: EmbeddingBackend;
     cacheHit?: boolean;
 }
@@ -34,17 +35,22 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 
 export interface RankedMatchSource {
     profile: DocumentProfile;
-    vector: number[];
+    vector?: number[];
 }
 
 export interface RankedMatchCandidate {
     file: string;
-    vector: number[];
+    vector?: number[];
+    /** Jev's probability that this test should run; replaces embedding similarity when set. */
+    jevScore?: number;
     preview: string;
     profile: DocumentProfile;
     embeddingBackend?: EmbeddingBackend;
     cacheHit?: boolean;
 }
+
+// Share of the final score given to the semantic signal (embedding similarity or Jev).
+const SEMANTIC_SIGNAL_WEIGHT = 0.2;
 
 const ANCHOR_KEYWORD_PATTERN = /(testid|codegen|browsername|dotenv|toollist|mcp|selector|config|timeout|internal|attr)/i;
 
@@ -291,19 +297,19 @@ function structuralScore(source: DocumentProfile, candidate: DocumentProfile): {
 }
 
 export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCandidate[]): MatchCandidate[] {
-    const normalizedSource = normalizeVector(source.vector);
+    const normalizedSource = source.vector ? normalizeVector(source.vector) : undefined;
 
     return candidates
         .map((item) => {
-            const embeddingScore = cosineSimilarity(normalizedSource, normalizeVector(item.vector));
+            const hasEmbedding = normalizedSource !== undefined && item.vector !== undefined;
+            const embeddingScore = hasEmbedding ? cosineSimilarity(normalizedSource, normalizeVector(item.vector!)) : 0;
+            const semanticSignal = item.jevScore ?? (hasEmbedding ? embeddingScore : undefined);
             const structure = structuralScore(source.profile, item.profile);
-            const score = Math.min(
-                1,
-                Math.max(
-                    0,
-                    (embeddingScore * 0.2) + (structure.score * 0.8)
-                )
-            );
+            // Without a semantic signal (heuristics-only ranking) the structural score stands alone.
+            const blendedScore = semanticSignal === undefined
+                ? structure.score
+                : (semanticSignal * SEMANTIC_SIGNAL_WEIGHT) + (structure.score * (1 - SEMANTIC_SIGNAL_WEIGHT));
+            const score = Math.min(1, Math.max(0, blendedScore));
 
             return {
                 file: item.file,
@@ -319,6 +325,7 @@ export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCa
                 phraseScore: structure.phraseScore,
                 pathFamilyScore: structure.pathFamilyScore,
                 changeScore: structure.changeScore,
+                jevScore: item.jevScore,
                 embeddingBackend: item.embeddingBackend,
                 cacheHit: item.cacheHit,
             };
