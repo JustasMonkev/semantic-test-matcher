@@ -3,19 +3,6 @@ import crypto from 'node:crypto';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { isDebug } from '../utils/io.ts';
-import type { EmbeddingBackend } from './embedding-types.ts';
-
-export interface CachedEmbedding {
-    createdAt: string;
-    provider: string;
-    model: string;
-    vector: number[];
-    backend?: EmbeddingBackend;
-}
-
-export interface EmbeddingCache {
-    [hash: string]: CachedEmbedding;
-}
 
 const LOCK_POLL_MS = 20;
 const LOCK_TIMEOUT_MS = 10_000;
@@ -106,7 +93,7 @@ async function releaseCacheLock(lockPath: string, handle: FileHandle): Promise<v
     }
 }
 
-export async function loadCache<T = CachedEmbedding>(filePath: string): Promise<Record<string, T>> {
+export async function loadCache<T>(filePath: string): Promise<Record<string, T>> {
     try {
         const raw = await fs.readFile(filePath, 'utf8');
         return JSON.parse(raw) as Record<string, T>;
@@ -147,24 +134,6 @@ export function buildCacheKey(provider: string, model: string, text: string): st
     return sanitizeKey(`${provider}|${model}|${normalized}`);
 }
 
-export async function readCachedEmbedding(
-    filePath: string,
-    provider: string,
-    model: string,
-    text: string
-): Promise<{ vector: number[]; backend: EmbeddingBackend } | null> {
-    const cache = await loadCache(filePath);
-    const hit = cache[buildCacheKey(provider, model, text)];
-    if (!hit || !hit.backend) {
-        return null;
-    }
-
-    return {
-        vector: hit.vector,
-        backend: hit.backend,
-    };
-}
-
 /** Merges entries into a JSON cache file under a lock, keeping entries other processes wrote. */
 export async function writeCacheEntries<T>(
     filePath: string,
@@ -182,34 +151,4 @@ export async function writeCacheEntries<T>(
     } finally {
         await releaseCacheLock(lock.lockPath, lock.handle);
     }
-}
-
-export async function writeCachedEmbeddings(
-    filePath: string,
-    entries: EmbeddingCache
-): Promise<void> {
-    await writeCacheEntries(filePath, entries);
-}
-
-export async function writeCachedEmbedding(
-    filePath: string,
-    provider: string,
-    model: string,
-    text: string,
-    vector: number[],
-    backend: EmbeddingBackend
-): Promise<void> {
-    await writeCachedEmbeddings(filePath, {
-        [buildCacheKey(provider, model, text)]: {
-            createdAt: new Date().toISOString(),
-            provider,
-            model,
-            vector,
-            backend,
-        },
-    });
-}
-
-export function getCacheFile(cacheDirectory: string): string {
-    return path.join(cacheDirectory, 'embeddings.json');
 }

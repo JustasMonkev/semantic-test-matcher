@@ -85,6 +85,14 @@ export function getJevCacheFile(cacheDirectory: string): string {
     return path.join(cacheDirectory, 'jev.json');
 }
 
+export async function getJevCacheEntryCount(cacheDirectory: string): Promise<number> {
+    try {
+        return Object.keys(await loadCache<CachedJevAnswer>(getJevCacheFile(cacheDirectory))).length;
+    } catch {
+        return 0;
+    }
+}
+
 function truncate(text: string, maxChars: number): string {
     return text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n…(truncated)`;
 }
@@ -160,8 +168,8 @@ async function sleep(ms: number): Promise<void> {
  *
  * Each candidate is one Noul question ("should this test file be re-run?") evaluated
  * against a shared state describing the change, so a whole candidate list usually
- * costs one request. Answers are cached per question; like EmbeddingSession, the
- * cache is read once and new answers are written on flush().
+ * costs one request. Answers are cached per question: the cache is read once per
+ * scorer and new answers are written in one locked write on flush().
  */
 export class JevScorer {
     private cachePromise?: Promise<Record<string, CachedJevAnswer>>;

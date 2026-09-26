@@ -52,13 +52,6 @@ describe('buildDocumentProfile', () => {
         assert.equal(buildDocumentProfile('/workspace/src/tabs.ts', source, '/workspace').diffExcerpt, '');
     });
 
-    it('places the bounded summary before verbose sections', () => {
-        const tests = Array.from({ length: 500 }, (_, index) => `test('case ${index}', () => {});`).join('\n');
-        const profile = buildDocumentProfile('/repo/tests/large.spec.ts', tests, '/repo');
-
-        assert.ok(profile.embeddingText.indexOf('summary:') < profile.embeddingText.indexOf('tests:'));
-    });
-
     it('keeps changed identifiers ahead of verbose source metadata', () => {
         const imports = Array.from(
             { length: 90 },
@@ -80,7 +73,6 @@ describe('buildDocumentProfile', () => {
         );
 
         assert.ok(profile.semanticTokens.includes('screenshot'));
-        assert.ok(profile.embeddingText.indexOf('changes:') < profile.embeddingText.indexOf('imports:'));
     });
 
     it('keeps identifiers that actually changed instead of surrounding line noise', () => {
@@ -630,57 +622,5 @@ diff --git a/src/page.ts a/src/page.ts
         assert.ok(profile.semanticTokens.includes('widget'));
         assert.ok(profile.semanticTokens.includes('render'));
         assert.ok(profile.semanticTokens.includes('critical'));
-    });
-
-    it('bounds verbose test names in embedding input', () => {
-        const tests = Array.from(
-            { length: 500 },
-            (_, index) => `test('page screenshot case${index}', () => {});`
-        ).join('\n');
-        const profile = buildDocumentProfile('/repo/tests/page-screenshot.spec.ts', tests, '/repo');
-        const testSections = profile.embeddingText.split('\n').filter((line) => line.startsWith('tests:'));
-        const testSection = testSections[testSections.length - 1];
-
-        assert.ok(testSection);
-        assert.ok(testSection.split(/\s+/).length <= 33);
-    });
-
-    it('bounds the complete embedding input and emits changes once', () => {
-        const imports = Array.from(
-            { length: 500 },
-            (_, index) => `import { Service${index} } from '../service-${index}.ts';`
-        ).join('\n');
-        const exports = Array.from(
-            { length: 500 },
-            (_, index) => `export const feature${index} = ${index};`
-        ).join('\n');
-        const tests = Array.from(
-            { length: 500 },
-            (_, index) => `test('behavior case ${index}', () => command.option('--flag-${index}'));`
-        ).join('\n');
-        const profile = buildDocumentProfile('/repo/tests/large.spec.ts', `${imports}\n${exports}\n${tests}`, '/repo', `
---- tests/large.spec.ts
-+++ tests/large.spec.ts
-@@ -1 +1,2 @@
--return oldScreenshot;
-+const screenshot = oldScreenshot;
-+return screenshot;
-`);
-
-        assert.ok(profile.embeddingText.split(/\s+/).length <= 512);
-        assert.equal(profile.embeddingText.match(/^changes:/gm)?.length, 1);
-        assert.ok(profile.embeddingText.includes('signals:'));
-    });
-
-    it('keeps all no-diff section tokens when the complete input already fits', () => {
-        const tests = Array.from(
-            { length: 40 },
-            (_, index) => `test('behavior${index}', () => {});`
-        ).join('\n');
-        const profile = buildDocumentProfile('/repo/tests/behavior.spec.ts', tests, '/repo');
-        const testSections = profile.embeddingText.split('\n').filter((line) => line.startsWith('tests:'));
-
-        assert.ok(profile.embeddingText.split(/\s+/).length <= 512);
-        assert.match(testSections[testSections.length - 1] || '', /\bbehavior39\b/);
     });
 });

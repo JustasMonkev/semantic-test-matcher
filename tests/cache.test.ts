@@ -3,102 +3,72 @@ import { describe, it } from 'node:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {
-    buildCacheKey,
-    getCacheFile,
-    loadCache,
-    readCachedEmbedding,
-    writeCachedEmbedding,
-    writeCachedEmbeddings,
-    type EmbeddingCache,
-} from '../src/services/cache.ts';
+import { buildCacheKey, loadCache, writeCacheEntries } from '../src/services/cache.ts';
+
+interface Entry {
+    value: number;
+}
 
 async function makeTempCacheFile(): Promise<string> {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-cache-'));
-    return getCacheFile(dir);
+    return path.join(dir, 'cache.json');
 }
 
 describe('buildCacheKey', () => {
     it('normalizes whitespace so equivalent texts share a key', () => {
         assert.equal(
-            buildCacheKey('node-llama-cpp', 'model', 'hello   world'),
-            buildCacheKey('node-llama-cpp', 'model', ' hello\r\nworld ')
+            buildCacheKey('typesafe', 'model', 'hello   world'),
+            buildCacheKey('typesafe', 'model', ' hello\r\nworld ')
         );
     });
 
     it('separates keys by provider, model, and text', () => {
-        const base = buildCacheKey('node-llama-cpp', 'model', 'text');
+        const base = buildCacheKey('typesafe', 'model', 'text');
         assert.notEqual(buildCacheKey('other-backend', 'model', 'text'), base);
-        assert.notEqual(buildCacheKey('node-llama-cpp', 'other', 'text'), base);
-        assert.notEqual(buildCacheKey('node-llama-cpp', 'model', 'other'), base);
+        assert.notEqual(buildCacheKey('typesafe', 'other', 'text'), base);
+        assert.notEqual(buildCacheKey('typesafe', 'model', 'other'), base);
     });
 });
 
 describe('loadCache', () => {
     it('returns an empty cache for a missing file', async () => {
-        assert.deepEqual(await loadCache(await makeTempCacheFile()), {});
+        assert.deepEqual(await loadCache<Entry>(await makeTempCacheFile()), {});
     });
 
     it('ignores a malformed cache file', async () => {
         const cacheFile = await makeTempCacheFile();
-        await fs.mkdir(path.dirname(cacheFile), { recursive: true });
         await fs.writeFile(cacheFile, 'not json', 'utf8');
-        assert.deepEqual(await loadCache(cacheFile), {});
+        assert.deepEqual(await loadCache<Entry>(cacheFile), {});
     });
 });
 
-describe('writeCachedEmbedding / readCachedEmbedding', () => {
-    it('round-trips an embedding through the cache file', async () => {
+describe('writeCacheEntries', () => {
+    it('round-trips entries through the cache file', async () => {
         const cacheFile = await makeTempCacheFile();
-        await writeCachedEmbedding(cacheFile, 'node-llama-cpp', 'model', 'some text', [1, 2, 3], 'node-llama-cpp');
+        await writeCacheEntries<Entry>(cacheFile, { key: { value: 1 } });
 
-        const hit = await readCachedEmbedding(cacheFile, 'node-llama-cpp', 'model', 'some text');
-        assert.ok(hit);
-        assert.deepEqual(hit.vector, [1, 2, 3]);
-        assert.equal(hit.backend, 'node-llama-cpp');
+        assert.deepEqual(await loadCache<Entry>(cacheFile), { key: { value: 1 } });
     });
 
-    it('misses for a different model or text', async () => {
+    it('persists a batch in one write and merges with existing entries', async () => {
         const cacheFile = await makeTempCacheFile();
-        await writeCachedEmbedding(cacheFile, 'node-llama-cpp', 'model', 'some text', [1], 'node-llama-cpp');
+        await writeCacheEntries<Entry>(cacheFile, { existing: { value: 0 } });
+        await writeCacheEntries<Entry>(cacheFile, { one: { value: 1 }, two: { value: 2 }, three: { value: 3 } });
 
-        assert.equal(await readCachedEmbedding(cacheFile, 'node-llama-cpp', 'other-model', 'some text'), null);
-        assert.equal(await readCachedEmbedding(cacheFile, 'node-llama-cpp', 'model', 'other text'), null);
+        const cache = await loadCache<Entry>(cacheFile);
+        assert.deepEqual(Object.keys(cache).sort(), ['existing', 'one', 'three', 'two']);
     });
 
     it('removes the lock file after a write', async () => {
         const cacheFile = await makeTempCacheFile();
-        await writeCachedEmbedding(cacheFile, 'node-llama-cpp', 'model', 'text', [1], 'node-llama-cpp');
+        await writeCacheEntries<Entry>(cacheFile, { key: { value: 1 } });
 
-        const entries = await fs.readdir(path.dirname(cacheFile));
-        assert.deepEqual(entries, ['embeddings.json']);
-    });
-});
-
-describe('writeCachedEmbeddings', () => {
-    it('persists a batch of entries in one write and merges with existing entries', async () => {
-        const cacheFile = await makeTempCacheFile();
-        await writeCachedEmbedding(cacheFile, 'node-llama-cpp', 'model', 'existing', [0], 'node-llama-cpp');
-
-        const batch: EmbeddingCache = {};
-        for (const text of ['one', 'two', 'three']) {
-            batch[buildCacheKey('node-llama-cpp', 'model', text)] = {
-                createdAt: new Date().toISOString(),
-                provider: 'node-llama-cpp',
-                model: 'model',
-                vector: [1],
-                backend: 'node-llama-cpp',
-            };
-        }
-        await writeCachedEmbeddings(cacheFile, batch);
-
-        const cache = await loadCache(cacheFile);
-        assert.equal(Object.keys(cache).length, 4);
+        assert.deepEqual(await fs.readdir(path.dirname(cacheFile)), ['cache.json']);
     });
 
     it('does nothing for an empty batch', async () => {
         const cacheFile = await makeTempCacheFile();
-        await writeCachedEmbeddings(cacheFile, {});
+        await writeCacheEntries<Entry>(cacheFile, {});
         await assert.rejects(fs.stat(cacheFile), (error: NodeJS.ErrnoException) => error.code === 'ENOENT');
     });
 });

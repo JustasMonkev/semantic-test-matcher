@@ -27,7 +27,6 @@ export interface DocumentProfile {
     semanticTokens: string[];
     diffExcerpt: string;
     summary: string;
-    embeddingText: string;
     preview: string;
 }
 
@@ -96,8 +95,6 @@ type GitPrefixes = [string | undefined, string | undefined];
 
 const MAX_SEMANTIC_TOKENS = 72;
 const MAX_CHANGE_SEMANTIC_TOKENS = 24;
-const MAX_EMBEDDING_SECTION_TOKENS = 32;
-const MAX_EMBEDDING_WORDS = 512;
 const MAX_LATE_CALL_TOKENS = 128;
 
 function collectIdentifierTokens(value: string, filterGenericAnchors = false): string[] {
@@ -866,7 +863,7 @@ function determineKind(relativePath: string): DocumentKind {
     return 'source';
 }
 
-function createSummary(profile: Omit<DocumentProfile, 'summary' | 'embeddingText' | 'preview'>): string {
+function createSummary(profile: Omit<DocumentProfile, 'summary' | 'preview'>): string {
     const subject = profile.kind === 'test' ? 'test file' : profile.kind === 'fixture' ? 'fixture file' : 'source module';
     const focus = profile.semanticTokens.slice(0, 12).join(', ');
     const lines = [`${subject} about ${focus || profile.basenameTokens.join(', ')}`];
@@ -904,40 +901,6 @@ function createSummary(profile: Omit<DocumentProfile, 'summary' | 'embeddingText
     }
 
     return lines.join('\n');
-}
-
-function createEmbeddingText(profile: Omit<DocumentProfile, 'summary' | 'embeddingText' | 'preview'> & { summary: string }): string {
-    const buildSections = (limit?: number): string[] => {
-        const take = (tokens: string[]): string[] => limit === undefined ? tokens : tokens.slice(0, limit);
-        const sections = [
-            `path: ${profile.relativePath}`,
-            `kind: ${profile.kind}`,
-            `basename: ${profile.basenameTokens.join(' ')}`,
-            `summary: ${profile.summary}`,
-        ];
-        const tokenSections: Array<[string, string[]]> = [
-            ['exports', profile.exports],
-            ['imports', profile.imports],
-            ['tests', profile.testNames],
-            ['commands', profile.commandTokens],
-            ['options', profile.optionTokens],
-            ['path-families', profile.pathFamilyTokens],
-            ['anchors', profile.rareAnchorTokens],
-        ];
-
-        for (const [label, tokens] of tokenSections) {
-            if (tokens.length) {
-                sections.push(`${label}: ${take(tokens).join(' ')}`);
-            }
-        }
-        sections.push(`signals: ${profile.semanticTokens.join(' ')}`);
-        return sections;
-    };
-
-    const completeText = buildSections().join('\n');
-    return completeText.split(/\s+/).length <= MAX_EMBEDDING_WORDS
-        ? completeText
-        : buildSections(MAX_EMBEDDING_SECTION_TOKENS).join('\n');
 }
 
 export function buildDocumentProfile(
@@ -1035,12 +998,10 @@ export function buildDocumentProfile(
     };
 
     const summary = createSummary(partialProfile);
-    const embeddingText = createEmbeddingText({ ...partialProfile, summary });
 
     return {
         ...partialProfile,
         summary,
-        embeddingText,
         preview: (summary.split('\n')[0] || relativePath).slice(0, 160),
     };
 }

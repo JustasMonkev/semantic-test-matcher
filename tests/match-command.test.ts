@@ -64,8 +64,8 @@ describe('match command rankers', () => {
         return { output: JSON.parse(lines[lines.length - 1]) as MatchOutput, warnings };
     }
 
-    it('falls back to heuristics and says so when the jev ranker has no API key', async () => {
-        const { output, warnings } = await runMatch('--ranker', 'jev');
+    it('uses Jev by default and falls back to heuristics, saying so, without an API key', async () => {
+        const { output, warnings } = await runMatch();
 
         assert.equal(output.ranker, 'heuristics');
         assert.match(output.rankerFallback ?? '', /TYPESAFE_API_KEY/);
@@ -111,8 +111,14 @@ describe('match command rankers', () => {
         assert.deepEqual(repeat.output.jev, { requests: 0, cacheHits: 2, inputTokens: 0 });
     });
 
-    it('ranks with heuristics only when asked, without loading a model', async () => {
-        const { output } = await runMatch('--ranker', 'heuristics', '--model', 'missing.gguf');
+    it('ranks with heuristics only when asked, without calling the API', async () => {
+        process.env.TYPESAFE_API_KEY = 'test-key';
+        globalThis.fetch = (async () => {
+            throw new Error('heuristics ranking must not call the API');
+        }) as typeof fetch;
+        const { output, warnings } = await runMatch('--ranker', 'heuristics');
+
+        assert.deepEqual(warnings, []);
 
         assert.equal(output.ranker, 'heuristics');
         assert.equal(output.results[0].file, 'tests/price.test.ts');
