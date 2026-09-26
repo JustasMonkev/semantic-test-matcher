@@ -187,10 +187,11 @@ function retryDelayMs(attempt: number, retryAfterMs: number, retryBaseMs: number
     );
 }
 
-/** A 200 body can still be `null` or another non-object, e.g. from a proxy. */
+/** A 200 body can still be `null`, another non-object, or miss the answering model, e.g. from a proxy. */
 function isJevResponse(value: unknown): value is JevResponse {
     return typeof value === 'object' && value !== null
-        && 'answers' in value && typeof value.answers === 'object' && value.answers !== null;
+        && 'answers' in value && typeof value.answers === 'object' && value.answers !== null
+        && 'model' in value && typeof value.model === 'string' && value.model !== '';
 }
 
 // Batch questions are keyed by candidate index so answers map back to candidates.
@@ -330,7 +331,9 @@ export class JevScorer {
             if (response.ok) {
                 const body: unknown = await response.json();
                 // score() still checks each answer's noul before use.
-                return isJevResponse(body) ? { response: body } : { failure: 'response has no answers', retryAfterMs: 0 };
+                return isJevResponse(body)
+                    ? { response: body }
+                    : { failure: 'response has no answers or model', retryAfterMs: 0 };
             }
             const failure = describeFailure(response.status, await response.text());
             if (!isRetryableStatus(response.status)) {

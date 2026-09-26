@@ -109,6 +109,16 @@ describe('test command detection', () => {
         assert.equal(await detect({ devDependencies: { mocha: '1' } }), 'npx mocha');
     });
 
+    it('does not reuse a script that already selects test paths', async () => {
+        assert.equal(await detect({ scripts: { test: "mocha 'tests/**/*.test.js'" }, devDependencies: { mocha: '1' } }), 'npx mocha');
+        assert.equal(await detect({ scripts: { test: 'jest tests' }, devDependencies: { jest: '1' } }), 'npx jest');
+        assert.equal(
+            await detect({ scripts: { test: 'playwright test tests/e2e' }, devDependencies: { '@playwright/test': '1' } }),
+            'npx playwright test'
+        );
+        assert.equal(await detect({ scripts: { test: 'vitest run src' } }), undefined);
+    });
+
     it('gives no guess when the runner is unknown or package.json is missing or invalid', async () => {
         assert.equal(await detect({ scripts: { test: 'node --test "tests/**/*.test.ts"' } }), undefined);
         assert.equal(await detect({ scripts: { test: 'vitest run $FILTER' } }), undefined);

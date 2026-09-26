@@ -47,6 +47,17 @@ describe('local Git changes', () => {
         assert.match(profile.diffExcerpt ?? '', /oldPrice/);
     });
 
+    it('reads an uncolored diff even when Git is configured to always color', async () => {
+        await git('config', 'color.ui', 'always');
+        await git('config', 'color.diff', 'always');
+        await fs.writeFile(path.join(root, 'src/price.ts'), 'export const price = 2;\n');
+        const changes = await readGitChanges(root);
+
+        assert.doesNotMatch(changes.diffText, /\u001b\[/);
+        const profile = buildDocumentProfile(path.join(root, 'src/price.ts'), '', root, changes.diffText, changes.root);
+        assert.match(profile.diffExcerpt ?? '', /^@@ -1 \+1 @@\n-export const price = 1;\n\+export const price = 2;$/);
+    });
+
     it('scopes changes to the current directory and resolves paths from nested directories', async () => {
         await fs.writeFile(path.join(root, 'outside.ts'), 'export const outside = 1;');
         await fs.writeFile(path.join(root, 'src/price.ts'), 'export const price = 2;\n');

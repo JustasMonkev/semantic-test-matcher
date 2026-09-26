@@ -18,6 +18,22 @@ const RUNNER_DEPENDENCIES: Array<[string, string]> = [
     ['mocha', 'npx mocha'],
 ];
 
+/**
+ * Whether a runner script passes its own positional arguments, such as `jest tests` or
+ * `mocha 'tests/**'`; with the selected files appended, the runner would still run those too.
+ * A value given as a separate word (`--config jest.config.js`) cannot be told apart, so it counts.
+ */
+function selectsTestPaths(script: string): boolean {
+    let args: string[];
+    try {
+        args = commandArguments(script);
+    } catch {
+        return true;
+    }
+    const runnerWords = args[0] === 'playwright' || (args[0] === 'vitest' && args[1] === 'run') ? 2 : 1;
+    return args.slice(runnerWords).some((arg) => !arg.startsWith('-'));
+}
+
 /** Guesses the command that runs chosen test files, from package.json; undefined when unsure. */
 export async function detectTestCommand(cwd: string): Promise<string | undefined> {
     let manifest;
@@ -28,7 +44,7 @@ export async function detectTestCommand(cwd: string): Promise<string | undefined
         return undefined;
     }
     const script = String(manifest.scripts?.test ?? '').trim();
-    if (RUNNER_SCRIPT.test(script) && !SHELL_SYNTAX.test(script)) {
+    if (RUNNER_SCRIPT.test(script) && !SHELL_SYNTAX.test(script) && !selectsTestPaths(script)) {
         // Plain `vitest` starts watch mode; `vitest run` exits when the tests finish.
         return `npx ${script.replace(/^vitest(?!\s+run\b)/, 'vitest run')}`;
     }

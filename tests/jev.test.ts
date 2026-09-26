@@ -325,16 +325,20 @@ describe('JevScorer', () => {
         assert.equal(calls.length, 5);
     });
 
-    it('retries a successful response without answers and fails as a JevError', async () => {
-        const recovered = fakeFetch((body, call) => (call === 0 ? Response.json(null) : answer(body, byTabs)));
+    it('retries a successful response without answers or a model and fails as a JevError', async () => {
+        const recovered = fakeFetch((body, call) => (
+            call === 0 ? Response.json(null)
+                : call === 1 ? Response.json({ answers: { t0: { type: 'noul', noul: 0.9 } } })
+                    : answer(body, byTabs)
+        ));
         const result = await makeScorer(recovered.impl).score(makeSource(TABS_DIFF), [TABS_TEST]);
-        assert.equal(recovered.calls.length, 2);
+        assert.equal(recovered.calls.length, 3);
         assert.equal(result.scores.get('tests/tabs.spec.ts'), 0.9);
 
         const { impl, calls } = fakeFetch(() => Response.json(null));
         await assert.rejects(
             makeScorer(impl).score(makeSource(TABS_DIFF), [TABS_TEST]),
-            (error: Error) => error instanceof JevError && /response has no answers/.test(error.message)
+            (error: Error) => error instanceof JevError && /response has no answers or model/.test(error.message)
         );
         assert.equal(calls.length, 5);
     });

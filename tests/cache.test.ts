@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -99,6 +100,51 @@ describe('writeCacheEntries', () => {
 
         assert.deepEqual(await loadCache<Entry>(cacheFile), { key: { value: 1 } });
         assert.deepEqual(await fs.readdir(path.dirname(cacheFile)), ['cache.json']);
+    });
+
+    it('keeps an old lock while the writer that holds it is still running', async () => {
+        const cacheFile = await makeTempCacheFile();
+        const lockFile = path.join(path.dirname(cacheFile), 'cache.lock');
+        await fs.writeFile(lockFile, `${process.pid}\n${os.hostname()}\nslow-writer\n`, 'utf8');
+        const longAgo = new Date(Date.now() - 60_000);
+        await fs.utimes(lockFile, longAgo, longAgo);
+
+        const write = writeCacheEntries<Entry>(cacheFile, { key: { value: 1 } });
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        await assert.rejects(fs.stat(cacheFile), (error: NodeJS.ErrnoException) => error.code === 'ENOENT');
+
+        await fs.unlink(lockFile);
+        await write;
+        assert.deepEqual(await loadCache<Entry>(cacheFile), { key: { value: 1 } });
+    });
+
+    it('replaces an old lock whose writer has exited', async () => {
+        const cacheFile = await makeTempCacheFile();
+        const lockFile = path.join(path.dirname(cacheFile), 'cache.lock');
+        const exitedPid = spawnSync(process.execPath, ['-e', '']).pid;
+        await fs.writeFile(lockFile, `${exitedPid}\n${os.hostname()}\nexited-writer\n`, 'utf8');
+        const longAgo = new Date(Date.now() - 60_000);
+        await fs.utimes(lockFile, longAgo, longAgo);
+
+        await writeCacheEntries<Entry>(cacheFile, { key: { value: 1 } });
+
+        assert.deepEqual(await fs.readdir(path.dirname(cacheFile)), ['cache.json']);
+    });
+
+    it('leaves a lock that another writer took over in place', async () => {
+        const cacheFile = await makeTempCacheFile();
+        const lockFile = path.join(path.dirname(cacheFile), 'cache.lock');
+        process.env.RBT_CACHE_WRITE_DELAY_MS = '150';
+        try {
+            const write = writeCacheEntries<Entry>(cacheFile, { key: { value: 1 } });
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            await fs.writeFile(lockFile, 'new owner', 'utf8');
+            await write;
+        } finally {
+            delete process.env.RBT_CACHE_WRITE_DELAY_MS;
+        }
+
+        assert.equal(await fs.readFile(lockFile, 'utf8'), 'new owner');
     });
 
     it('does nothing for an empty batch', async () => {

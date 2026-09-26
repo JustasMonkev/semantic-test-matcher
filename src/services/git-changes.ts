@@ -22,7 +22,8 @@ export async function readGitChanges(cwd: string): Promise<{ files: string[]; di
         hasHead = false;
     }
     const diff = (...args: string[]) =>
-        git('diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-relative', ...args, '--', '.');
+        // --no-color: color.diff=always would wrap the headers and lines the diff parser reads.
+        git('diff', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-relative', ...args, '--', '.');
     // Without a HEAD commit, diff the index (staged) and then the working tree against it (unstaged).
     const bases = hasHead ? [['HEAD']] : [['--cached'], []];
     const [patches, names, untracked] = await Promise.all([

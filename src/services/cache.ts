@@ -2,12 +2,22 @@ import { sleep } from '../utils/async.ts';
 import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import type { FileHandle } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { isDebug } from '../utils/io.ts';
 
 const LOCK_POLL_MS = 20;
 const LOCK_TIMEOUT_MS = 10_000;
 const STALE_LOCK_MS = 30_000;
+// A lock whose owner still runs is only taken over after this long, in case its PID was reused.
+const ABANDONED_LOCK_MS = 10 * 60_000;
+
+interface CacheLock {
+    handle: FileHandle;
+    lockPath: string;
+    /** Written into the lock so its owner never removes a lock another writer took over. */
+    token: string;
+}
 
 function sanitizeKey(input: string): string {
     return crypto.createHash('sha256').update(input).digest('hex');
@@ -34,11 +44,12 @@ function getDelayMs(): number {
 }
 
 /** Creates the lock file exclusively; resolves undefined while another writer holds it. */
-async function tryCreateLock(lockPath: string): Promise<FileHandle | undefined> {
+async function tryCreateLock(lockPath: string): Promise<CacheLock | undefined> {
+    const token = crypto.randomUUID();
     try {
         const handle = await fs.open(lockPath, 'wx');
-        await handle.writeFile(`${process.pid}\n${new Date().toISOString()}\n`, 'utf8');
-        return handle;
+        await handle.writeFile(`${process.pid}\n${os.hostname()}\n${token}\n`, 'utf8');
+        return { handle, lockPath, token };
     } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
             return undefined;
@@ -47,15 +58,36 @@ async function tryCreateLock(lockPath: string): Promise<FileHandle | undefined> 
     }
 }
 
-/** True when the held lock is already gone or was stale and removed, so a retry can go at once. */
+/** Whether a lock's writer is known to be running: same host, and its PID answers signal 0. */
+function isLockOwnerRunning(contents: string): boolean {
+    const [pidLine, host] = contents.split('\n');
+    const pid = Number(pidLine);
+    if (!Number.isInteger(pid) || pid <= 0 || host !== os.hostname()) {
+        return false;
+    }
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        return (error as NodeJS.ErrnoException).code === 'EPERM';
+    }
+}
+
+/**
+ * True when the held lock is already gone or was stale and removed, so a retry can go at once.
+ * A slow writer that is still running keeps its lock; only one that exited (or is unknown) loses it.
+ */
 async function clearStaleLock(lockPath: string): Promise<boolean> {
     try {
-        const stats = await fs.stat(lockPath);
-        if ((Date.now() - stats.mtimeMs) > STALE_LOCK_MS) {
-            await fs.unlink(lockPath).catch(() => {});
-            return true;
+        const ageMs = Date.now() - (await fs.stat(lockPath)).mtimeMs;
+        if (ageMs <= STALE_LOCK_MS) {
+            return false;
         }
-        return false;
+        if (ageMs <= ABANDONED_LOCK_MS && isLockOwnerRunning(await fs.readFile(lockPath, 'utf8'))) {
+            return false;
+        }
+        await fs.unlink(lockPath).catch(() => {});
+        return true;
     } catch (error) {
         if (isMissingFile(error)) {
             return true;
@@ -64,16 +96,16 @@ async function clearStaleLock(lockPath: string): Promise<boolean> {
     }
 }
 
-async function acquireCacheLock(filePath: string): Promise<{ handle: FileHandle; lockPath: string }> {
+async function acquireCacheLock(filePath: string): Promise<CacheLock> {
     const lockPath = getCacheLockFile(filePath);
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
 
     await fs.mkdir(path.dirname(filePath), { recursive: true });
 
     while (true) {
-        const handle = await tryCreateLock(lockPath);
-        if (handle) {
-            return { handle, lockPath };
+        const lock = await tryCreateLock(lockPath);
+        if (lock) {
+            return lock;
         }
         if (await clearStaleLock(lockPath)) {
             continue;
@@ -85,12 +117,16 @@ async function acquireCacheLock(filePath: string): Promise<{ handle: FileHandle;
     }
 }
 
-async function releaseCacheLock(lockPath: string, handle: FileHandle): Promise<void> {
+async function releaseCacheLock({ handle, lockPath, token }: CacheLock): Promise<void> {
     try {
         await handle.close();
     } finally {
         try {
-            await fs.unlink(lockPath);
+            if ((await fs.readFile(lockPath, 'utf8')).includes(token)) {
+                await fs.unlink(lockPath);
+            } else {
+                debugCache(`Cache lock ${lockPath} was taken over; leaving it to its new owner`);
+            }
         } catch (error) {
             if (!isMissingFile(error)) {
                 debugCache(`Unable to remove cache lock ${lockPath}: ${(error as Error).message}`);
@@ -157,6 +193,6 @@ export async function writeCacheEntries<T>(
         Object.assign(cache, entries);
         await persistCache(filePath, cache);
     } finally {
-        await releaseCacheLock(lock.lockPath, lock.handle);
+        await releaseCacheLock(lock);
     }
 }
