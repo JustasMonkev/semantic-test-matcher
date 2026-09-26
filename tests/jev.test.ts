@@ -129,8 +129,8 @@ describe('JevScorer', () => {
         assert.match(questions[0].instructions.question, /re-run to check the code change/);
         assert.deepEqual([...result.scores], [['tests/tabs.spec.ts', 0.9], ['tests/console.spec.ts', 0.1]]);
         assert.deepEqual(
-            { requests: result.requests, cacheHits: result.cacheHits, inputTokens: result.inputTokens, model: result.model },
-            { requests: 1, cacheHits: 0, inputTokens: 100, model: 'jev-1.13.0' }
+            { requests: result.requests, cacheHits: result.cacheHits, inputTokens: result.inputTokens, models: result.models },
+            { requests: 1, cacheHits: 0, inputTokens: 100, models: ['jev-1.13.0'] }
         );
     });
 
@@ -166,7 +166,7 @@ describe('JevScorer', () => {
 
             assert.equal(calls.length, 1);
             assert.equal(result.cacheHits, 0);
-            assert.equal(result.model, 'jev-1.14.0');
+            assert.deepEqual(result.models, ['jev-1.14.0']);
         }
         assert.equal(await getJevCacheEntryCount(cacheDir), 0);
     });
@@ -209,6 +209,20 @@ describe('JevScorer', () => {
         for (const call of calls) {
             assert.ok(estimateTokens(String(call.init.body)) < 64_000);
         }
+    });
+
+    it('reports every version that answered the batches of one change', async () => {
+        const { impl } = fakeFetch((body, call) => Response.json({
+            model: call % 2 ? 'jev-1.14.0' : 'jev-1.15.0',
+            answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { type: 'noul', noul: 0.3 }])),
+        }));
+        const candidates = Array.from({ length: 300 }, (_, index) => ({
+            file: `tests/generated-${index}.spec.ts`,
+            profile: TABS_TEST.profile,
+        }));
+        const result = await makeScorer(impl, { model: 'jev-latest' }).score(makeSource(TABS_DIFF), candidates);
+
+        assert.deepEqual(result.models, ['jev-1.14.0', 'jev-1.15.0']);
     });
 
     it('reports every model version whose answers were used', async () => {

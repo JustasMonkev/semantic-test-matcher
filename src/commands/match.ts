@@ -308,7 +308,8 @@ function rankChangedFile(
         file: source.file,
         ranker,
         rankerFallback,
-        model: ranker === 'jev' ? jevResult?.model ?? config.jevModel : undefined,
+        // One version names the model that answered; otherwise the requested id, with every version in jev.models.
+        model: ranker === 'jev' ? (jevResult?.models.length === 1 ? jevResult.models[0] : config.jevModel) : undefined,
         matched: selection.results.length,
         candidateCount: matches.length,
         threshold: config.match.threshold,
@@ -326,6 +327,7 @@ function rankChangedFile(
             requests: jevResult.requests,
             cacheHits: jevResult.cacheHits,
             inputTokens: jevResult.inputTokens,
+            models: jevResult.models,
         },
         candidateLimitReached,
         results: selection.results,

@@ -53,9 +53,7 @@ export interface JevScoreResult {
     requests: number;
     cacheHits: number;
     inputTokens: number;
-    /** Versioned model that answered, when any request was made. */
-    model?: string;
-    /** Every model version whose answers were used, cached answers included. */
+    /** Every model version whose answers were used, cached answers included, sorted. */
     models: string[];
 }
 
@@ -267,7 +265,6 @@ export class JevScorer {
                 });
                 result.requests += attempts;
                 result.inputTokens += response.usage?.input_tokens ?? 0;
-                result.model = response.model;
                 models.add(response.model);
 
                 for (const index of batch) {
@@ -292,7 +289,7 @@ export class JevScorer {
             throw error;
         }
 
-        result.models = [...models];
+        result.models = [...models].sort();
         return result;
     }
 

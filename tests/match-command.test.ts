@@ -17,7 +17,7 @@ interface MatchOutput {
     eligibleCount?: number;
     selectionTruncated?: boolean;
     model?: string;
-    jev?: { requests: number; cacheHits: number };
+    jev?: { requests: number; cacheHits: number; models: string[] };
     results: Array<{ file: string; score: number; structuralScore: number; jevScore?: number }>;
 }
 
@@ -122,7 +122,28 @@ describe('match command rankers', () => {
         // A repeat run is answered from the cache without calling the API.
         const repeat = await runMatch('--ranker', 'jev');
         assert.equal(requests, 1);
-        assert.deepEqual(repeat.output.jev, { requests: 0, cacheHits: 2, inputTokens: 0 });
+        assert.deepEqual(repeat.output.jev, { requests: 0, cacheHits: 2, inputTokens: 0, models: ['jev-1.13.0'] });
+    });
+
+    it('lists every answering version when cached and fresh answers differ', async () => {
+        process.env.TYPESAFE_API_KEY = 'test-key';
+        let model = 'jev-1.13.0';
+        globalThis.fetch = async (_url, init) => {
+            // SAFETY: the match command's JevScorer serializes the request with this questions map.
+            const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> };
+            return Response.json({
+                model,
+                answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { type: 'noul', noul: 0.5 }])),
+            });
+        };
+        await runMatch('--ranker', 'jev');
+        await fs.writeFile('tests/extra.test.ts', "test('extra', () => {});");
+        model = 'jev-1.13.1';
+
+        const { output } = await runMatch('--ranker', 'jev');
+
+        assert.equal(output.model, 'jev-1.13.0');
+        assert.deepEqual(output.jev?.models, ['jev-1.13.0', 'jev-1.13.1']);
     });
 
     it('ranks with heuristics only when asked, without calling the API', async () => {
