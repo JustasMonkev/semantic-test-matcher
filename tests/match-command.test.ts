@@ -90,8 +90,9 @@ describe('match command rankers', () => {
     it('blends Jev scores into the ranking when the API answers', async () => {
         process.env.TYPESAFE_API_KEY = 'test-key';
         let requests = 0;
-        globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+        globalThis.fetch = async (_url, init) => {
             requests += 1;
+            // SAFETY: the match command's JevScorer serializes the request with this questions map.
             const body = JSON.parse(String(init?.body)) as {
                 questions: Record<string, { instructions: { test_file: { path: string } } }>;
             };
@@ -103,7 +104,7 @@ describe('match command rankers', () => {
                 ])),
                 usage: { input_tokens: 42, output_tokens: 2 },
             });
-        }) as typeof fetch;
+        };
 
         const { output, warnings } = await runMatch('--ranker', 'jev');
 
@@ -126,9 +127,9 @@ describe('match command rankers', () => {
 
     it('ranks with heuristics only when asked, without calling the API', async () => {
         process.env.TYPESAFE_API_KEY = 'test-key';
-        globalThis.fetch = (async () => {
+        globalThis.fetch = async () => {
             throw new Error('heuristics ranking must not call the API');
-        }) as typeof fetch;
+        };
         const { output, warnings } = await runMatch('--ranker', 'heuristics');
 
         assert.deepEqual(warnings, []);

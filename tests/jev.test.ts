@@ -73,11 +73,12 @@ function answer(body: JevRequestBody, noulFor: (testPath: string) => number): Re
 
 function fakeFetch(handler: (body: JevRequestBody, call: number) => Response) {
     const calls: Array<{ url: string; init: RequestInit; body: JevRequestBody }> = [];
-    const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const impl: typeof fetch = async (url, init) => {
+        // SAFETY: JevScorer serializes this request; its state and questions are asserted below.
         const body = JSON.parse(String(init?.body)) as JevRequestBody;
         calls.push({ url: String(url), init: init ?? {}, body });
         return handler(body, calls.length - 1);
-    }) as typeof fetch;
+    };
     return { impl, calls };
 }
 
@@ -116,7 +117,7 @@ describe('JevScorer', () => {
 
         assert.equal(calls.length, 1);
         assert.equal(calls[0].url, JEV_ENDPOINT);
-        assert.equal((calls[0].init.headers as Record<string, string>).Authorization, 'Bearer test-key');
+        assert.equal(new Headers(calls[0].init.headers).get('authorization'), 'Bearer test-key');
         assert.equal(calls[0].body.model, 'jev-1.13.0');
         const questions = Object.values(calls[0].body.questions);
         assert.deepEqual(questions.map((question) => question.type), ['noul', 'noul']);

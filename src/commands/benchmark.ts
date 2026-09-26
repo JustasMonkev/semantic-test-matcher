@@ -3,9 +3,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { normalizePathSeparators } from '../utils/paths.ts';
 import { resolveConfig } from '../config.ts';
-import { buildDocumentProfile, type DocumentProfile } from '../services/document-profile.ts';
+import { buildDocumentProfile } from '../services/document-profile.ts';
 import { JEV_API_KEY_ENV, JevScorer } from '../services/jev.ts';
-import { filterMatches, rankMatches } from '../services/match.ts';
+import { filterMatches, rankMatches, type RankedMatchCandidate } from '../services/match.ts';
 import { collectCandidateFilesDetailed, readCandidateText } from '../utils/files.ts';
 import { mapWithConcurrency } from '../utils/async.ts';
 import { readFileIfExists } from '../utils/io.ts';
@@ -30,26 +30,11 @@ interface BenchmarkMiss {
     observedRanks: Record<string, number | null>;
 }
 
-interface PreparedCandidate {
-    file: string;
-    jevScore?: number;
-    preview: string;
-    profile: DocumentProfile;
-}
-
-function normalizeOptionalPaths(values?: string[]): string[] | undefined {
-    return values?.map(normalizePathSeparators);
-}
-
-function getExpectedTop1(entry: BenchmarkCase): string | undefined {
-    return entry.expectedTop1;
-}
-
 function getExpectedTop3(entry: BenchmarkCase): string[] {
     if (entry.expectedTop3?.length) {
         return entry.expectedTop3;
     }
-    const top1 = getExpectedTop1(entry);
+    const top1 = entry.expectedTop1;
     return top1 ? [top1] : [];
 }
 
@@ -69,13 +54,13 @@ async function loadBenchmarkCases(filePath: string): Promise<BenchmarkCase[]> {
     return parsed.map((entry) => ({
         source: normalizePathSeparators(entry.source),
         expectedTop1: entry.expectedTop1 ? normalizePathSeparators(entry.expectedTop1) : undefined,
-        expectedTop3: normalizeOptionalPaths(entry.expectedTop3),
-        expectedTop10Includes: normalizeOptionalPaths(entry.expectedTop10Includes),
+        expectedTop3: entry.expectedTop3?.map(normalizePathSeparators),
+        expectedTop10Includes: entry.expectedTop10Includes?.map(normalizePathSeparators),
         diffText: entry.diffText,
     }));
 }
 
-async function prepareCandidates(candidateFiles: string[], cwd: string): Promise<PreparedCandidate[]> {
+async function prepareCandidates(candidateFiles: string[], cwd: string): Promise<RankedMatchCandidate[]> {
     const candidates = await mapWithConcurrency(candidateFiles, READ_CONCURRENCY, async (candidatePath) => {
         const candidateText = await readCandidateText(candidatePath);
         if (candidateText === undefined) {
@@ -208,7 +193,7 @@ export function registerBenchmarkCommand(program: Command): void {
                     const topTen = matches.slice(0, 10);
                     const failedChecks: string[] = [];
 
-                    const expectedTop1 = getExpectedTop1(entry);
+                    const expectedTop1 = entry.expectedTop1;
                     if (expectedTop1) {
                         top1Total += 1;
                         if ((matches[0]?.file ?? '') === expectedTop1) {

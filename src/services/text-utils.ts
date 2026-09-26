@@ -179,7 +179,7 @@ function sharedTokenCount(leftTokens: string[], rightTokens: Set<string>): numbe
 
 export function overlapCoefficient(left: string[], right: string[]): number {
     const leftTokens = uniqueTokens(left);
-    const rightTokens = new Set(uniqueTokens(right));
+    const rightTokens = new Set(right);
 
     if (!leftTokens.length || !rightTokens.size) {
         return 0;
@@ -190,7 +190,7 @@ export function overlapCoefficient(left: string[], right: string[]): number {
 
 export function diceCoefficient(left: string[], right: string[]): number {
     const leftTokens = uniqueTokens(left);
-    const rightTokens = new Set(uniqueTokens(right));
+    const rightTokens = new Set(right);
 
     if (!leftTokens.length || !rightTokens.size) {
         return 0;

@@ -93,6 +93,7 @@ export async function getJevCacheEntryCount(cacheDirectory: string): Promise<num
     try {
         return Object.keys(await loadCache<CachedJevAnswer>(getJevCacheFile(cacheDirectory))).length;
     } catch {
+        // Cache statistics are best-effort and must not fail an otherwise successful match.
         return 0;
     }
 }
@@ -269,7 +270,10 @@ export class JevScorer {
         return result;
     }
 
-    private async request(body: object): Promise<JevResponse> {
+    private async request(body: {
+        state: ReturnType<typeof buildJevState>;
+        questions: Record<string, JevNoulQuestion>;
+    }): Promise<JevResponse> {
         const payload = JSON.stringify({ model: this.options.model, ...body });
         const retryBaseMs = this.options.retryBaseMs ?? 500;
 

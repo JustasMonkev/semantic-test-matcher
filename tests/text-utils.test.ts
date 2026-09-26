@@ -73,12 +73,14 @@ describe('overlapCoefficient', () => {
 
     it('scores partial overlap against the smaller set', () => {
         assert.equal(overlapCoefficient(['a', 'b'], ['a', 'c', 'd']), 0.5);
+        assert.equal(overlapCoefficient(['a', 'a', 'b'], ['a', 'c', 'c', 'd']), 0.5);
     });
 });
 
 describe('diceCoefficient', () => {
     it('scores shared tokens against both set sizes', () => {
         assert.equal(diceCoefficient(['a', 'b'], ['a', 'c']), 0.5);
+        assert.equal(diceCoefficient(['a', 'a', 'b'], ['a', 'c', 'c']), 0.5);
         assert.equal(diceCoefficient(['a'], ['a']), 1);
         assert.equal(diceCoefficient(['a'], ['b']), 0);
     });

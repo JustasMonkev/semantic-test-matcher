@@ -23,10 +23,6 @@ function isMissingFile(error: unknown): boolean {
     return (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
-function isMalformedCache(error: unknown): boolean {
-    return error instanceof SyntaxError;
-}
-
 function getCacheLockFile(filePath: string): string {
     const parsed = path.parse(filePath);
     return path.join(parsed.dir, `${parsed.name}.lock`);
@@ -112,8 +108,8 @@ export async function loadCache<T>(filePath: string): Promise<Record<string, T>>
             return {};
         }
 
-        if (isMalformedCache(error)) {
-            debugCache(`Ignoring malformed cache file at ${filePath}: ${(error as Error).message}`);
+        if (error instanceof SyntaxError) {
+            debugCache(`Ignoring malformed cache file at ${filePath}: ${error.message}`);
             return {};
         }
 
