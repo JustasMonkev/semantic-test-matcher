@@ -14,8 +14,7 @@ program
 
 program
     .option('-c, --config <path>', 'Path to config file')
-    .option('--model <path>', 'Path to a local GGUF embedding model')
-    .option('--cache-dir <path>', 'Directory used to store embedding cache')
+    .option('--cache-dir <path>', 'Directory used to store the Jev answer cache')
     .option('--log-level <level>', 'debug | info | warn | error')
     .option('-v, --verbose', 'Enable verbose output')
     .option('-q, --quiet', 'Suppress non-essential output')

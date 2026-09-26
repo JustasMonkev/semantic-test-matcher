@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { cosineSimilarity, filterMatches, rankMatches, type RankedMatchCandidate } from '../src/services/match.ts';
+import { filterMatches, rankMatches, type RankedMatchCandidate } from '../src/services/match.ts';
 import { buildDocumentProfile } from '../src/services/document-profile.ts';
-import { textToVector } from '../src/services/text-utils.ts';
 
 const PRICE_ENGINE_SOURCE = `
 export function applyDiscount(order: Order, coupon: Coupon): number {
@@ -42,28 +41,15 @@ function makeCandidate(file: string, text: string, cwd: string): RankedMatchCand
     const profile = buildDocumentProfile(`${cwd}/${file}`, text, cwd);
     return {
         file,
-        vector: textToVector(profile.embeddingText),
         preview: profile.preview,
         profile,
     };
 }
 
-describe('cosineSimilarity', () => {
-    it('returns 1 for identical unit vectors and 0 for orthogonal ones', () => {
-        assert.equal(cosineSimilarity([1, 0], [1, 0]), 1);
-        assert.equal(cosineSimilarity([1, 0], [0, 1]), 0);
-    });
-
-    it('rejects empty and mismatched-length vectors', () => {
-        assert.equal(cosineSimilarity([], [1, 2]), 0);
-        assert.equal(cosineSimilarity([1, 0, 0.5], [1, 0]), 0);
-    });
-});
-
 describe('rankMatches', () => {
     const cwd = '/repo';
     const sourceProfile = buildDocumentProfile(`${cwd}/src/price-engine.ts`, PRICE_ENGINE_SOURCE, cwd);
-    const source = { profile: sourceProfile, vector: textToVector(sourceProfile.embeddingText) };
+    const source = { profile: sourceProfile };
 
     it('ranks the related test above an unrelated test', () => {
         const matches = rankMatches(source, [
@@ -131,7 +117,7 @@ export class Page {
             diff
         );
         const matches = rankMatches(
-            { profile: pageProfile, vector: [1, 0] },
+            { profile: pageProfile },
             [
                 makeCandidate(
                     'tests/page-screenshot.spec.ts',
@@ -143,7 +129,7 @@ export class Page {
                     `test('getByTestId selector codegen output', () => {});`,
                     cwd
                 ),
-            ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
+            ]
         );
         const screenshot = matches.find((match) => match.file === 'tests/page-screenshot.spec.ts');
         const codegen = matches.find((match) => match.file === 'tests/codegen.spec.ts');
@@ -168,7 +154,7 @@ export class Page {
             diff
         );
         const matches = rankMatches(
-            { profile: pageProfile, vector: [1, 0] },
+            { profile: pageProfile },
             [
                 makeCandidate(
                     'tests/page/page-screenshot.spec.ts',
@@ -180,7 +166,7 @@ export class Page {
                     `test('page options progress', () => {});`,
                     cwd
                 ),
-            ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
+            ]
         );
         const screenshot = matches.find((match) => match.file === 'tests/page/page-screenshot.spec.ts');
         const options = matches.find((match) => match.file === 'tests/page/page-options.spec.ts');
@@ -205,7 +191,7 @@ export class Page {
             diff
         );
         const matches = rankMatches(
-            { profile: pageProfile, vector: textToVector(pageProfile.embeddingText) },
+            { profile: pageProfile },
             [
                 makeCandidate(
                     'tests/api-behavior.spec.ts',
@@ -246,7 +232,7 @@ export class Page {
             cwd
         );
         const matches = rankMatches(
-            { profile: pageProfile, vector: [1, 0] },
+            { profile: pageProfile },
             [
                 directCandidate,
                 makeCandidate(
@@ -254,7 +240,7 @@ export class Page {
                     `test('other behavior', () => {\n${setup}\nheartbeat();\n${tail}\nheartbeat();\n});`,
                     cwd
                 ),
-            ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
+            ]
         );
         const direct = matches.find((match) => match.file === 'tests/late-direct-call.spec.ts');
         const unrelated = matches.find((match) => match.file === 'tests/unrelated.spec.ts');
@@ -282,7 +268,7 @@ export class Page {
             diff
         );
         const matches = rankMatches(
-            { profile: pageProfile, vector: [1, 0] },
+            { profile: pageProfile },
             [
                 makeCandidate(
                     'tests/page-options.spec.ts',
@@ -294,7 +280,7 @@ export class Page {
                     `test('captures an image', () => screenshot());`,
                     cwd
                 ),
-            ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
+            ]
         );
         const stemOnly = matches.find((match) => match.file === 'tests/page-options.spec.ts');
         const direct = matches.find((match) => match.file === 'tests/api-behavior.spec.ts');
@@ -320,7 +306,7 @@ export class Page {
             diff
         );
         const matches = rankMatches(
-            { profile: configProfile, vector: textToVector(configProfile.embeddingText) },
+            { profile: configProfile },
             [
                 makeCandidate(
                     'tests/codegen.spec.ts',
@@ -355,7 +341,7 @@ export class Page {
             diff
         );
         const matches = rankMatches(
-            { profile: settingsProfile, vector: [1, 0] },
+            { profile: settingsProfile },
             [
                 makeCandidate(
                     'tests/settings-api.spec.ts',
@@ -367,7 +353,7 @@ export class Page {
                     `test('loads settings', () => readConfig());`,
                     cwd
                 ),
-            ].map((candidate) => ({ ...candidate, vector: [1, 0] }))
+            ]
         );
         const direct = matches.find((match) => match.file === 'tests/settings-api.spec.ts');
         const unrelated = matches.find((match) => match.file === 'tests/settings-storage.spec.ts');
@@ -396,7 +382,7 @@ export class Page {
         );
         const setup = Array.from({ length: 80 }, (_, index) => `feature${index}();`).join('\n');
         const matches = rankMatches(
-            { profile: dialogProfile, vector: textToVector(dialogProfile.embeddingText) },
+            { profile: dialogProfile },
             [
                 makeCandidate(
                     'tests/prompt.spec.ts',
@@ -419,15 +405,15 @@ export class Page {
     });
 });
 
-describe('rankMatches semantic signal', () => {
+describe('rankMatches Jev blending', () => {
     const cwd = '/workspace';
     const source = buildDocumentProfile(`${cwd}/src/price-engine.ts`, PRICE_ENGINE_SOURCE, cwd);
 
-    it('uses a Jev score in place of embedding similarity', () => {
+    it('blends Jev scores with the structural score', () => {
         const priceTest = makeCandidate('tests/price-engine.test.ts', PRICE_ENGINE_TEST, cwd);
         const socketTest = makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd);
         const matches = rankMatches(
-            { profile: source, vector: textToVector(source.embeddingText) },
+            { profile: source },
             [{ ...priceTest, jevScore: 0.1 }, { ...socketTest, jevScore: 0.9 }]
         );
 
@@ -437,14 +423,14 @@ describe('rankMatches semantic signal', () => {
         }
     });
 
-    it('ranks by structural score alone without embeddings or Jev scores', () => {
-        const { vector: _priceVector, ...priceTest } = makeCandidate('tests/price-engine.test.ts', PRICE_ENGINE_TEST, cwd);
-        const { vector: _socketVector, ...socketTest } = makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd);
-        const matches = rankMatches({ profile: source }, [socketTest, priceTest]);
+    it('ranks by structural score alone without Jev scores', () => {
+        const matches = rankMatches({ profile: source }, [
+            makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd),
+            makeCandidate('tests/price-engine.test.ts', PRICE_ENGINE_TEST, cwd),
+        ]);
 
         assert.equal(matches[0].file, 'tests/price-engine.test.ts');
         for (const match of matches) {
-            assert.equal(match.embeddingScore, 0);
             assert.equal(match.jevScore, undefined);
             assert.equal(match.score, match.structuralScore);
         }

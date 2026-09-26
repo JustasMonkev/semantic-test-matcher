@@ -8,21 +8,21 @@ import { registerBenchmarkCommand } from '../src/commands/benchmark.ts';
 
 describe('benchmark command', () => {
     let cwd: string;
-    let testMode: string | undefined;
+    let savedKey: string | undefined;
 
     beforeEach(() => {
         cwd = process.cwd();
-        testMode = process.env.RBT_EMBEDDING_TEST_MODE;
-        process.env.RBT_EMBEDDING_TEST_MODE = 'stub';
+        savedKey = process.env.TYPESAFE_API_KEY;
+        delete process.env.TYPESAFE_API_KEY;
     });
 
     afterEach(() => {
         process.chdir(cwd);
-        if (testMode === undefined) delete process.env.RBT_EMBEDDING_TEST_MODE;
-        else process.env.RBT_EMBEDDING_TEST_MODE = testMode;
+        if (savedKey === undefined) delete process.env.TYPESAFE_API_KEY;
+        else process.env.TYPESAFE_API_KEY = savedKey;
     });
 
-    it('applies the same minimum score as match', async () => {
+    async function makeWorkspace(): Promise<void> {
         const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-benchmark-'));
         await fs.mkdir(path.join(root, 'src'));
         await fs.mkdir(path.join(root, 'tests'));
@@ -32,6 +32,10 @@ describe('benchmark command', () => {
             { source: 'src/price.ts', expectedTop3: ['tests/price.test.ts'] },
         ]));
         process.chdir(root);
+    }
+
+    it('applies the same minimum score as match', async () => {
+        await makeWorkspace();
 
         const output: string[] = [];
         const originalLog = console.log;
@@ -41,7 +45,7 @@ describe('benchmark command', () => {
             registerBenchmarkCommand(program);
             await program.parseAsync([
                 'benchmark', '--cases', 'cases.json', '--candidates', 'tests',
-                '--model', 'stub', '--threshold', '1', '--json',
+                '--ranker', 'heuristics', '--threshold', '1', '--json',
             ], { from: 'user' });
         } finally {
             console.log = originalLog;
@@ -63,6 +67,17 @@ describe('benchmark command', () => {
                 minScore: result.minScore,
             },
             { top1Cases: 0, top3Cases: 1, top3Rate: 0, threshold: 1, minScore: 1 }
+        );
+    });
+
+    it('fails instead of falling back when the jev ranker has no API key', async () => {
+        await makeWorkspace();
+        const program = new Command();
+        registerBenchmarkCommand(program);
+
+        await assert.rejects(
+            program.parseAsync(['benchmark', '--cases', 'cases.json', '--candidates', 'tests', '--json'], { from: 'user' }),
+            /TYPESAFE_API_KEY is required/
         );
     });
 });

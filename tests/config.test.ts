@@ -6,7 +6,6 @@ import path from 'node:path';
 import { clamp, resolveConfig } from '../src/config.ts';
 
 const MANAGED_ENV_VARS = [
-    'RBT_MODEL',
     'RBT_CACHE_DIR',
     'RBT_LOG_LEVEL',
     'RBT_VERBOSE',
@@ -44,7 +43,7 @@ describe('resolveConfig', () => {
 
     it('falls back to built-in defaults', async () => {
         const config = await resolveConfig({}, {});
-        assert.equal(config.model, path.resolve('models/embeddinggemma-300M-Q4_0.gguf'));
+        assert.equal(config.cacheDir, path.resolve('.rbt/cache'));
         assert.equal(config.logLevel, 'info');
         assert.equal(config.match.topK, 5);
         assert.equal(config.match.threshold, 0);
@@ -52,9 +51,9 @@ describe('resolveConfig', () => {
         assert.deepEqual(config.match.candidatePaths, ['test', 'tests']);
     });
 
-    it('defaults to the local embedding ranker with a pinned Jev model', async () => {
+    it('defaults to the Jev ranker with a pinned model', async () => {
         const config = await resolveConfig({}, {});
-        assert.equal(config.ranker, 'embedding');
+        assert.equal(config.ranker, 'jev');
         assert.equal(config.jevModel, 'jev-1.13.0');
     });
 
@@ -73,41 +72,41 @@ describe('resolveConfig', () => {
         );
 
         assert.deepEqual(
-            await resolveConfig({ config: configFile }, { ranker: 'embedding', jevModel: 'jev-cli' })
+            await resolveConfig({ config: configFile }, { ranker: 'heuristics', jevModel: 'jev-cli' })
                 .then(({ ranker, jevModel }) => ({ ranker, jevModel })),
-            { ranker: 'embedding', jevModel: 'jev-cli' }
+            { ranker: 'heuristics', jevModel: 'jev-cli' }
         );
     });
 
     it('rejects unknown rankers', async () => {
-        await assert.rejects(resolveConfig({}, { ranker: 'llm' }), /Invalid ranker "llm"/);
+        await assert.rejects(resolveConfig({}, { ranker: 'embedding' }), /Invalid ranker "embedding"/);
     });
 
     it('prefers command options over root options and env vars', async () => {
         process.env.RBT_TOP_K = '9';
         const config = await resolveConfig(
-            { model: 'root-model' },
-            { model: 'command-model', topK: '3' }
+            { cacheDir: 'root-cache' },
+            { cacheDir: 'command-cache', topK: '3' }
         );
-        assert.equal(config.model, path.resolve('command-model'));
+        assert.equal(config.cacheDir, path.resolve('command-cache'));
         assert.equal(config.match.topK, 3);
     });
 
     it('prefers env vars over the config file', async () => {
-        process.env.RBT_MODEL = 'env-model';
-        const configFile = await writeTempConfig({ model: 'file-model' });
+        process.env.RBT_CACHE_DIR = 'env-cache';
+        const configFile = await writeTempConfig({ cacheDir: 'file-cache' });
         const config = await resolveConfig({ config: configFile }, {});
-        assert.equal(config.model, path.resolve('env-model'));
+        assert.equal(config.cacheDir, path.resolve('env-cache'));
     });
 
     it('reads settings from an explicit config file', async () => {
         const configFile = await writeTempConfig({
-            model: 'file-model',
+            cacheDir: 'file-cache',
             logLevel: 'warn',
             match: { topK: 7, threshold: 0.6 },
         });
         const config = await resolveConfig({ config: configFile }, {});
-        assert.equal(config.model, path.resolve('file-model'));
+        assert.equal(config.cacheDir, path.resolve('file-cache'));
         assert.equal(config.logLevel, 'warn');
         assert.equal(config.match.topK, 7);
         assert.equal(config.match.threshold, 0.6);

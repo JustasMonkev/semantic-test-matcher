@@ -1,12 +1,10 @@
 import type { DocumentProfile } from './document-profile.ts';
-import type { EmbeddingBackend } from './embedding-types.ts';
-import { diceCoefficient, normalizeVector, overlapCoefficient, uniqueTokens } from './text-utils.ts';
+import { diceCoefficient, overlapCoefficient, uniqueTokens } from './text-utils.ts';
 
 export interface MatchCandidate {
     file: string;
     score: number;
     preview: string;
-    embeddingScore: number;
     structuralScore: number;
     stemScore: number;
     basenameScore: number;
@@ -17,40 +15,22 @@ export interface MatchCandidate {
     pathFamilyScore: number;
     changeScore: number;
     jevScore?: number;
-    embeddingBackend?: EmbeddingBackend;
-    cacheHit?: boolean;
-}
-
-export function cosineSimilarity(a: number[], b: number[]): number {
-    if (!a.length || a.length !== b.length) {
-        return 0;
-    }
-
-    let sum = 0;
-    for (let i = 0; i < a.length; i += 1) {
-        sum += a[i] * b[i];
-    }
-    return sum;
 }
 
 export interface RankedMatchSource {
     profile: DocumentProfile;
-    vector?: number[];
 }
 
 export interface RankedMatchCandidate {
     file: string;
-    vector?: number[];
-    /** Jev's probability that this test should run; replaces embedding similarity when set. */
+    /** Jev's probability that this test should run for the change. */
     jevScore?: number;
     preview: string;
     profile: DocumentProfile;
-    embeddingBackend?: EmbeddingBackend;
-    cacheHit?: boolean;
 }
 
-// Share of the final score given to the semantic signal (embedding similarity or Jev).
-const SEMANTIC_SIGNAL_WEIGHT = 0.2;
+// Share of the final score given to Jev; the structural heuristics carry the rest.
+const JEV_WEIGHT = 0.2;
 
 const ANCHOR_KEYWORD_PATTERN = /(testid|codegen|browsername|dotenv|toollist|mcp|selector|config|timeout|internal|attr)/i;
 
@@ -297,25 +277,19 @@ function structuralScore(source: DocumentProfile, candidate: DocumentProfile): {
 }
 
 export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCandidate[]): MatchCandidate[] {
-    const normalizedSource = source.vector ? normalizeVector(source.vector) : undefined;
-
     return candidates
         .map((item) => {
-            const hasEmbedding = normalizedSource !== undefined && item.vector !== undefined;
-            const embeddingScore = hasEmbedding ? cosineSimilarity(normalizedSource, normalizeVector(item.vector!)) : 0;
-            const semanticSignal = item.jevScore ?? (hasEmbedding ? embeddingScore : undefined);
             const structure = structuralScore(source.profile, item.profile);
-            // Without a semantic signal (heuristics-only ranking) the structural score stands alone.
-            const blendedScore = semanticSignal === undefined
+            // Without a Jev score (heuristics-only ranking) the structural score stands alone.
+            const blendedScore = item.jevScore === undefined
                 ? structure.score
-                : (semanticSignal * SEMANTIC_SIGNAL_WEIGHT) + (structure.score * (1 - SEMANTIC_SIGNAL_WEIGHT));
+                : (item.jevScore * JEV_WEIGHT) + (structure.score * (1 - JEV_WEIGHT));
             const score = Math.min(1, Math.max(0, blendedScore));
 
             return {
                 file: item.file,
                 score,
                 preview: item.preview,
-                embeddingScore,
                 structuralScore: structure.score,
                 stemScore: structure.stemScore,
                 basenameScore: structure.basenameScore,
@@ -326,8 +300,6 @@ export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCa
                 pathFamilyScore: structure.pathFamilyScore,
                 changeScore: structure.changeScore,
                 jevScore: item.jevScore,
-                embeddingBackend: item.embeddingBackend,
-                cacheHit: item.cacheHit,
             };
         })
         .sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));

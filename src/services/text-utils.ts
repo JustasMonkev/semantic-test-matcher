@@ -168,20 +168,6 @@ export function uniqueTokens(tokens: string[]): string[] {
     return [...new Set(tokens)];
 }
 
-export function normalizeVector(vector: number[]): number[] {
-    let magnitude = 0;
-    for (const component of vector) {
-        magnitude += component * component;
-    }
-
-    if (magnitude === 0) {
-        return vector;
-    }
-
-    const divisor = Math.sqrt(magnitude);
-    return vector.map((component) => component / divisor);
-}
-
 function sharedTokenCount(leftTokens: string[], rightTokens: Set<string>): number {
     let shared = 0;
     for (const token of leftTokens) {
@@ -212,33 +198,4 @@ export function diceCoefficient(left: string[], right: string[]): number {
     }
 
     return (sharedTokenCount(leftTokens, rightTokens) * 2) / (leftTokens.length + rightTokens.size);
-}
-
-function hashToken(token: string): number {
-    let hash = 2166136261;
-    for (let index = 0; index < token.length; index += 1) {
-        hash ^= token.charCodeAt(index);
-        hash = Math.imul(hash, 16777619);
-    }
-    return hash >>> 0;
-}
-
-function addTokenToVector(vector: number[], token: string, weight: number): void {
-    const index = hashToken(token) % vector.length;
-    vector[index] += weight;
-}
-
-export function textToVector(text: string, dimensions = 384): number[] {
-    const vector = new Array(dimensions).fill(0);
-    const tokens = tokenizeText(text);
-
-    for (let index = 0; index < tokens.length; index += 1) {
-        const token = tokens[index];
-        addTokenToVector(vector, token, 1);
-        if (index + 1 < tokens.length) {
-            addTokenToVector(vector, `${token} ${tokens[index + 1]}`, 0.5);
-        }
-    }
-
-    return normalizeVector(vector);
 }

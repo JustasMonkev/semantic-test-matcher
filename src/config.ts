@@ -5,11 +5,10 @@ import { isParentPath } from './utils/patterns.ts';
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 /**
- * embedding: local GGUF embeddings + structural heuristics (default, fully local).
- * jev: TypeSafe Jev scores + structural heuristics (sends diffs and test titles to the TypeSafe API).
- * heuristics: structural heuristics only.
+ * jev: TypeSafe Jev scores + structural heuristics (default; sends diffs and test titles to the TypeSafe API).
+ * heuristics: structural heuristics only (fully local).
  */
-export type Ranker = 'embedding' | 'jev' | 'heuristics';
+export type Ranker = 'jev' | 'heuristics';
 
 export interface MatchDefaults {
     topK: number;
@@ -21,7 +20,6 @@ export interface MatchDefaults {
 }
 
 export interface AppConfig {
-    model?: string;
     ranker?: Ranker;
     jevModel?: string;
     cacheDir?: string;
@@ -32,7 +30,6 @@ export interface AppConfig {
 }
 
 export interface RuntimeConfig {
-    model: string;
     ranker: Ranker;
     jevModel: string;
     cacheDir: string;
@@ -45,7 +42,6 @@ export interface RuntimeConfig {
 
 export interface RootOptions {
     config?: string;
-    model?: string;
     cacheDir?: string;
     logLevel?: string;
     verbose?: boolean;
@@ -59,7 +55,6 @@ export interface MatchCommandOptions {
     candidates?: string[];
     includeFile?: string[];
     excludeFile?: string[];
-    model?: string;
     ranker?: string;
     jevModel?: string;
     cacheDir?: string;
@@ -67,8 +62,7 @@ export interface MatchCommandOptions {
 }
 
 const DEFAULT_CONFIG: AppConfig = {
-    model: 'models/embeddinggemma-300M-Q4_0.gguf',
-    ranker: 'embedding',
+    ranker: 'jev',
     // Pinned so cached answers and tuned thresholds survive `jev-latest` moving.
     jevModel: 'jev-1.13.0',
     cacheDir: '.rbt/cache',
@@ -129,11 +123,11 @@ function parseLogLevel(value?: string): LogLevel {
 
 function parseRanker(value: unknown): Ranker {
     const normalized = String(value ?? '').trim().toLowerCase();
-    if (normalized === 'embedding' || normalized === 'jev' || normalized === 'heuristics') {
+    if (normalized === 'jev' || normalized === 'heuristics') {
         return normalized;
     }
 
-    throw new Error(`Invalid ranker "${value}". Expected "embedding", "jev", or "heuristics".`);
+    throw new Error(`Invalid ranker "${value}". Expected "jev" or "heuristics".`);
 }
 
 function mergeArrays(left: string[] = [], right: string[] = []): string[] {
@@ -223,22 +217,6 @@ export async function resolveConfig(
 ): Promise<RuntimeConfig> {
     const { config: fileConfig, autoDiscovered, filePath: configFile } = await loadConfig(rootOptions.config);
     const resolvedWorkspace = path.resolve(cwd);
-    const resolvedModel = commandOptions.model ??
-        rootOptions.model ??
-        process.env.RBT_MODEL ??
-        fileConfig.model ??
-        DEFAULT_CONFIG.model!;
-    const model = path.resolve(cwd, resolvedModel);
-    if (
-        autoDiscovered &&
-        commandOptions.model == null &&
-        rootOptions.model == null &&
-        process.env.RBT_MODEL == null &&
-        fileConfig.model &&
-        !await isWorkspaceContainedPath(model, resolvedWorkspace)
-    ) {
-        throw new Error('Auto-discovered repo config cannot set the model outside the workspace.');
-    }
 
     const ranker = parseRanker(
         commandOptions.ranker ??
@@ -342,7 +320,6 @@ export async function resolveConfig(
         DEFAULT_CONFIG.match!.excludePatterns!);
 
     return {
-        model,
         ranker,
         jevModel,
         cacheDir,
