@@ -120,11 +120,26 @@ function splitAfterOldPath(value: string, oldPath: string, newPath: string): [st
     return paths[1].endsWith(newPath) ? paths : undefined;
 }
 
-function parseGitDiffPaths(line: string, relativePath: string): [string, string] | undefined {
+/** Without a known file, splits unquoted paths with spaces where both sides name it after their prefixes. */
+function splitSameFilePaths(value: string): [string, string] | undefined {
+    const dropPrefix = (diffPath: string) => diffPath.slice(diffPath.indexOf('/') + 1);
+    for (let index = value.indexOf(' '); index !== -1; index = value.indexOf(' ', index + 1)) {
+        const paths: [string, string] = [value.slice(0, index), value.slice(index + 1)];
+        if (dropPrefix(paths[0]) === dropPrefix(paths[1])) {
+            return paths;
+        }
+    }
+    return undefined;
+}
+
+function parseGitDiffPaths(line: string, relativePath: string | undefined): [string, string] | undefined {
     const value = line.slice(GIT_DIFF_LINE_PREFIX.length);
     const tokenizedPaths = /^("(?:\\.|[^"\\])*"|\S+) ("(?:\\.|[^"\\])*"|\S+)$/.exec(value);
     if (tokenizedPaths) {
         return [decodeGitPath(tokenizedPaths[1]), decodeGitPath(tokenizedPaths[2])];
+    }
+    if (relativePath === undefined) {
+        return splitSameFilePaths(value);
     }
 
     const samePaths = splitAfterOldPath(value, relativePath, relativePath);
@@ -255,7 +270,7 @@ function emptyFileSection(): FileSection {
     return { logicalPaths: [undefined, undefined], isCopy: false };
 }
 
-function startGitSection(line: string, relativePath: string, rootRelativePath: string): FileSection {
+function startGitSection(line: string, relativePath?: string, rootRelativePath = relativePath): FileSection {
     let gitPaths = parseGitDiffPaths(line, rootRelativePath);
     if (!gitPaths && rootRelativePath !== relativePath) {
         gitPaths = parseGitDiffPaths(line, relativePath);
@@ -441,7 +456,14 @@ export function collectChangedLines(
 export function listDiffFiles(diffText: string, cwd: string, diffRoot?: string): string[] {
     const basePath = resolveDiffRoot(cwd, diffRoot);
     const files = new Set<string>();
-    let isGitDiff = false;
+    let section = emptyFileSection();
+    // A pure rename or copy has no `---`/`+++` headers, only its `rename to`/`copy to` line.
+    const addHeaderlessTarget = () => {
+        const targetPath = section.logicalPaths[1];
+        if (section.gitDiffLine !== undefined && targetPath !== undefined) {
+            files.add(path.resolve(basePath, targetPath));
+        }
+    };
     let oldPath = '';
     let hunk: HunkCounts = { oldLines: 0, newLines: 0 };
     for (const line of diffText.split(/\r?\n/)) {
@@ -462,22 +484,31 @@ export function listDiffFiles(diffText: string, cwd: string, diffRoot?: string):
             hunk = hunkHeader;
             continue;
         }
-        isGitDiff ||= line.startsWith(GIT_DIFF_LINE_PREFIX);
+        if (line.startsWith(GIT_DIFF_LINE_PREFIX)) {
+            addHeaderlessTarget();
+            section = startGitSection(line);
+            continue;
+        }
+        if (RENAME_OR_COPY_PATTERN.test(line)) {
+            readRenameOrCopyLine(line, section);
+            continue;
+        }
         if (!line.startsWith('--- ') && !line.startsWith('+++ ')) {
             continue;
         }
-        let diffPath = readFileHeaderPath(line);
-        if (isGitDiff && /^[ab]\//.test(diffPath)) {
-            diffPath = diffPath.slice(2);
-        }
-        if (line.startsWith('--- ')) {
+        const isNewFileHeader = line.startsWith('+++ ');
+        const prefix = section.gitPrefixes?.[isNewFileHeader ? 1 : 0];
+        let diffPath = stripGitPrefix(readFileHeaderPath(line), prefix, section, basePath, () => false);
+        if (!isNewFileHeader) {
             oldPath = diffPath;
             continue;
         }
-        if (!isGitDiff) {
+        if (section.gitDiffLine === undefined) {
             diffPath = stripPlainPrefixPair(oldPath, diffPath, basePath);
         }
         files.add(path.resolve(basePath, diffPath === '/dev/null' ? oldPath : diffPath));
+        section = emptyFileSection();
     }
+    addHeaderlessTarget();
     return [...files];
 }

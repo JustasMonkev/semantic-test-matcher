@@ -196,15 +196,18 @@ async function matchChangedFiles(
     let scorer: JevScorer | undefined;
     const reports: ChangeReport[] = [];
     const changedPaths = new Set(changes.paths);
-    const isChangedSource = (candidate: RankedMatchCandidate) =>
-        candidate.profile.kind !== 'test' && changedPaths.has(path.resolve(cwd, candidate.file));
+    // A changed source module is never a test to run; a changed test stays a candidate for the other files.
+    const unchangedOrTests = candidates.filter((candidate) =>
+        candidate.profile.kind === 'test' || !changedPaths.has(path.resolve(cwd, candidate.file))
+    );
     try {
         // One at a time: a Jev failure switches every later file to heuristics.
         for (const changedPath of changes.paths) {
             const source = await readChangedFile(changedPath, changes, cwd);
+            // Automatic mode also selects an edited test for itself, so it runs.
             const fileCandidates = changes.automatic
-                ? candidates.filter((candidate) => !isChangedSource(candidate))
-                : candidates.filter((candidate) => path.resolve(cwd, candidate.file) !== changedPath);
+                ? unchangedOrTests
+                : unchangedOrTests.filter((candidate) => path.resolve(cwd, candidate.file) !== changedPath);
 
             let jevResult: JevScoreResult | undefined;
             if (ranker === 'jev') {

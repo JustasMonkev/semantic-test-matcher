@@ -452,7 +452,7 @@ function collectLateCallTokens(text: string, contentTokens: string[]): string[] 
 
 function determineKind(relativePath: string): DocumentKind {
     const normalized = normalizePathSeparators(relativePath);
-    if (/\.(test|spec)\.[cm]?[jt]sx?$/i.test(normalized) || /(^|\/)(test|tests)\//i.test(normalized)) {
+    if (/\.(test|spec)\.[cm]?[jt]sx?$/i.test(normalized) || /(^|\/)(test|tests|__tests__)\//i.test(normalized)) {
         return 'test';
     }
 

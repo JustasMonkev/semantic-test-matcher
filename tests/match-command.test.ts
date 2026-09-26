@@ -309,6 +309,38 @@ describe('match command rankers', () => {
             assert.ok(lines.some((line) => /^ {2}Why: /.test(line)), lines.join('\n'));
         });
 
+        it('never selects another changed source module, but keeps changed tests', async () => {
+            await fs.appendFile('tests/price.test.ts', '\n// updated discount assertion');
+            const explicit = await runCli('src/price.ts', 'src/socket.ts', 'tests/price.test.ts', '--candidates', '.', '--ranker', 'heuristics', '--paths-only');
+            const fromDiff = await runCli('--diff-file', 'change.diff', '--diff-root', '.', '--candidates', '.', '--ranker', 'heuristics', '--paths-only');
+
+            for (const { lines } of [explicit, fromDiff]) {
+                assert.ok(lines.includes('tests/price.test.ts'), lines.join('\n'));
+                assert.ok(!lines.includes('src/price.ts') && !lines.includes('src/socket.ts'), lines.join('\n'));
+            }
+        });
+
+        it('lists pure renames and custom-prefix paths from --diff-file', async () => {
+            await fs.writeFile('rename.diff', [
+                'diff --git a/src/sockets.ts b/src/socket.ts',
+                'similarity index 100%',
+                'rename from src/sockets.ts',
+                'rename to src/socket.ts',
+                'diff --git old/src/price.ts new/src/price.ts',
+                '--- old/src/price.ts',
+                '+++ new/src/price.ts',
+                '@@ -1 +1 @@',
+                '-export function applyDiscount(total: number) { return total; }',
+                '+export function applyDiscount(total: number) { return total * 0.9; }',
+                '',
+            ].join('\n'));
+            const { lines } = await runCli('--diff-file', 'rename.diff', '--diff-root', '.', '--ranker', 'heuristics', '--json');
+            // SAFETY: --json makes the command's last log line its serialized result.
+            const output = JSON.parse(lines[lines.length - 1]) as { files: string[] };
+
+            assert.deepEqual(output.files, ['src/socket.ts', 'src/price.ts']);
+        });
+
         it('caps the merged selection at --top-k', async () => {
             const { lines } = await runCli('src/price.ts', 'src/socket.ts', '--ranker', 'heuristics', '--top-k', '1', '--paths-only');
 
@@ -354,6 +386,13 @@ describe('match command rankers', () => {
             await fs.appendFile('tests/price.test.ts', '\n// updated discount assertion');
             const { lines } = await runCli('--ranker', 'heuristics', '--paths-only');
             assert.ok(lines.includes('tests/price.test.ts'));
+        });
+
+        it('selects an edited __tests__ file itself from a broad candidate root', async () => {
+            await fs.mkdir('__tests__');
+            await fs.writeFile('__tests__/checkout.ts', "test('checks out a cart', () => {});");
+            const { lines } = await runCli('--candidates', '.', '--ranker', 'heuristics', '--paths-only');
+            assert.ok(lines.includes('__tests__/checkout.ts'), lines.join('\n'));
         });
 
         it('skips execution for a clean tree and an empty selection', async () => {

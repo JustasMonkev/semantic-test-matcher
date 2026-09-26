@@ -116,6 +116,11 @@ diff --git a/src/socket.ts b/src/socket.ts
         assert.deepEqual(profile.changePhraseTokens, ['screenshot', 'capture']);
     });
 
+    it('treats files under __tests__ as tests', () => {
+        assert.equal(buildDocumentProfile('/repo/src/__tests__/checkout.ts', '', '/repo').kind, 'test');
+        assert.equal(buildDocumentProfile('/repo/src/checkout.ts', '', '/repo').kind, 'source');
+    });
+
     it('accepts custom git diff prefixes', () => {
         const profile = buildDocumentProfile('/repo/src/page.ts', '', '/repo', `
 diff --git old/source/src/page.ts new/destination/src/page.ts
@@ -691,6 +696,60 @@ describe('listDiffFiles', () => {
             '/repo/src/gone.ts',
             '/repo/src/café.ts',
         ]);
+    });
+
+    it('strips custom Git prefixes taken from the diff --git line', () => {
+        const diff = [
+            'diff --git old/src/price.ts new/src/price.ts',
+            '--- old/src/price.ts',
+            '+++ new/src/price.ts',
+            '@@ -1 +1 @@',
+            '-1',
+            '+2',
+            'diff --git a/old/src/tax.ts b/new/src/tax.ts',
+            '--- a/old/src/tax.ts',
+            '+++ b/new/src/tax.ts',
+            '@@ -1 +1 @@',
+            '-1',
+            '+2',
+            'diff --git a/src dir/page file.ts b/src dir/page file.ts',
+            '--- a/src dir/page file.ts',
+            '+++ b/src dir/page file.ts',
+            '@@ -1 +1 @@',
+            '-1',
+            '+2',
+            'diff --git src/no-prefix.ts src/no-prefix.ts',
+            '--- src/no-prefix.ts',
+            '+++ src/no-prefix.ts',
+            '@@ -1 +1 @@',
+            '-1',
+            '+2',
+        ].join('\n');
+
+        assert.deepEqual(listDiffFiles(diff, '/repo', '.'), [
+            '/repo/src/price.ts',
+            '/repo/src/tax.ts',
+            '/repo/src dir/page file.ts',
+            '/repo/src/no-prefix.ts',
+        ]);
+    });
+
+    it('lists pure renames and copies that have no file headers', () => {
+        const diff = [
+            'diff --git a/src/old-name.ts b/src/new-name.ts',
+            'similarity index 100%',
+            'rename from src/old-name.ts',
+            'rename to src/new-name.ts',
+            'diff --git a/src/mode.ts b/src/mode.ts',
+            'old mode 100644',
+            'new mode 100755',
+            'diff --git old/src/base.ts new/src/base copy.ts',
+            'similarity index 100%',
+            'copy from src/base.ts',
+            'copy to src/base copy.ts',
+        ].join('\n');
+
+        assert.deepEqual(listDiffFiles(diff, '/repo', '.'), ['/repo/src/new-name.ts', '/repo/src/base copy.ts']);
     });
 
     it('keeps plain unified diff paths and drops their timestamps', () => {

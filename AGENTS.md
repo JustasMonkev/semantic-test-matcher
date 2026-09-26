@@ -9,7 +9,6 @@ This TypeScript CLI exposes `rbt`, which ranks test files for source changes usi
 - `src/services/`: scoring, document profiling, Git/diff handling, caching, and test execution.
 - `src/utils/`: reusable path, file, collection, and shell helpers.
 - `tests/`: automated unit and command-level tests.
-- `evaluation/playwright/`: evaluation scripts, case data, and recorded results.
 - `dist/`: generated build output; do not edit or commit it.
 
 ## Build, Test, and Development Commands

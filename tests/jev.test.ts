@@ -107,7 +107,7 @@ describe('JevScorer', () => {
         cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-jev-'));
     });
 
-    function makeScorer(impl: typeof fetch, options: { skipCache?: boolean } = {}): JevScorer {
+    function makeScorer(impl: typeof fetch, options: { skipCache?: boolean; model?: string } = {}): JevScorer {
         return new JevScorer({ apiKey: 'test-key', model: 'jev-1.13.0', cacheDir, fetch: impl, retryBaseMs: 1, ...options });
     }
 
@@ -150,6 +150,24 @@ describe('JevScorer', () => {
         );
         assert.equal(result.cacheHits, 2);
         assert.deepEqual([...result.scores.values()].sort(), [0.1, 0.5, 0.9]);
+    });
+
+    it('never caches answers from a moving model alias', async () => {
+        const aliasAnswer = (body: JevRequestBody) => Response.json({
+            model: 'jev-1.14.0',
+            answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { type: 'noul', noul: 0.9 }])),
+        });
+        for (let run = 0; run < 2; run += 1) {
+            const { impl, calls } = fakeFetch(aliasAnswer);
+            const scorer = makeScorer(impl, { model: 'jev-latest' });
+            const result = await scorer.score(makeSource(TABS_DIFF), [TABS_TEST]);
+            await scorer.flush();
+
+            assert.equal(calls.length, 1);
+            assert.equal(result.cacheHits, 0);
+            assert.equal(result.model, 'jev-1.14.0');
+        }
+        assert.equal(await getJevCacheEntryCount(cacheDir), 0);
     });
 
     it('treats a different change as a cache miss', async () => {
@@ -262,6 +280,20 @@ describe('JevScorer', () => {
     it('gives up after repeated transient failures', async () => {
         const { impl, calls } = fakeFetch(() => new Response('unavailable', { status: 503 }));
         await assert.rejects(makeScorer(impl).score(makeSource(TABS_DIFF), [TABS_TEST]), JevError);
+        assert.equal(calls.length, 5);
+    });
+
+    it('retries a successful response without answers and fails as a JevError', async () => {
+        const recovered = fakeFetch((body, call) => (call === 0 ? Response.json(null) : answer(body, byTabs)));
+        const result = await makeScorer(recovered.impl).score(makeSource(TABS_DIFF), [TABS_TEST]);
+        assert.equal(recovered.calls.length, 2);
+        assert.equal(result.scores.get('tests/tabs.spec.ts'), 0.9);
+
+        const { impl, calls } = fakeFetch(() => Response.json(null));
+        await assert.rejects(
+            makeScorer(impl).score(makeSource(TABS_DIFF), [TABS_TEST]),
+            (error: Error) => error instanceof JevError && /response has no answers/.test(error.message)
+        );
         assert.equal(calls.length, 5);
     });
 

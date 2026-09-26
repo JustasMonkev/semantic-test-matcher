@@ -178,6 +178,12 @@ function retryDelayMs(attempt: number, retryAfterMs: number, retryBaseMs: number
     );
 }
 
+/** A 200 body can still be `null` or another non-object, e.g. from a proxy. */
+function isJevResponse(value: unknown): value is JevResponse {
+    return typeof value === 'object' && value !== null
+        && 'answers' in value && typeof value.answers === 'object' && value.answers !== null;
+}
+
 // Batch questions are keyed by candidate index so answers map back to candidates.
 function questionId(index: number): string {
     return `t${index}`;
@@ -222,7 +228,8 @@ export class JevScorer {
 
         keys.forEach((key, index) => {
             const hit = this.pending[key] ?? cache[key];
-            if (isProbability(hit?.noul)) {
+            // An answer from any other model than the one requested came through a moving alias.
+            if (hit?.model === this.options.model && isProbability(hit.noul)) {
                 scores.set(candidates[index].file, hit.noul);
             } else {
                 uncached.push(index);
@@ -247,12 +254,13 @@ export class JevScorer {
                 result.model = response.model;
 
                 for (const index of batch) {
-                    const noul = response.answers?.[questionId(index)]?.noul;
+                    const noul = response.answers[questionId(index)]?.noul;
                     if (!isProbability(noul)) {
                         throw new JevError(`Jev response has no answer for ${candidates[index].file}`);
                     }
                     scores.set(candidates[index].file, noul);
-                    if (!this.options.skipCache) {
+                    // A moving alias such as `jev-latest` answers as the version it names today, so only pinned answers are cached.
+                    if (!this.options.skipCache && response.model === this.options.model) {
                         this.pending[keys[index]] = {
                             createdAt: new Date().toISOString(),
                             provider: JEV_PROVIDER,
@@ -305,8 +313,9 @@ export class JevScorer {
                 signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
             });
             if (response.ok) {
-                // SAFETY: trusted API contract; score() still checks each answer's noul before use.
-                return { response: await response.json() as JevResponse };
+                const body: unknown = await response.json();
+                // score() still checks each answer's noul before use.
+                return isJevResponse(body) ? { response: body } : { failure: 'response has no answers', retryAfterMs: 0 };
             }
             const failure = describeFailure(response.status, await response.text());
             if (!isRetryableStatus(response.status)) {
