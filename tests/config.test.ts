@@ -17,6 +17,8 @@ const MANAGED_ENV_VARS = [
     'RBT_MATCH_THRESHOLD',
     'RBT_MIN_SCORE',
     'RBT_MATCH_MIN_SCORE',
+    'RBT_RANKER',
+    'RBT_JEV_MODEL',
 ];
 
 describe('resolveConfig', () => {
@@ -48,6 +50,37 @@ describe('resolveConfig', () => {
         assert.equal(config.match.threshold, 0);
         assert.equal(config.match.minScore, 0);
         assert.deepEqual(config.match.candidatePaths, ['test', 'tests']);
+    });
+
+    it('defaults to the local embedding ranker with a pinned Jev model', async () => {
+        const config = await resolveConfig({}, {});
+        assert.equal(config.ranker, 'embedding');
+        assert.equal(config.jevModel, 'jev-1.13.0');
+    });
+
+    it('resolves the ranker and Jev model from options, env vars, and the config file', async () => {
+        const configFile = await writeTempConfig({ ranker: 'heuristics', jevModel: 'jev-file' });
+        assert.deepEqual(
+            await resolveConfig({ config: configFile }, {}).then(({ ranker, jevModel }) => ({ ranker, jevModel })),
+            { ranker: 'heuristics', jevModel: 'jev-file' }
+        );
+
+        process.env.RBT_RANKER = 'JEV';
+        process.env.RBT_JEV_MODEL = 'jev-env';
+        assert.deepEqual(
+            await resolveConfig({ config: configFile }, {}).then(({ ranker, jevModel }) => ({ ranker, jevModel })),
+            { ranker: 'jev', jevModel: 'jev-env' }
+        );
+
+        assert.deepEqual(
+            await resolveConfig({ config: configFile }, { ranker: 'embedding', jevModel: 'jev-cli' })
+                .then(({ ranker, jevModel }) => ({ ranker, jevModel })),
+            { ranker: 'embedding', jevModel: 'jev-cli' }
+        );
+    });
+
+    it('rejects unknown rankers', async () => {
+        await assert.rejects(resolveConfig({}, { ranker: 'llm' }), /Invalid ranker "llm"/);
     });
 
     it('prefers command options over root options and env vars', async () => {

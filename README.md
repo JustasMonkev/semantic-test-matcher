@@ -5,8 +5,8 @@
 The matching flow combines:
 
 - document profiling from file paths and code structure
-- local GGUF embeddings through `node-llama-cpp`
-- a local embedding cache
+- local GGUF embeddings through `node-llama-cpp` (default), or optionally TypeSafe's [Jev](https://docs.typesafe.ai/) System One model
+- a local embedding and answer cache
 - score blending for semantic and structural signals
 
 ## Features
@@ -15,7 +15,8 @@ The matching flow combines:
 - `rbt embed [text]` generates an embedding for text or stdin
 - `rbt status` shows the resolved runtime configuration
 - `rbt completion [bash|zsh]` prints a shell completion script
-- runs embeddings in-process with no cloud service or local daemon
+- runs embeddings in-process with no cloud service or local daemon by default
+- optional `--ranker jev` scores candidates with TypeSafe's Jev API instead of local embeddings
 - caches embeddings in `.rbt/cache` by default
 - accepts candidate file lists from CLI flags, config, or stdin
 
@@ -38,6 +39,9 @@ flowchart TD
 
     F --> G["Embedding service<br/>src/services/embeddings.ts"]
     F2 --> G
+    F --> JV["Jev scorer (--ranker jev)<br/>src/services/jev.ts"]
+    F2 --> JV
+    JV --> K
 
     G --> H["Cache layer<br/>src/services/cache.ts"]
     G --> I["Local inference<br/>node-llama-cpp + GGUF"]
@@ -160,6 +164,8 @@ Useful flags:
 - `--include-file <glob...>`
 - `--exclude-file <glob...>`
 - `--candidates-from-stdin`
+- `--ranker <embedding|jev|heuristics>`
+- `--jev-model <id>`
 - `--model <path-to-gguf>`
 - `--cache-dir <path>`
 - `--diff-file <path>`
@@ -170,9 +176,24 @@ How matching works:
 
 1. The changed file is read and converted into a `DocumentProfile`.
 2. Candidate files are collected from configured paths or stdin.
-3. Each profile is embedded locally with the configured GGUF model.
-4. `rankMatches` blends embedding similarity with structural overlap.
+3. The ranker produces a semantic signal per candidate: local embedding similarity (`embedding`), a Jev probability (`jev`), or none (`heuristics`).
+4. `rankMatches` blends that signal (20%) with structural overlap (80%); without a signal the structural score is used alone.
 5. Results are filtered by threshold and truncated to `topK`.
+
+### Ranking with TypeSafe Jev (optional)
+
+`--ranker jev` replaces the local embedding model with [Jev](https://docs.typesafe.ai/), TypeSafe's System One model. For each candidate test file it asks one yes/no question, "should these tests be re-run to check this change?", and uses the returned probability in place of embedding similarity. All candidates for a change are asked in one request (larger suites are batched), which typically takes 150–500 ms.
+
+```bash
+export TYPESAFE_API_KEY=...   # from https://console.typesafe.ai/keys
+rbt match src/tools/tabs.ts --candidates tests --diff-file change.diff --ranker jev --json
+```
+
+- **Data leaves your machine.** Each request sends the changed file's path, exported symbol names, and its diff hunks (or, without `--diff-file`, the first 6,000 characters of the file), plus each candidate test file's path and test titles, to `api.typesafe.ai`. Candidate file bodies are not sent. Review TypeSafe's [data handling](https://docs.typesafe.ai/legal) before enabling it on private code.
+- **Pass a diff.** Jev is most useful with `--diff-file`, because it can then judge the actual change rather than the whole file.
+- **Fallback.** If `TYPESAFE_API_KEY` is missing or the API fails after retries, `match` prints a warning to stderr and ranks with heuristics only. JSON output reports the effective `ranker` and a `rankerFallback` reason. `benchmark --ranker jev` fails instead of falling back.
+- **Caching and model pinning.** Answers are cached per change and candidate in `<cacheDir>/jev.json`, so repeat runs make no requests. The default model is pinned to `jev-1.13.0`. `jev-latest` also works, but its answers can change when TypeSafe ships a new version.
+- **Cost.** Jev bills input tokens only, at $0.042 per million. A change with ~30 candidates is roughly 2,000–7,000 tokens.
 
 ### `status`
 
@@ -212,6 +233,8 @@ Example config:
 ```json
 {
   "model": "models/embeddinggemma-300M-Q4_0.gguf",
+  "ranker": "embedding",
+  "jevModel": "jev-1.13.0",
   "cacheDir": ".rbt/cache",
   "logLevel": "info",
   "match": {
@@ -232,6 +255,8 @@ Example config:
 Environment variables used by the resolver include:
 
 - `RBT_MODEL`
+- `RBT_RANKER`
+- `RBT_JEV_MODEL`
 - `RBT_CACHE_DIR`
 - `RBT_LOG_LEVEL`
 - `RBT_VERBOSE`
@@ -243,6 +268,8 @@ Environment variables used by the resolver include:
 - `RBT_MIN_SCORE`
 - `RBT_MATCH_MIN_SCORE`
 
+`TYPESAFE_API_KEY` supplies the key for `--ranker jev`. It is only read from the environment, never from config files.
+
 ## Local Embeddings and Caching
 
 - uses `node-llama-cpp` with an embedding-capable local GGUF file
@@ -253,7 +280,7 @@ Environment variables used by the resolver include:
 
 ### Cache
 
-- embeddings are cached under `.rbt/cache` by default
+- embeddings are cached under `.rbt/cache` by default, and Jev answers in `.rbt/cache/jev.json`
 - cache writes are best-effort and do not fail the command if they break
 - `status` reports the current cache entry count
 

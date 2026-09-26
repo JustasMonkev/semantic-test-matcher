@@ -106,10 +106,10 @@ async function releaseCacheLock(lockPath: string, handle: FileHandle): Promise<v
     }
 }
 
-export async function loadCache(filePath: string): Promise<EmbeddingCache> {
+export async function loadCache<T = CachedEmbedding>(filePath: string): Promise<Record<string, T>> {
     try {
         const raw = await fs.readFile(filePath, 'utf8');
-        return JSON.parse(raw) as EmbeddingCache;
+        return JSON.parse(raw) as Record<string, T>;
     } catch (error) {
         if (isMissingFile(error)) {
             return {};
@@ -124,7 +124,7 @@ export async function loadCache(filePath: string): Promise<EmbeddingCache> {
     }
 }
 
-export async function persistCache(filePath: string, cache: EmbeddingCache): Promise<void> {
+export async function persistCache<T>(filePath: string, cache: Record<string, T>): Promise<void> {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     const tempFile = path.join(
         path.dirname(filePath),
@@ -165,9 +165,10 @@ export async function readCachedEmbedding(
     };
 }
 
-export async function writeCachedEmbeddings(
+/** Merges entries into a JSON cache file under a lock, keeping entries other processes wrote. */
+export async function writeCacheEntries<T>(
     filePath: string,
-    entries: EmbeddingCache
+    entries: Record<string, T>
 ): Promise<void> {
     if (!Object.keys(entries).length) {
         return;
@@ -175,12 +176,19 @@ export async function writeCachedEmbeddings(
 
     const lock = await acquireCacheLock(filePath);
     try {
-        const cache = await loadCache(filePath);
+        const cache = await loadCache<T>(filePath);
         Object.assign(cache, entries);
         await persistCache(filePath, cache);
     } finally {
         await releaseCacheLock(lock.lockPath, lock.handle);
     }
+}
+
+export async function writeCachedEmbeddings(
+    filePath: string,
+    entries: EmbeddingCache
+): Promise<void> {
+    await writeCacheEntries(filePath, entries);
 }
 
 export async function writeCachedEmbedding(

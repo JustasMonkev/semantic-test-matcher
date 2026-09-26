@@ -6,6 +6,8 @@ import { parseStdinList, readStdinText } from '../utils/io.ts';
 import { mapWithConcurrency } from '../utils/async.ts';
 import { resolveConfig } from '../config.ts';
 import { EmbeddingSession, getCacheEntryCount } from '../services/embeddings.ts';
+import type { EmbeddingResult } from '../services/embedding-types.ts';
+import { JEV_API_KEY_ENV, JevError, JevScorer, type JevScoreResult } from '../services/jev.ts';
 import { filterMatches, rankMatches, type RankedMatchCandidate } from '../services/match.ts';
 import { buildDocumentProfile } from '../services/document-profile.ts';
 
@@ -23,8 +25,10 @@ export function registerMatchCommand(program: Command): void {
         .option('--include-file <patterns...>', 'Include only matching files (glob pattern)')
         .option('--exclude-file <patterns...>', 'Exclude matching files (glob pattern)')
         .option('--candidates-from-stdin', 'Read candidate file list (JSON array or newline list) from stdin')
+        .option('--ranker <name>', 'embedding (local GGUF, default), jev (TypeSafe API), or heuristics')
+        .option('--jev-model <id>', `TypeSafe Jev model for --ranker jev (API key from ${JEV_API_KEY_ENV})`)
         .option('--model <path>', 'Path to a local GGUF embedding model')
-        .option('--cache-dir <path>', 'Directory used to cache embeddings')
+        .option('--cache-dir <path>', 'Directory used to cache embeddings and Jev answers')
         .option('--diff-file <path>', 'Unified diff file used to enrich change-aware matching')
         .option('--diff-root <path>', 'Base directory for relative paths in --diff-file')
         .option('--json', 'Print machine-readable output')
@@ -37,6 +41,8 @@ export function registerMatchCommand(program: Command): void {
                 candidates?: string[];
                 includeFile?: string[];
                 excludeFile?: string[];
+                ranker?: string;
+                jevModel?: string;
                 model?: string;
                 cacheDir?: string;
                 diffFile?: string;
@@ -65,6 +71,8 @@ export function registerMatchCommand(program: Command): void {
                     candidates: options.candidates?.length ? options.candidates : candidatesFromStdin,
                     includeFile: options.includeFile,
                     excludeFile: options.excludeFile,
+                    ranker: options.ranker,
+                    jevModel: options.jevModel,
                     model: options.model,
                     cacheDir: options.cacheDir,
                     json: options.json,
@@ -85,13 +93,6 @@ export function registerMatchCommand(program: Command): void {
                 options.diffRoot
             );
 
-            const embeddingSession = new EmbeddingSession({
-                model: config.model,
-                cacheDir: config.cacheDir,
-            });
-
-            const sourceEmbedding = await embeddingSession.embed(sourceProfile.embeddingText);
-
             const candidateResult = await collectCandidateFilesDetailed(
                 config.match.candidatePaths,
                 config.match.includePatterns,
@@ -102,29 +103,69 @@ export function registerMatchCommand(program: Command): void {
                 (candidatePath) => path.resolve(candidatePath) !== changedPath
             );
 
-            const ranked: RankedMatchCandidate[] = await mapWithConcurrency(
+            const candidates: RankedMatchCandidate[] = await mapWithConcurrency(
                 candidateFiles,
                 EMBED_CONCURRENCY,
                 async (candidatePath) => {
                     const candidateText = await fs.readFile(candidatePath, 'utf8');
                     const candidateProfile = buildDocumentProfile(candidatePath, candidateText, process.cwd());
-                    const candidateEmbedding = await embeddingSession.embed(candidateProfile.embeddingText);
-
                     return {
                         file: path.relative(process.cwd(), candidatePath),
-                        vector: candidateEmbedding.vector,
                         preview: candidateProfile.preview,
                         profile: candidateProfile,
-                        embeddingBackend: candidateEmbedding.backend,
-                        cacheHit: candidateEmbedding.cacheHit,
                     };
                 }
             );
 
-            await embeddingSession.flush();
+            let ranker = config.ranker;
+            let rankerFallback: string | undefined;
+            let sourceEmbedding: EmbeddingResult | undefined;
+            let jevResult: JevScoreResult | undefined;
+            let ranked = candidates;
+
+            if (ranker === 'embedding') {
+                const embeddingSession = new EmbeddingSession({
+                    model: config.model,
+                    cacheDir: config.cacheDir,
+                });
+                sourceEmbedding = await embeddingSession.embed(sourceProfile.embeddingText);
+                ranked = await mapWithConcurrency(candidates, EMBED_CONCURRENCY, async (candidate) => {
+                    const candidateEmbedding = await embeddingSession.embed(candidate.profile.embeddingText);
+                    return {
+                        ...candidate,
+                        vector: candidateEmbedding.vector,
+                        embeddingBackend: candidateEmbedding.backend,
+                        cacheHit: candidateEmbedding.cacheHit,
+                    };
+                });
+                await embeddingSession.flush();
+            } else if (ranker === 'jev') {
+                try {
+                    const scorer = new JevScorer({
+                        apiKey: process.env[JEV_API_KEY_ENV] ?? '',
+                        model: config.jevModel,
+                        cacheDir: config.cacheDir,
+                    });
+                    const result = await scorer.score({ profile: sourceProfile, text: changedText }, candidates);
+                    await scorer.flush();
+                    jevResult = result;
+                    ranked = candidates.map((candidate) => ({
+                        ...candidate,
+                        jevScore: result.scores.get(candidate.file),
+                    }));
+                } catch (error) {
+                    if (!(error instanceof JevError)) {
+                        throw error;
+                    }
+                    // Keep test selection working (e.g. CI without the secret); report the downgrade.
+                    rankerFallback = error.message;
+                    ranker = 'heuristics';
+                    console.warn(`Warning: jev ranker unavailable (${error.message}); ranking with heuristics only`);
+                }
+            }
 
             const matches = rankMatches(
-                { profile: sourceProfile, vector: sourceEmbedding.vector },
+                { profile: sourceProfile, vector: sourceEmbedding?.vector },
                 ranked
             );
             const filtered = filterMatches(matches, config.match.minScore);
@@ -136,17 +177,26 @@ export function registerMatchCommand(program: Command): void {
                 console.log(
                     JSON.stringify({
                         file: path.relative(process.cwd(), changedPath),
-                        model: config.model,
+                        ranker,
+                        rankerFallback,
+                        model: ranker === 'embedding'
+                            ? config.model
+                            : ranker === 'jev' ? jevResult?.model ?? config.jevModel : undefined,
                         matched: topMatches.length,
                         threshold: config.match.threshold,
                         minScore: config.match.minScore,
                         topK: config.match.topK,
                         source: sourceProfile.preview,
-                        sourceEmbedding: {
+                        sourceEmbedding: sourceEmbedding && {
                             backend: sourceEmbedding.backend,
                             cacheHit: sourceEmbedding.cacheHit,
                         },
                         candidateEmbeddingBackends: candidateBackends,
+                        jev: jevResult && {
+                            requests: jevResult.requests,
+                            cacheHits: jevResult.cacheHits,
+                            inputTokens: jevResult.inputTokens,
+                        },
                         cacheEntries,
                         candidateLimitReached: candidateResult.truncated,
                         results: topMatches,

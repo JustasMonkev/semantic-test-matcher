@@ -6,6 +6,52 @@ import { describe, it } from 'node:test';
 import { buildDocumentProfile } from '../src/services/document-profile.ts';
 
 describe('buildDocumentProfile', () => {
+    it('keeps raw test titles, including describe blocks and modifiers', () => {
+        const profile = buildDocumentProfile(
+            '/workspace/tests/tabs.spec.ts',
+            [
+                "test.describe('tab management', () => {",
+                "    test('selects a tab by index', async () => {});",
+                '    test.skip("closes the last tab", async () => {});',
+                "    it('selects a tab by index', () => {});",
+                '});',
+            ].join('\n'),
+            '/workspace'
+        );
+
+        assert.deepEqual(profile.testTitles, ['tab management', 'selects a tab by index', 'closes the last tab']);
+    });
+
+    it('keeps the profiled file\'s own diff hunks as an excerpt', () => {
+        const diff = [
+            'diff --git a/src/tabs.ts b/src/tabs.ts',
+            '--- a/src/tabs.ts',
+            '+++ b/src/tabs.ts',
+            '@@ -2,2 +2,2 @@ export function selectTab(index: number) {',
+            '     const tab = tabs[index];',
+            '-    return index && tab;',
+            '+    return tab;',
+            'diff --git a/src/other.ts b/src/other.ts',
+            '--- a/src/other.ts',
+            '+++ b/src/other.ts',
+            '@@ -1 +1 @@',
+            '-export const other = 1;',
+            '+export const other = 2;',
+        ].join('\n');
+        const source = 'export function selectTab(index: number) {\n    const tab = tabs[index];\n    return tab;\n}\n';
+
+        assert.equal(
+            buildDocumentProfile('/workspace/src/tabs.ts', source, '/workspace', diff).diffExcerpt,
+            [
+                '@@ -2,2 +2,2 @@ export function selectTab(index: number) {',
+                '     const tab = tabs[index];',
+                '-    return index && tab;',
+                '+    return tab;',
+            ].join('\n')
+        );
+        assert.equal(buildDocumentProfile('/workspace/src/tabs.ts', source, '/workspace').diffExcerpt, '');
+    });
+
     it('places the bounded summary before verbose sections', () => {
         const tests = Array.from({ length: 500 }, (_, index) => `test('case ${index}', () => {});`).join('\n');
         const profile = buildDocumentProfile('/repo/tests/large.spec.ts', tests, '/repo');
