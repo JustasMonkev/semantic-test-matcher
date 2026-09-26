@@ -77,6 +77,14 @@ describe('match command rankers', () => {
         return { output: JSON.parse(lines[lines.length - 1]) as MatchOutput, warnings };
     }
 
+    it('keeps a changed file given after a candidate option', async () => {
+        const { lines } = await runCli('--candidates', 'tests', 'src/price.ts', '--ranker', 'heuristics', '--json');
+        // SAFETY: --json makes the command's last log line its serialized result.
+        const output = JSON.parse(lines[lines.length - 1]) as MatchOutput & { file: string };
+
+        assert.equal(output.file, path.join('src', 'price.ts'));
+    });
+
     it('uses Jev by default and falls back to heuristics, saying so, without an API key', async () => {
         const { output, warnings } = await runMatch();
 
@@ -547,7 +555,7 @@ describe('match command rankers', () => {
             await fs.appendFile('src/price.ts', '\nexport const discountRate = 0.2;');
             // Candidates are scanned in order: tests, then 1,000 sources in src, then e2e.
             const { lines } = await runCli(
-                '--candidates', 'src', 'e2e', '--ranker', 'heuristics', '--selection-policy', 'conservative', '--top-k', '50', '--paths-only'
+                '--candidates', 'src', '--candidates', 'e2e', '--ranker', 'heuristics', '--selection-policy', 'conservative', '--top-k', '50', '--paths-only'
             );
 
             assert.ok(lines.includes('e2e/checkout.test.ts'), lines.join('\n'));

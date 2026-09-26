@@ -392,6 +392,16 @@ function readFileHeader(
     return isNewFileHeader ? fileMatches || diffPathMatches : diffPathMatches;
 }
 
+/** Whether a rename or copy's prefix-free target path is the profiled file. */
+function isRenameOrCopyTarget(newPath: string, target: DiffTarget): boolean {
+    return matchesDiffPath(
+        newPath,
+        target.absolutePath,
+        target.rootPath,
+        target.allowCwdRelativeGitPaths ? target.cwd : undefined
+    );
+}
+
 /** Whether a Git section deletes the profiled file, judged from its `diff --git` old path. */
 function isDeletedTarget(section: FileSection, target: DiffTarget): boolean {
     const oldGitPath = section.gitPaths?.[0];
@@ -432,17 +442,21 @@ export function collectChangedLines(
     let hunk: HunkCounts | undefined;
     // Text with no diff headers at all is read as bare `+`/`-` lines.
     let hasDiffHeaders = false;
-    // An empty or binary file's deletion has no hunks; its `deleted file mode` line marks the change.
-    let deletionMarker: string | undefined;
-    const keepDeletionMarker = () => {
-        if (deletionMarker !== undefined) {
-            changedLines.hunks.push(deletionMarker);
-            deletionMarker = undefined;
+    // A change without hunks (a pure rename or copy, or an empty or binary deletion) is marked by its
+    // Git metadata lines; a renamed file's old path also counts as removed, since imports of it break.
+    let headerlessMarker: { lines: string[]; removedPath?: string } | undefined;
+    const keepHeaderlessMarker = () => {
+        if (headerlessMarker) {
+            changedLines.hunks.push(...headerlessMarker.lines);
+            if (headerlessMarker.removedPath !== undefined) {
+                changedLines.removed.push(headerlessMarker.removedPath);
+            }
+            headerlessMarker = undefined;
         }
     };
     for (const line of diffText.split(/\r?\n/)) {
         if (line.startsWith(GIT_DIFF_LINE_PREFIX)) {
-            keepDeletionMarker();
+            keepHeaderlessMarker();
             section = startGitSection(line, relativePath, rootRelativePath);
             fileMatches = false;
             hunk = undefined;
@@ -451,15 +465,23 @@ export function collectChangedLines(
         }
         if (!hunk && RENAME_OR_COPY_PATTERN.test(line)) {
             readRenameOrCopyLine(line, section);
+            const [oldPath, newPath] = section.logicalPaths;
+            if (oldPath !== undefined && newPath !== undefined && isRenameOrCopyTarget(newPath, target)) {
+                const verb = section.isCopy ? 'copy' : 'rename';
+                headerlessMarker = {
+                    lines: [`${verb} from ${oldPath}`, `${verb} to ${newPath}`],
+                    removedPath: section.isCopy ? undefined : oldPath,
+                };
+            }
             continue;
         }
         if (!hunk && line.startsWith(DELETED_FILE_PREFIX) && isDeletedTarget(section, target)) {
-            deletionMarker = line;
+            headerlessMarker = { lines: [line] };
             continue;
         }
         if (!hunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
-            // Headers carry the deletion as hunks, so the marker is not needed.
-            deletionMarker = undefined;
+            // Headers carry the change as hunks, so the marker is not needed.
+            headerlessMarker = undefined;
             fileMatches = readFileHeader(line, section, target, fileMatches);
             if (line.startsWith('+++ ')) {
                 section = emptyFileSection();
@@ -503,7 +525,7 @@ export function collectChangedLines(
             }
         }
     }
-    keepDeletionMarker();
+    keepHeaderlessMarker();
 
     return changedLines;
 }

@@ -57,6 +57,10 @@ interface ChangedFiles {
 type ChangedSource = Awaited<ReturnType<typeof readChangedFile>>;
 type ChangeReport = ReturnType<typeof rankChangedFile>;
 
+function collect(value: string, previous: string[] = []): string[] {
+    return [...previous, value];
+}
+
 export function registerMatchCommand(program: Command): void {
     program
         .command('match')
@@ -66,9 +70,10 @@ export function registerMatchCommand(program: Command): void {
         .option('--min-score <number>', 'Minimum similarity score override')
         .option('--top-k <number>', 'Optional maximum number of selected tests')
         .option('--selection-policy <name>', 'adaptive (default), conservative (fixed top five), or targeted (affirmative Jev top five)')
-        .option('-c, --candidates <patterns...>', 'Candidate file paths, directories, or file globs')
-        .option('--include-file <patterns...>', 'Include only matching files (glob pattern)')
-        .option('--exclude-file <patterns...>', 'Exclude matching files (glob pattern)')
+        // Repeatable rather than variadic: a variadic option would swallow changed files that follow it.
+        .option('-c, --candidates <pattern>', 'Candidate file path, directory, or file glob (repeat for several)', collect)
+        .option('--include-file <pattern>', 'Include only matching files (glob pattern; repeat for several)', collect)
+        .option('--exclude-file <pattern>', 'Exclude matching files (glob pattern; repeat for several)', collect)
         .option('--candidates-from-stdin', 'Read candidate file list (JSON array or newline list) from stdin')
         .option('--ranker <name>', `jev (TypeSafe API, default; key from ${JEV_API_KEY_ENV}) or heuristics (local only)`)
         .option('--jev-model <id>', 'TypeSafe Jev model id')

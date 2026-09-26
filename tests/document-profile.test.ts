@@ -883,6 +883,19 @@ describe('listDiffFiles', () => {
         assert.deepEqual(listModeOnlyDiffFiles(diff, '/repo', '.'), ['/repo/src/mode.ts']);
     });
 
+    it('keeps a pure rename\'s old path in the change profile', () => {
+        const diff = [
+            'diff --git a/src/price-engine.ts b/src/pricing.ts',
+            'similarity index 100%',
+            'rename from src/price-engine.ts',
+            'rename to src/pricing.ts',
+        ].join('\n');
+        const profile = buildDocumentProfile('/repo/src/pricing.ts', 'export const price = 1;', '/repo', diff, '.');
+
+        assert.equal(profile.diffExcerpt, 'rename from src/price-engine.ts\nrename to src/pricing.ts');
+        assert.ok(profile.changeTokens.includes('engine'), profile.changeTokens.join(', '));
+    });
+
     it('profiles a header-less deletion from its deletion marker', () => {
         const diff = [
             'diff --git a/src/removed.ts b/src/removed.ts',

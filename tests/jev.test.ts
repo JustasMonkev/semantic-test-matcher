@@ -95,8 +95,8 @@ describe('buildJevState', () => {
     });
 
     it('never sends source text when a supplied diff has no hunks for the file', () => {
-        const renameOnly = 'diff --git a/src/old-tabs.ts b/src/tabs.ts\nsimilarity index 100%\nrename from src/old-tabs.ts\nrename to src/tabs.ts\n';
-        const state = buildJevState({ ...makeSource(renameOnly), diffOnly: true });
+        const otherFileOnly = TABS_DIFF.slice(TABS_DIFF.indexOf('diff --git a/src/other.ts'));
+        const state = buildJevState({ ...makeSource(otherFileOnly), diffOnly: true });
         assert.equal(state.changed_file.source_code, undefined);
         assert.equal(state.changed_file.diff, undefined);
         assert.equal(state.changed_file.path, 'src/tabs.ts');

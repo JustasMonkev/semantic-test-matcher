@@ -137,9 +137,9 @@ Useful flags:
 - `--min-score <number>`
 - `--top-k <number>` (optional cap on selected files)
 - `--selection-policy <adaptive|conservative|targeted>`
-- `--candidates <paths...>`
-- `--include-file <glob...>`
-- `--exclude-file <glob...>`
+- `--candidates <path>` (repeat for several, e.g. `--candidates tests --candidates e2e`)
+- `--include-file <glob>` (repeatable)
+- `--exclude-file <glob>` (repeatable)
 - `--candidates-from-stdin`
 - `--ranker <jev|heuristics>`
 - `--jev-model <id>`
