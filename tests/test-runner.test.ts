@@ -43,6 +43,23 @@ describe('selected test execution', () => {
         assert.equal(process.listenerCount('SIGTERM'), terminations);
     });
 
+    it('does not pass the Jev API key to the test runner', async () => {
+        await fs.writeFile(path.join(root, 'env.mjs'), [
+            "import fs from 'node:fs';",
+            "fs.writeFileSync('env.json', JSON.stringify({ key: process.env.TYPESAFE_API_KEY ?? null, path: Boolean(process.env.PATH) }));",
+        ].join('\n'));
+        const savedKey = process.env.TYPESAFE_API_KEY;
+        process.env.TYPESAFE_API_KEY = 'secret-key';
+        try {
+            assert.equal(await runSelectedTests(`"${process.execPath}" env.mjs`, ['tests/price.test.ts'], root), 0);
+        } finally {
+            if (savedKey === undefined) delete process.env.TYPESAFE_API_KEY;
+            else process.env.TYPESAFE_API_KEY = savedKey;
+        }
+        assert.deepEqual(JSON.parse(await fs.readFile(path.join(root, 'env.json'), 'utf8')), { key: null, path: true });
+        assert.equal(process.env.TYPESAFE_API_KEY, savedKey);
+    });
+
     it('never launches a command with an empty selection', async () => {
         assert.equal(await runSelectedTests(command, [], root), 0);
         await assert.rejects(fs.stat(path.join(root, 'args.json')), { code: 'ENOENT' });

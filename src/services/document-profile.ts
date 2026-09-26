@@ -191,8 +191,8 @@ function collectTestNames(text: string): string[] {
 
 // `.each(table)`, `.each`table``, `.for(table)`, and `.skipIf(condition)` call once before the title;
 // the bounded table keeps an unclosed call cheap to reject.
-// The lookbehind skips method calls such as `/\d+/.test('42')`.
-const TEST_TITLE_PATTERN = /(?<![\w$.])(?:test|it|describe)(?:\.(?:describe|only|skip|todo|fixme|fail|failing|slow|serial|parallel|concurrent|sequential))*(?:\.(?:each|for|skipIf|runIf)(?:`[^`]{0,4000}`|\((?:[^()]|\([^()]{0,400}\)){0,4000}\)))?\(\s*(['"`])((?:\\.|(?!\1|\\).)+)\1/g;
+// The lookbehind skips method calls such as `/\d+/.test('42')`; `Deno.test` is the dotted call that declares tests.
+const TEST_TITLE_PATTERN = /(?<![\w$.])(?:Deno\.test|test|it|describe)(?:\.(?:describe|only|skip|ignore|todo|fixme|fail|failing|slow|serial|parallel|concurrent|sequential))*(?:\.(?:each|for|skipIf|runIf)(?:`[^`]{0,4000}`|\((?:[^()]|\([^()]{0,400}\)){0,4000}\)))?\(\s*(['"`])((?:\\.|(?!\1|\\).)+)\1/g;
 
 // A `/` after one of these starts a regex literal rather than a division.
 const REGEX_PRECEDER = /[(,=:[!&|?{};]/;
@@ -506,7 +506,8 @@ function collectLateCallTokens(text: string, contentTokens: string[]): string[] 
 
 function determineKind(relativePath: string): DocumentKind {
     const normalized = normalizePathSeparators(relativePath);
-    if (/\.(test|spec)\.[cm]?[jt]sx?$/i.test(normalized) || /(^|\/)(test|tests|__tests__)\//i.test(normalized)) {
+    // `.test`/`.spec` files, Deno's `_test` files, and files under test directories.
+    if (/(?:\.(?:test|spec)|_test)\.[cm]?[jt]sx?$/i.test(normalized) || /(^|\/)(test|tests|__tests__)\//i.test(normalized)) {
         return 'test';
     }
 

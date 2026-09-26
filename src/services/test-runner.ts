@@ -6,6 +6,7 @@ import { constants } from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { commandArguments } from '../utils/shell.ts';
+import { JEV_API_KEY_ENV } from './jev.ts';
 
 export { quoteShellArgument } from '../utils/shell.ts';
 
@@ -59,8 +60,11 @@ export async function runSelectedTests(command: string, files: string[], cwd: st
     if (!files.length) return 0;
     const [executable, ...args] = commandArguments(command);
     const testPaths = [...new Set(files.map(file => path.resolve(cwd, file)))];
+    // The Jev key is for ranking only; the project's tests never need it.
+    const env = { ...process.env };
+    delete env[JEV_API_KEY_ENV];
     return new Promise((resolve, reject) => {
-        const child = spawn(executable, [...args, ...testPaths], { cwd, stdio: 'inherit', shell: false });
+        const child = spawn(executable, [...args, ...testPaths], { cwd, env, stdio: 'inherit', shell: false });
         const interrupt = () => { child.kill('SIGINT'); };
         const terminate = () => { child.kill('SIGTERM'); };
         const cleanup = () => {

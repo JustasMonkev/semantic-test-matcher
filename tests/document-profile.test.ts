@@ -155,6 +155,16 @@ diff --git a/src/socket.ts b/src/socket.ts
         assert.equal(isTestLike(withCall), true);
     });
 
+    it('recognizes Deno test files and Deno.test declarations', () => {
+        assert.equal(buildDocumentProfile('/repo/src/checkout_test.ts', '', '/repo').kind, 'test');
+        const profile = buildDocumentProfile('/repo/e2e/checkout.ts', [
+            'Deno.test("applies the discount", () => {});',
+            "Deno.test.ignore('skips the coupon', () => {});",
+        ].join('\n'), '/repo');
+        assert.deepEqual(profile.testTitles, ['applies the discount', 'skips the coupon']);
+        assert.equal(isTestLike(profile), true);
+    });
+
     it('treats files under __tests__ as tests', () => {
         assert.equal(buildDocumentProfile('/repo/src/__tests__/checkout.ts', '', '/repo').kind, 'test');
         assert.equal(buildDocumentProfile('/repo/src/checkout.ts', '', '/repo').kind, 'source');
