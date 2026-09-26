@@ -13,10 +13,9 @@ const MAX_DIFF_CHARS = 8000;
 const MAX_SOURCE_CHARS = 6000;
 const MAX_EXPORTED_SYMBOLS = 20;
 const MAX_TEST_TITLES = 40;
-// One request must stay inside Jev's 64k-token budget (state plus every question).
-// Code-heavy JSON runs at roughly 3-5 characters per token, so these caps leave headroom.
+// One request must stay inside Jev's 64k-token budget (state plus every question), with headroom.
+const MAX_REQUEST_TOKENS = 56_000;
 const MAX_QUESTIONS_PER_REQUEST = 250;
-const MAX_QUESTION_CHARS_PER_REQUEST = 160_000;
 const REQUEST_CONCURRENCY = 4;
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_ATTEMPTS = 5;
@@ -56,6 +55,8 @@ export interface JevScoreResult {
     inputTokens: number;
     /** Versioned model that answered, when any request was made. */
     model?: string;
+    /** Every model version whose answers were used, cached answers included. */
+    models: string[];
 }
 
 interface JevNoulQuestion {
@@ -131,23 +132,32 @@ export function buildJevQuestion(source: JevSource, candidate: JevCandidate): Je
     };
 }
 
-function batchQuestions(indices: number[], questions: JevNoulQuestion[]): number[][] {
+/**
+ * An upper bound on tokens: code-heavy ASCII JSON runs at 3-5 characters per token, and other text
+ * (CJK, emoji) at no more than one token per UTF-8 byte.
+ */
+export function estimateTokens(text: string): number {
+    const asciiChars = text.replace(/[^\x00-\x7f]/g, '').length;
+    return Math.ceil(asciiChars / 3) + Buffer.byteLength(text) - asciiChars;
+}
+
+function batchQuestions(indices: number[], questions: JevNoulQuestion[], tokenBudget: number): number[][] {
     const batches: number[][] = [];
     let current: number[] = [];
-    let currentChars = 0;
+    let currentTokens = 0;
 
     for (const index of indices) {
-        const size = JSON.stringify(questions[index]).length;
+        const size = estimateTokens(JSON.stringify(questions[index]));
         if (
             current.length &&
-            (current.length >= MAX_QUESTIONS_PER_REQUEST || currentChars + size > MAX_QUESTION_CHARS_PER_REQUEST)
+            (current.length >= MAX_QUESTIONS_PER_REQUEST || currentTokens + size > tokenBudget)
         ) {
             batches.push(current);
             current = [];
-            currentChars = 0;
+            currentTokens = 0;
         }
         current.push(index);
-        currentChars += size;
+        currentTokens += size;
     }
 
     if (current.length) {
@@ -225,6 +235,7 @@ export class JevScorer {
         );
         const cache = this.options.skipCache ? {} : await this.getCache();
         const scores = new Map<string, number>();
+        const models = new Set<string>();
         const uncached: number[] = [];
 
         keys.forEach((key, index) => {
@@ -232,6 +243,7 @@ export class JevScorer {
             // An answer from any other model than the one requested came through a moving alias.
             if (hit?.model === this.options.model && isProbability(hit.noul)) {
                 scores.set(candidates[index].file, hit.noul);
+                models.add(hit.model);
             } else {
                 uncached.push(index);
             }
@@ -242,10 +254,13 @@ export class JevScorer {
             requests: 0,
             cacheHits: candidates.length - uncached.length,
             inputTokens: 0,
+            models: [],
         };
 
         try {
-            await mapWithConcurrency(batchQuestions(uncached, questions), REQUEST_CONCURRENCY, async (batch) => {
+            const questionTokenBudget = MAX_REQUEST_TOKENS - estimateTokens(JSON.stringify(state));
+            const batches = batchQuestions(uncached, questions, questionTokenBudget);
+            await mapWithConcurrency(batches, REQUEST_CONCURRENCY, async (batch) => {
                 const { response, attempts } = await this.request({
                     state,
                     questions: Object.fromEntries(batch.map((index) => [questionId(index), questions[index]])),
@@ -253,6 +268,7 @@ export class JevScorer {
                 result.requests += attempts;
                 result.inputTokens += response.usage?.input_tokens ?? 0;
                 result.model = response.model;
+                models.add(response.model);
 
                 for (const index of batch) {
                     const noul = response.answers[questionId(index)]?.noul;
@@ -276,6 +292,7 @@ export class JevScorer {
             throw error;
         }
 
+        result.models = [...models];
         return result;
     }
 

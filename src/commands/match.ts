@@ -158,24 +158,46 @@ async function resolveChangedFiles(files: string[], options: MatchOptions, cwd: 
     const diffRoot = gitChanges?.root ?? options.diffRoot;
     const paths = files.length
         ? files.map((file) => path.resolve(cwd, file))
-        : gitChanges?.files ?? await listContainedDiffFiles(diffText ?? '', cwd, diffRoot);
+        : gitChanges ? await keepGitChangesInRoot(gitChanges.files, gitChanges.root, cwd)
+            : await listContainedDiffFiles(diffText ?? '', cwd, diffRoot);
     if (!paths.length && !automatic) {
         throw new Error('The --diff-file changes no source files');
     }
     return { automatic, paths, diffText, diffRoot };
 }
 
-/** A --diff-file is untrusted: a path outside its root could send an unrelated file's text to Jev. */
-async function listContainedDiffFiles(diffText: string, cwd: string, diffRoot: string | undefined): Promise<string[]> {
-    const root = resolveDiffRoot(cwd, diffRoot);
+/**
+ * Discovered changed files are read and may be sent to Jev, so a path that leaves its root,
+ * directly or through a symlink, must not be.
+ */
+async function findPathsOutside(files: string[], root: string): Promise<string[]> {
     const realRoot = await resolveRealPath(root);
-    const files = listDiffFiles(diffText, cwd, diffRoot).filter(isAllowedFile);
+    const outside: string[] = [];
     for (const file of files) {
         if (!isParentPath(root, file) || !isParentPath(realRoot, await resolveRealPath(file))) {
-            throw new Error(`The --diff-file changes ${file}, which is outside its diff root ${root}`);
+            outside.push(file);
         }
     }
+    return outside;
+}
+
+async function listContainedDiffFiles(diffText: string, cwd: string, diffRoot: string | undefined): Promise<string[]> {
+    const root = resolveDiffRoot(cwd, diffRoot);
+    const files = listDiffFiles(diffText, cwd, diffRoot).filter(isAllowedFile);
+    const [outside] = await findPathsOutside(files, root);
+    if (outside) {
+        throw new Error(`The --diff-file changes ${outside}, which is outside its diff root ${root}`);
+    }
     return files;
+}
+
+// An untracked symlink to a file elsewhere is common enough to skip rather than fail the run.
+async function keepGitChangesInRoot(files: string[], root: string, cwd: string): Promise<string[]> {
+    const outside = new Set(await findPathsOutside(files, root));
+    for (const file of outside) {
+        console.warn(`Warning: skipping ${path.relative(cwd, file)}, which resolves outside the repository`);
+    }
+    return files.filter((file) => !outside.has(file));
 }
 
 async function loadCandidates(candidateFiles: string[], cwd: string) {

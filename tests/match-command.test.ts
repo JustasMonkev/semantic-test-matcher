@@ -456,6 +456,20 @@ describe('match command rankers', () => {
             assert.ok(lines.includes('tests/price.test.ts'));
         });
 
+        it('skips an untracked symlink that resolves outside the repository', async () => {
+            const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-outside-'));
+            await fs.writeFile(path.join(outside, 'secret.ts'), 'export const secret = 1;');
+            await fs.symlink(path.join(outside, 'secret.ts'), 'src/linked.ts');
+            await fs.appendFile('src/price.ts', '\nexport const discountRate = 0.2;');
+            const { lines, warnings } = await runCli('--ranker', 'heuristics', '--json');
+            // SAFETY: --json makes the command's last log line its serialized result.
+            const output = JSON.parse(lines[lines.length - 1]) as { file: string };
+
+            assert.equal(output.file, path.join('src', 'price.ts'));
+            assert.deepEqual(warnings, [`Warning: skipping ${path.join('src', 'linked.ts')}, which resolves outside the repository`]);
+            await fs.rm(outside, { recursive: true, force: true });
+        });
+
         it('selects an edited __tests__ file itself from a broad candidate root', async () => {
             await fs.mkdir('__tests__');
             await fs.writeFile('__tests__/checkout.ts', "test('checks out a cart', () => {});");

@@ -107,7 +107,7 @@ Ranks likely candidate files for one or more changed source files and merges the
 
 With no file arguments or `--diff-file`, `rbt match` detects local Git changes under the current directory (staged, unstaged, deleted, and non-ignored untracked JS/TS files). It shows the selected tests, then asks which test command to run. Enter a command such as `npx playwright test`, `npx vitest run`, or `node --test`; press Enter to skip. Selected absolute paths are appended as separate arguments, and RBT returns the runner's exit code. The command accepts quoted arguments, but does not interpret shell operators, variable expansion, or pipelines. Use an executable or wrapper script that accepts test paths as trailing arguments.
 
-This is a one-shot flow, not a watcher. A clean tree or empty selection runs nothing. `--json` and `--paths-only` only report selections and never prompt or execute tests; use these modes without an interactive terminal. Explicit files and `--diff-file` retain their selection-only behavior. Committed branch changes still require a supplied diff.
+This is a one-shot flow, not a watcher. A clean tree or empty selection runs nothing. A changed file that resolves outside the repository, such as an untracked symlink, is skipped with a warning. `--json` and `--paths-only` only report selections and never prompt or execute tests; use these modes without an interactive terminal. Explicit files and `--diff-file` retain their selection-only behavior. Committed branch changes still require a supplied diff.
 
 Examples:
 
@@ -171,7 +171,7 @@ There is no default count cap for `adaptive`. `--top-k` (or its config/environme
 
 ### `benchmark`
 
-Runs the matcher over a JSON file of cases (`source`, optional `diffText`, and `expectedTop1`, `expectedTop3`, or `expectedTop10Includes`) and reports hit rates. It takes the same `--ranker`, `--jev-model`, candidate, and threshold flags as `match`. Benchmark reports ranking hit rates; it does not apply `match` selection policies.
+Runs the matcher over a JSON file of cases (`source`, optional `diffText`, and `expectedTop1`, `expectedTop3`, or `expectedTop10Includes`) and reports hit rates. It takes the same `--ranker`, `--jev-model`, candidate, and threshold flags as `match`. Benchmark reports ranking hit rates; it does not apply `match` selection policies. With Jev, it also reports request counts, cache hits, input tokens, and every model version that answered, so runs against a moving alias such as `jev-latest` stay comparable.
 
 ```bash
 rbt benchmark --cases cases.json --candidates tests --json

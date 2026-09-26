@@ -144,7 +144,8 @@ export function registerBenchmarkCommand(program: Command): void {
                     cacheDir: config.cacheDir,
                 })
                 : undefined;
-            const jevStats = { requests: 0, cacheHits: 0, inputTokens: 0 };
+            // A moving alias such as jev-latest can answer with several versions, so all are reported.
+            const jevStats = { requests: 0, cacheHits: 0, inputTokens: 0, models: new Set<string>() };
             const sourcePaths = new Set(cases.map((entry) => path.resolve(cwd, entry.source)));
             // As in match, no case's source module is a candidate test; a test-like source stays one.
             const preparedCandidates = (await prepareCandidates(candidateResult.files, cwd)).filter((candidate) =>
@@ -183,6 +184,7 @@ export function registerBenchmarkCommand(program: Command): void {
                         jevStats.requests += result.requests;
                         jevStats.cacheHits += result.cacheHits;
                         jevStats.inputTokens += result.inputTokens;
+                        result.models.forEach((model) => jevStats.models.add(model));
                         caseCandidates = caseCandidates.map((candidate) => ({
                             ...candidate,
                             jevScore: result.scores.get(candidate.file),
@@ -257,7 +259,7 @@ export function registerBenchmarkCommand(program: Command): void {
                 top10IncludeRate: top10IncludeTotal ? top10IncludeHits / top10IncludeTotal : 0,
                 misses,
                 candidateLimitReached: candidateResult.truncated,
-                jev: jevScorer ? jevStats : undefined,
+                jev: jevScorer ? { ...jevStats, models: [...jevStats.models].sort() } : undefined,
             };
 
             if (options.json) {
@@ -278,6 +280,7 @@ export function registerBenchmarkCommand(program: Command): void {
                 console.log(`jevRequests: ${summary.jev.requests}`);
                 console.log(`jevCacheHits: ${summary.jev.cacheHits}`);
                 console.log(`jevInputTokens: ${summary.jev.inputTokens}`);
+                console.log(`jevModels: ${summary.jev.models.join(', ') || 'none'}`);
             }
             if (!summary.misses.length) {
                 console.log('misses: none');

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { buildDocumentProfile } from '../src/services/document-profile.ts';
 import {
     buildJevState,
+    estimateTokens,
     getJevCacheEntryCount,
     getJevCacheFile,
     JEV_ENDPOINT,
@@ -192,6 +193,32 @@ describe('JevScorer', () => {
         assert.deepEqual(calls.map((call) => Object.keys(call.body.questions).length).sort((a, b) => a - b), [100, 250, 250]);
         assert.equal(result.scores.size, 600);
         assert.equal(result.requests, 3);
+    });
+
+    it('sizes batches by estimated tokens, so non-ASCII test titles split sooner', async () => {
+        assert.equal(estimateTokens('abcdef'), 2);
+        assert.equal(estimateTokens('日本'), 6);
+        const title = '日本語のテスト'.repeat(20);
+        const text = Array.from({ length: 40 }, (_, index) => `test('${title} ${index}', () => {});`).join('\n');
+        const candidates = Array.from({ length: 10 }, (_, index) => makeCandidate(`tests/cjk-${index}.spec.ts`, text));
+        const { impl, calls } = fakeFetch((body) => answer(body, () => 0.3));
+        const result = await makeScorer(impl, { skipCache: true }).score(makeSource(TABS_DIFF), candidates);
+
+        assert.equal(result.scores.size, 10);
+        assert.ok(calls.length > 1);
+        for (const call of calls) {
+            assert.ok(estimateTokens(String(call.init.body)) < 64_000);
+        }
+    });
+
+    it('reports every model version whose answers were used', async () => {
+        const first = fakeFetch((body) => answer(body, byTabs));
+        const firstScorer = makeScorer(first.impl);
+        assert.deepEqual((await firstScorer.score(makeSource(TABS_DIFF), [TABS_TEST])).models, ['jev-1.13.0']);
+        await firstScorer.flush();
+
+        const cached = await makeScorer(fakeFetch((body) => answer(body, byTabs)).impl).score(makeSource(TABS_DIFF), [TABS_TEST]);
+        assert.deepEqual({ requests: cached.requests, models: cached.models }, { requests: 0, models: ['jev-1.13.0'] });
     });
 
     it('retries rate limits and overloads before succeeding', async () => {

@@ -770,6 +770,23 @@ describe('listDiffFiles', () => {
         ]);
     });
 
+    it('strips one-segment custom prefixes from repository-root files', () => {
+        const diff = [
+            'diff --git old/foo.ts new/foo.ts',
+            '--- old/foo.ts',
+            '+++ new/foo.ts',
+            '@@ -1 +1 @@',
+            '-export const fooTotal = 1;',
+            '+export const fooTotal = 2;',
+        ].join('\n');
+
+        assert.deepEqual(listDiffFiles(diff, '/repo', '.'), ['/repo/foo.ts']);
+        assert.equal(
+            buildDocumentProfile('/repo/foo.ts', '', '/repo', diff, '.').diffExcerpt,
+            '@@ -1 +1 @@\n-export const fooTotal = 1;\n+export const fooTotal = 2;'
+        );
+    });
+
     it('lists header-less renames, copies, binary changes, and empty new files', () => {
         const diff = [
             'diff --git a/src/old-name.ts b/src/new-name.ts',

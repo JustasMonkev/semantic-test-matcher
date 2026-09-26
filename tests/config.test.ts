@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { clamp, resolveConfig } from '../src/config.ts';
+import { isDebug } from '../src/utils/io.ts';
 
 const MANAGED_ENV_VARS = [
     'RBT_CACHE_DIR',
@@ -19,6 +20,7 @@ const MANAGED_ENV_VARS = [
     'RBT_RANKER',
     'RBT_JEV_MODEL',
     'RBT_SELECTION_POLICY',
+    'RBT_DEBUG',
 ];
 
 describe('resolveConfig', () => {
@@ -51,6 +53,16 @@ describe('resolveConfig', () => {
         assert.equal(config.match.minScore, 0);
         assert.equal(config.match.selectionPolicy, 'adaptive');
         assert.deepEqual(config.match.candidatePaths, ['test', 'tests']);
+    });
+
+    it('turns on debug diagnostics for a debug log level from a flag or the environment', async () => {
+        await resolveConfig({ logLevel: 'debug' }, {});
+        assert.equal(isDebug(), true);
+        await resolveConfig({}, {});
+        assert.equal(isDebug(), false);
+        process.env.RBT_LOG_LEVEL = 'debug';
+        await resolveConfig({}, {});
+        assert.equal(isDebug(), true);
     });
 
     it('defaults to the Jev ranker with a pinned model', async () => {

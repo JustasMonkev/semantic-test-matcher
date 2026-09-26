@@ -14,8 +14,16 @@ export async function readStdinText(): Promise<string> {
     });
 }
 
+let debugLogLevel = false;
+
+/** Set once the log level resolves, so `--log-level debug` and its equivalents enable diagnostics. */
+export function setDebugLogLevel(enabled: boolean): void {
+    debugLogLevel = enabled;
+}
+
+// RBT_DEBUG=1 also covers errors raised before any config resolves.
 export function isDebug(): boolean {
-    return process.env.RBT_DEBUG === '1';
+    return debugLogLevel || process.env.RBT_DEBUG === '1';
 }
 
 export function parseStdinList(raw: string): string[] {

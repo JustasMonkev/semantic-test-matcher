@@ -178,7 +178,8 @@ function parseGitDiffPaths(line: string, relativePath: string | undefined): [str
 
 /**
  * Custom prefixes are whatever precedes the trailing path segments both sides share.
- * A single shared segment (just the filename) is too weak to tell a prefix from a move.
+ * A single shared segment (just the filename) is too weak to tell a prefix from a move,
+ * except for a root-level file under one-segment prefixes, such as `old/foo.ts new/foo.ts`.
  */
 function inferGitPrefixes(paths: [string, string]): GitPrefixes | undefined {
     const [oldPath, newPath] = paths;
@@ -198,7 +199,8 @@ function inferGitPrefixes(paths: [string, string]): GitPrefixes | undefined {
     )) {
         return ['a/', 'b/'];
     }
-    if (sharedParts <= 1) {
+    const isPrefixedRootFile = sharedParts === 1 && oldParts.length === 2 && newParts.length === 2;
+    if (sharedParts <= 1 && !isPrefixedRootFile) {
         return undefined;
     }
 

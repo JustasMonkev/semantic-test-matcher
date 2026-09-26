@@ -3,6 +3,7 @@ import path from 'node:path';
 import { isWorkspaceContainedPath } from './utils/paths.ts';
 import { mergeArrays } from './utils/arrays.ts';
 import { clamp, firstFiniteNumber, parseBoolean, parseLogLevel, readEnv, type LogLevel } from './utils/values.ts';
+import { setDebugLogLevel } from './utils/io.ts';
 
 export { clamp, type LogLevel } from './utils/values.ts';
 
@@ -167,6 +168,7 @@ export async function resolveConfig(
     const logLevel = parseLogLevel(
         rootOptions.logLevel ?? readEnv('RBT_LOG_LEVEL') ?? fileConfig.logLevel ?? DEFAULT_CONFIG.logLevel
     );
+    setDebugLogLevel(logLevel === 'debug');
     const quiet = parseBoolean(rootOptions.quiet ?? readEnv('RBT_QUIET') ?? fileConfig.quiet);
     const verbose = parseBoolean(rootOptions.verbose ?? readEnv('RBT_VERBOSE') ?? fileConfig.verbose);
 

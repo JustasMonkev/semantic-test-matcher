@@ -142,6 +142,42 @@ describe('benchmark command', () => {
         assert.deepEqual([...askedAbout], ['tests/price.test.ts']);
     });
 
+    it('reports each model version that answered a moving alias', async (t) => {
+        await makeWorkspace();
+        await fs.writeFile('src/tax.ts', 'export const tax = total => total * 0.2;');
+        await fs.writeFile('cases.json', JSON.stringify([
+            { source: 'src/price.ts', expectedTop3: ['tests/price.test.ts'] },
+            { source: 'src/tax.ts', expectedTop3: ['tests/price.test.ts'] },
+        ]));
+        process.env.TYPESAFE_API_KEY = 'test-key';
+        let requests = 0;
+        t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+            requests += 1;
+            // SAFETY: JevScorer always sends a JSON body with a questions map.
+            const { questions } = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> };
+            return Response.json({
+                model: requests === 1 ? 'jev-1.14.0' : 'jev-1.15.0',
+                answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.9 }])),
+            });
+        });
+        const output: string[] = [];
+        const originalLog = console.log;
+        console.log = (value?: unknown) => output.push(String(value));
+        try {
+            const program = new Command();
+            registerBenchmarkCommand(program);
+            await program.parseAsync([
+                'benchmark', '--cases', 'cases.json', '--candidates', 'tests', '--jev-model', 'jev-latest', '--json',
+            ], { from: 'user' });
+        } finally {
+            console.log = originalLog;
+        }
+
+        // SAFETY: --json makes the benchmark's last log line its serialized summary.
+        const summary = JSON.parse(output[output.length - 1]) as { jev: { models: string[] } };
+        assert.deepEqual(summary.jev.models, ['jev-1.14.0', 'jev-1.15.0']);
+    });
+
     it('scores a deleted source from its diff and rejects one without a diff', async () => {
         await makeWorkspace();
         await fs.writeFile('tests/reconcile.test.ts', "test('reconciles the ledger balance', () => {});");
