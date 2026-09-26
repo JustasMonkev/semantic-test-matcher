@@ -190,13 +190,17 @@ describe('JevScorer', () => {
         }));
         const result = await makeScorer(impl, { skipCache: true }).score(makeSource(TABS_DIFF), candidates);
 
-        assert.deepEqual(calls.map((call) => Object.keys(call.body.questions).length).sort((a, b) => a - b), [100, 250, 250]);
+        assert.ok(calls.length > 1);
+        for (const call of calls) {
+            assert.ok(Object.keys(call.body.questions).length <= 250);
+            assert.ok(estimateTokens(String(call.init.body)) < 64_000);
+        }
         assert.equal(result.scores.size, 600);
-        assert.equal(result.requests, 3);
+        assert.equal(result.requests, calls.length);
     });
 
     it('sizes batches by estimated tokens, so non-ASCII test titles split sooner', async () => {
-        assert.equal(estimateTokens('abcdef'), 2);
+        assert.equal(estimateTokens('abcdef'), 6);
         assert.equal(estimateTokens('日本'), 6);
         const title = '日本語のテスト'.repeat(20);
         const text = Array.from({ length: 40 }, (_, index) => `test('${title} ${index}', () => {});`).join('\n');
@@ -306,8 +310,11 @@ describe('JevScorer', () => {
         }));
         await assert.rejects(makeScorer(impl).score(makeSource(TABS_DIFF), candidates), JevError);
 
+        // Only the first REQUEST_CONCURRENCY (4) batches were in flight; the three that answered are cached.
         assert.equal(calls.length, 4);
-        assert.equal(await getJevCacheEntryCount(cacheDir), 750);
+        const answered = calls.slice(1).reduce((sum, call) => sum + Object.keys(call.body.questions).length, 0);
+        assert.ok(answered > 0 && answered < candidates.length);
+        assert.equal(await getJevCacheEntryCount(cacheDir), answered);
     });
 
     it('fails fast with a key hint on authentication errors', async () => {

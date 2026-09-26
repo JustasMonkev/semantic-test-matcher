@@ -4,7 +4,7 @@ import { normalizePathSeparators } from '../utils/paths.ts';
 import { canonicalizeToken, splitIntoParts, tokenizeText, uniqueTokens } from './text-utils.ts';
 import { collectChangedLines, type ChangedLines } from './unified-diff.ts';
 
-export { listDiffFiles, resolveDiffRoot } from './unified-diff.ts';
+export { listDiffFiles, listModeOnlyDiffFiles, resolveDiffRoot } from './unified-diff.ts';
 
 export type DocumentKind = 'source' | 'test' | 'fixture' | 'unknown';
 
@@ -194,8 +194,13 @@ function collectTestNames(text: string): string[] {
 // The lookbehind skips method calls such as `/\d+/.test('42')`; `Deno.test` is the dotted call that declares tests.
 const TEST_TITLE_PATTERN = /(?<![\w$.])(?:Deno\.test|test|it|describe)(?:\.(?:describe|only|skip|ignore|todo|fixme|fail|failing|slow|serial|parallel|concurrent|sequential))*(?:\.(?:each|for|skipIf|runIf)(?:`[^`]{0,4000}`|\((?:[^()]|\([^()]{0,400}\)){0,4000}\)))?\(\s*(['"`])((?:\\.|(?!\1|\\).)+)\1/g;
 
-// A `/` after one of these starts a regex literal rather than a division.
-const REGEX_PRECEDER = /[(,=:[!&|?{};]/;
+// After these keywords an expression follows, so `/` starts a regex literal: `return /x/`.
+const KEYWORDS_BEFORE_EXPRESSION = new Set([
+    'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await',
+]);
+// A statement head such as `if (x)` is followed by a statement, which may start with a regex.
+const CONTROL_KEYWORDS = new Set(['if', 'while', 'for', 'with']);
+const IDENTIFIER_CHARACTER = /[\w$]/;
 
 /**
  * The text at the same offsets with comments blanked and string, template, and regex contents
@@ -205,6 +210,19 @@ const REGEX_PRECEDER = /[(,=:[!&|?{};]/;
 function maskNonCode(text: string): string {
     let masked = '';
     let previousCode = '';
+    let lastWord = '';
+    let closedControlParen = false;
+    const parens: boolean[] = [];
+    // `/` is division after an operand (a name, number, literal, `)` or `]`) and a regex elsewhere.
+    const startsRegex = () => {
+        if (previousCode === ')') {
+            return closedControlParen;
+        }
+        if (IDENTIFIER_CHARACTER.test(previousCode)) {
+            return KEYWORDS_BEFORE_EXPRESSION.has(lastWord);
+        }
+        return previousCode !== ']';
+    };
     let index = 0;
     while (index < text.length) {
         const character = text[index];
@@ -216,9 +234,7 @@ function maskNonCode(text: string): string {
             index = end;
             continue;
         }
-        const opensLiteral = character === '"' || character === "'" || character === '`'
-            || (character === '/' && (previousCode === '' || REGEX_PRECEDER.test(previousCode)));
-        if (opensLiteral) {
+        if (character === '"' || character === "'" || character === '`' || (character === '/' && startsRegex())) {
             let end = index + 1;
             // Only template literals span lines.
             while (end < text.length && text[end] !== character && (character === '`' || text[end] !== '\n')) {
@@ -228,10 +244,19 @@ function maskNonCode(text: string): string {
             const closed = text[end] === character;
             masked += character + text.slice(index + 1, end).replace(/[^\n]/g, 'x') + (closed ? character : '');
             index = closed ? end + 1 : end;
+            // A literal is an operand, like a name that is not a keyword.
             previousCode = 'x';
+            lastWord = '';
             continue;
         }
         masked += character;
+        if (IDENTIFIER_CHARACTER.test(character)) {
+            lastWord = IDENTIFIER_CHARACTER.test(text[index - 1] ?? '') ? lastWord + character : character;
+        } else if (character === '(') {
+            parens.push(IDENTIFIER_CHARACTER.test(previousCode) && CONTROL_KEYWORDS.has(lastWord));
+        } else if (character === ')') {
+            closedControlParen = parens.pop() ?? false;
+        }
         if (!/\s/.test(character)) {
             previousCode = character;
         }
@@ -504,15 +529,20 @@ function collectLateCallTokens(text: string, contentTokens: string[]): string[] 
         .slice(0, MAX_LATE_CALL_TOKENS);
 }
 
+// `.test`/`.spec` files and Deno's `_test` files.
+const TEST_FILE_NAME = /(?:\.(?:test|spec)|_test)\.[cm]?[jt]sx?$/i;
+
 function determineKind(relativePath: string): DocumentKind {
     const normalized = normalizePathSeparators(relativePath);
-    // `.test`/`.spec` files, Deno's `_test` files, and files under test directories.
-    if (/(?:\.(?:test|spec)|_test)\.[cm]?[jt]sx?$/i.test(normalized) || /(^|\/)(test|tests|__tests__)\//i.test(normalized)) {
+    if (TEST_FILE_NAME.test(normalized)) {
         return 'test';
     }
-
-    if (/(^|\/)(fixture|fixtures)\//i.test(normalized) || /\.(fixture)\.[cm]?[jt]sx?$/i.test(normalized)) {
+    // Fixtures often live under test directories, so they are recognized first.
+    if (/(^|\/)(fixture|fixtures|__fixtures__)\//i.test(normalized) || /\.(fixture)\.[cm]?[jt]sx?$/i.test(normalized)) {
         return 'fixture';
+    }
+    if (/(^|\/)(test|tests|__tests__)\//i.test(normalized)) {
+        return 'test';
     }
 
     return 'source';
@@ -558,9 +588,19 @@ function createSummary(profile: Omit<DocumentProfile, 'summary' | 'preview'>): s
     return lines.join('\n');
 }
 
-/** A test file by name or directory, or any file that declares tests, such as `e2e/checkout.ts`. */
+/**
+ * Whether a file can be handed to a test runner: a test file by name, or a file outside fixtures
+ * that declares tests, such as `e2e/checkout.ts`. A helper or fixture in a test directory is neither.
+ */
+export function isTestLikeSource(relativePath: string, text: string): boolean {
+    return TEST_FILE_NAME.test(normalizePathSeparators(relativePath))
+        || (determineKind(relativePath) !== 'fixture' && collectTestTitles(text).length > 0);
+}
+
+/** {@link isTestLikeSource} for an already built profile. */
 export function isTestLike(profile: DocumentProfile): boolean {
-    return profile.kind === 'test' || profile.testTitles.length > 0;
+    return TEST_FILE_NAME.test(normalizePathSeparators(profile.relativePath))
+        || (profile.kind !== 'fixture' && profile.testTitles.length > 0);
 }
 
 export function buildDocumentProfile(

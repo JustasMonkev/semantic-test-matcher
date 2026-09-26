@@ -14,7 +14,7 @@ const MAX_SOURCE_CHARS = 6000;
 const MAX_EXPORTED_SYMBOLS = 20;
 const MAX_TEST_TITLES = 40;
 // One request must stay inside Jev's 64k-token budget (state plus every question), with headroom.
-const MAX_REQUEST_TOKENS = 56_000;
+const MAX_REQUEST_TOKENS = 60_000;
 const MAX_QUESTIONS_PER_REQUEST = 250;
 const REQUEST_CONCURRENCY = 4;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -130,13 +130,9 @@ export function buildJevQuestion(source: JevSource, candidate: JevCandidate): Je
     };
 }
 
-/**
- * An upper bound on tokens: code-heavy ASCII JSON runs at 3-5 characters per token, and other text
- * (CJK, emoji) at no more than one token per UTF-8 byte.
- */
+/** An upper bound on tokens: byte-level tokenizers never emit more than one token per UTF-8 byte. */
 export function estimateTokens(text: string): number {
-    const asciiChars = text.replace(/[^\x00-\x7f]/g, '').length;
-    return Math.ceil(asciiChars / 3) + Buffer.byteLength(text) - asciiChars;
+    return Buffer.byteLength(text);
 }
 
 function batchQuestions(indices: number[], questions: JevNoulQuestion[], tokenBudget: number): number[][] {

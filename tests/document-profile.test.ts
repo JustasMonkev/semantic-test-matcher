@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { buildDocumentProfile, isTestLike, listDiffFiles } from '../src/services/document-profile.ts';
+import { buildDocumentProfile, isTestLike, listDiffFiles, listModeOnlyDiffFiles } from '../src/services/document-profile.ts';
 
 describe('buildDocumentProfile', () => {
     it('keeps raw test titles, including describe blocks and modifiers', () => {
@@ -136,6 +136,28 @@ diff --git a/src/socket.ts b/src/socket.ts
             buildDocumentProfile('/repo/src/gone.ts', '', '/repo', diff, '.').diffExcerpt,
             '@@ -1 +0,0 @@\n-export const goneTotal = 1;'
         );
+    });
+
+    it('masks regex literals after keywords and control statements', () => {
+        const profile = buildDocumentProfile('/repo/src/matchers.ts', [
+            "export function a(x: string) { return /test('after return')/.exec(x); }",
+            "export function b(x: string) { if (x) /it('after if')/.exec(x); }",
+            "export const c = (x: string) => typeof /describe('after typeof')/;",
+            "export const d = (total: number, count: number) => (total) / count / 2;",
+        ].join('\n'), '/repo');
+
+        assert.deepEqual(profile.testTitles, []);
+        const division = buildDocumentProfile('/repo/e2e/checkout.ts', "const half = (total) / 2; test('checks out', () => {});", '/repo');
+        assert.deepEqual(division.testTitles, ['checks out']);
+    });
+
+    it('does not run fixtures or helpers under test directories', () => {
+        const fixture = buildDocumentProfile('/repo/tests/fixtures/accounts.ts', "test('sample suite', () => {});", '/repo');
+        assert.equal(fixture.kind, 'fixture');
+        assert.equal(isTestLike(fixture), false);
+        assert.equal(isTestLike(buildDocumentProfile('/repo/tests/helpers/db.ts', 'export const db = {};', '/repo')), false);
+        assert.equal(isTestLike(buildDocumentProfile('/repo/tests/fixtures/sample.test.ts', '', '/repo')), true);
+        assert.equal(isTestLike(buildDocumentProfile('/repo/tests/checkout.ts', "it('checks out', () => {});", '/repo')), true);
     });
 
     it('ignores test calls inside comments and strings, so a source module is not test-like', () => {
@@ -815,7 +837,7 @@ describe('listDiffFiles', () => {
         );
     });
 
-    it('lists header-less renames, copies, binary changes, and empty new files', () => {
+    it('lists header-less renames, copies, binary changes, and empty new or deleted files', () => {
         const diff = [
             'diff --git a/src/old-name.ts b/src/new-name.ts',
             'similarity index 100%',
@@ -855,7 +877,27 @@ describe('listDiffFiles', () => {
             '/repo/src/icon.ts',
             '/repo/src/packed.ts',
             '/repo/src/empty.ts',
+            '/repo/src/removed.ts',
+            '/repo/src/removed-binary.ts',
         ]);
+        assert.deepEqual(listModeOnlyDiffFiles(diff, '/repo', '.'), ['/repo/src/mode.ts']);
+    });
+
+    it('profiles a header-less deletion from its deletion marker', () => {
+        const diff = [
+            'diff --git a/src/removed.ts b/src/removed.ts',
+            'deleted file mode 100644',
+            'index e69de29..0000000',
+            'diff --git a/src/kept.ts b/src/kept.ts',
+            '--- a/src/kept.ts',
+            '+++ b/src/kept.ts',
+            '@@ -1 +1 @@',
+            '-a',
+            '+b',
+        ].join('\n');
+
+        assert.equal(buildDocumentProfile('/repo/src/removed.ts', '', '/repo', diff, '.').diffExcerpt, 'deleted file mode 100644');
+        assert.equal(buildDocumentProfile('/repo/src/kept.ts', '', '/repo', diff, '.').diffExcerpt, '@@ -1 +1 @@\n-a\n+b');
     });
 
     it('strips a/ and b/ labels paired with /dev/null in plain diffs unless they are real', async () => {

@@ -126,6 +126,12 @@ describe('test command detection', () => {
         assert.equal(await detect({ devDependencies: { mocha: '1' } }), 'npx mocha');
     });
 
+    it('keeps option values given as separate words', async () => {
+        assert.equal(await detect({ scripts: { test: 'jest --config jest.integration.js --ci' } }), 'npx jest --config jest.integration.js --ci');
+        assert.equal(await detect({ scripts: { test: 'playwright test --project chromium' } }), 'npx playwright test --project chromium');
+        assert.equal(await detect({ scripts: { test: 'mocha -r ts-node/register --timeout 5000' } }), 'npx mocha -r ts-node/register --timeout 5000');
+    });
+
     it('does not reuse a script that already selects test paths', async () => {
         assert.equal(await detect({ scripts: { test: "mocha 'tests/**/*.test.js'" }, devDependencies: { mocha: '1' } }), 'npx mocha');
         assert.equal(await detect({ scripts: { test: 'jest tests' }, devDependencies: { jest: '1' } }), 'npx jest');
@@ -134,6 +140,8 @@ describe('test command detection', () => {
             'npx playwright test'
         );
         assert.equal(await detect({ scripts: { test: 'vitest run src' } }), undefined);
+        assert.equal(await detect({ scripts: { test: 'jest --ci tests' }, devDependencies: { jest: '1' } }), 'npx jest');
+        assert.equal(await detect({ scripts: { test: "mocha --spec 'tests/**'" }, devDependencies: { mocha: '1' } }), 'npx mocha');
     });
 
     it('gives no guess when the runner is unknown or package.json is missing or invalid', async () => {

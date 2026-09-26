@@ -39,6 +39,7 @@ interface DiffTarget {
 
 const GIT_DIFF_LINE_PREFIX = 'diff --git ';
 const DEV_NULL = '/dev/null';
+const DELETED_FILE_PREFIX = 'deleted file mode ';
 // Lines that show a header-less Git section changed content: a binary change or an empty new file.
 const HEADERLESS_CONTENT_PATTERN = /^(?:Binary files |GIT binary patch|new file mode )/;
 const FILE_HEADER_PREFIX_LENGTH = '--- '.length;
@@ -391,6 +392,22 @@ function readFileHeader(
     return isNewFileHeader ? fileMatches || diffPathMatches : diffPathMatches;
 }
 
+/** Whether a Git section deletes the profiled file, judged from its `diff --git` old path. */
+function isDeletedTarget(section: FileSection, target: DiffTarget): boolean {
+    const oldGitPath = section.gitPaths?.[0];
+    if (oldGitPath === undefined) {
+        return false;
+    }
+    const isTargetPath = (diffPath: string) => matchesDiffPath(diffPath, target.absolutePath, target.rootPath);
+    const diffPath = stripGitPrefix(oldGitPath, section.gitPrefixes?.[0], section, target.rootPath, isTargetPath);
+    return matchesDiffPath(
+        diffPath,
+        target.absolutePath,
+        target.rootPath,
+        target.allowCwdRelativeGitPaths ? target.cwd : undefined
+    );
+}
+
 /** The profiled file's changed lines and hunks, from a diff that may cover many files. */
 export function collectChangedLines(
     diffText: string | undefined,
@@ -415,8 +432,17 @@ export function collectChangedLines(
     let hunk: HunkCounts | undefined;
     // Text with no diff headers at all is read as bare `+`/`-` lines.
     let hasDiffHeaders = false;
+    // An empty or binary file's deletion has no hunks; its `deleted file mode` line marks the change.
+    let deletionMarker: string | undefined;
+    const keepDeletionMarker = () => {
+        if (deletionMarker !== undefined) {
+            changedLines.hunks.push(deletionMarker);
+            deletionMarker = undefined;
+        }
+    };
     for (const line of diffText.split(/\r?\n/)) {
         if (line.startsWith(GIT_DIFF_LINE_PREFIX)) {
+            keepDeletionMarker();
             section = startGitSection(line, relativePath, rootRelativePath);
             fileMatches = false;
             hunk = undefined;
@@ -427,7 +453,13 @@ export function collectChangedLines(
             readRenameOrCopyLine(line, section);
             continue;
         }
+        if (!hunk && line.startsWith(DELETED_FILE_PREFIX) && isDeletedTarget(section, target)) {
+            deletionMarker = line;
+            continue;
+        }
         if (!hunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
+            // Headers carry the deletion as hunks, so the marker is not needed.
+            deletionMarker = undefined;
             fileMatches = readFileHeader(line, section, target, fileMatches);
             if (line.startsWith('+++ ')) {
                 section = emptyFileSection();
@@ -471,30 +503,41 @@ export function collectChangedLines(
             }
         }
     }
+    keepDeletionMarker();
 
     return changedLines;
 }
 
-/** Absolute paths of the files a unified diff changes; a deleted file keeps its old path. */
-export function listDiffFiles(diffText: string, cwd: string, diffRoot?: string): string[] {
-    const basePath = resolveDiffRoot(cwd, diffRoot);
-    const files = new Set<string>();
+interface DiffFileScan {
+    changed: Set<string>;
+    /** Files whose only change is their mode, such as the executable bit. */
+    modeOnly: Set<string>;
+}
+
+function scanDiffFiles(diffText: string, basePath: string): DiffFileScan {
+    const scan: DiffFileScan = { changed: new Set(), modeOnly: new Set() };
     let section = emptyFileSection();
     let headerlessContentChanged = false;
     let deleted = false;
+    let modeChanged = false;
+    const headerlessPath = (side: 0 | 1) => section.gitPaths
+        && stripGitPrefix(section.gitPaths[side], section.gitPrefixes?.[side], section, basePath, () => false);
     // A Git section without `---`/`+++` headers: a pure rename or copy names its target on a
-    // `rename to`/`copy to` line; a binary change or an empty new file has only its `diff --git` paths.
-    // Mode-only changes and deletions leave no file content to profile.
+    // `rename to`/`copy to` line; a binary change, an empty new file, or an empty or binary deletion
+    // has only its `diff --git` paths; and a mode-only change leaves no content to profile.
     const addHeaderlessTarget = () => {
-        if (section.gitDiffLine === undefined || deleted) {
+        if (section.gitDiffLine === undefined) {
             return;
         }
-        const gitTargetPath = headerlessContentChanged && section.gitPaths
-            ? stripGitPrefix(section.gitPaths[1], section.gitPrefixes?.[1], section, basePath, () => false)
-            : undefined;
-        const targetPath = section.logicalPaths[1] ?? gitTargetPath;
-        if (targetPath !== undefined) {
-            files.add(path.resolve(basePath, targetPath));
+        const targetPath = deleted ? headerlessPath(0)
+            : section.logicalPaths[1] ?? (headerlessContentChanged ? headerlessPath(1) : undefined);
+        if (targetPath) {
+            scan.changed.add(path.resolve(basePath, targetPath));
+        } else if (modeChanged) {
+            const modePath = headerlessPath(1);
+            if (modePath) {
+                scan.modeOnly.add(path.resolve(basePath, modePath));
+            }
         }
     };
     let oldPath = '';
@@ -522,6 +565,7 @@ export function listDiffFiles(diffText: string, cwd: string, diffRoot?: string):
             section = startGitSection(line);
             headerlessContentChanged = false;
             deleted = false;
+            modeChanged = false;
             continue;
         }
         if (RENAME_OR_COPY_PATTERN.test(line)) {
@@ -529,7 +573,8 @@ export function listDiffFiles(diffText: string, cwd: string, diffRoot?: string):
             continue;
         }
         headerlessContentChanged ||= HEADERLESS_CONTENT_PATTERN.test(line);
-        deleted ||= line.startsWith('deleted file mode ');
+        deleted ||= line.startsWith(DELETED_FILE_PREFIX);
+        modeChanged ||= line.startsWith('old mode ');
         if (!line.startsWith('--- ') && !line.startsWith('+++ ')) {
             continue;
         }
@@ -543,9 +588,20 @@ export function listDiffFiles(diffText: string, cwd: string, diffRoot?: string):
         const changedPath = section.gitDiffLine === undefined
             ? plainChangedPath(oldPath, diffPath, basePath)
             : diffPath === DEV_NULL ? oldPath : diffPath;
-        files.add(path.resolve(basePath, changedPath));
+        scan.changed.add(path.resolve(basePath, changedPath));
         section = emptyFileSection();
     }
     addHeaderlessTarget();
-    return [...files];
+    return scan;
+}
+
+/** Absolute paths of the files a unified diff changes; a deleted file keeps its old path. */
+export function listDiffFiles(diffText: string, cwd: string, diffRoot?: string): string[] {
+    return [...scanDiffFiles(diffText, resolveDiffRoot(cwd, diffRoot)).changed];
+}
+
+/** Absolute paths of files whose only change in the diff is their mode, which leaves nothing to match. */
+export function listModeOnlyDiffFiles(diffText: string, cwd: string, diffRoot?: string): string[] {
+    const { changed, modeOnly } = scanDiffFiles(diffText, resolveDiffRoot(cwd, diffRoot));
+    return [...modeOnly].filter((file) => !changed.has(file));
 }

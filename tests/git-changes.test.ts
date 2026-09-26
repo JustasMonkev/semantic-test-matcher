@@ -47,6 +47,14 @@ describe('local Git changes', () => {
         assert.match(profile.diffExcerpt ?? '', /oldPrice/);
     });
 
+    it('ignores a change to the executable bit alone', async () => {
+        await fs.chmod(path.join(root, 'src/price.ts'), 0o755);
+        await fs.writeFile(path.join(root, 'src/gone.ts'), 'export const oldPrice = 2;\n');
+        const changes = await readGitChanges(root);
+
+        assert.deepEqual(changes.files.map(file => path.relative(changes.root, file)), ['src/gone.ts']);
+    });
+
     it('reads an uncolored diff even when Git is configured to always color', async () => {
         await git('config', 'color.ui', 'always');
         await git('config', 'color.diff', 'always');

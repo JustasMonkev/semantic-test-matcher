@@ -216,6 +216,19 @@ describe('match command rankers', () => {
         assert.ok(output.results[0].score > output.results[1].score);
     });
 
+    it('matches the deletion of an empty file, which has no hunks', async () => {
+        await fs.writeFile('empty.diff', [
+            'diff --git a/src/removed.ts b/src/removed.ts',
+            'deleted file mode 100644',
+            'index e69de29..0000000',
+            '',
+        ].join('\n'));
+
+        const { lines } = await runCli('--diff-file', 'empty.diff', '--diff-root', '.', '--ranker', 'heuristics', '--json');
+        // SAFETY: --json makes the command's last log line its serialized result.
+        assert.equal((JSON.parse(lines[lines.length - 1]) as { file: string }).file, path.join('src', 'removed.ts'));
+    });
+
     it('matches a deleted file from a plain diff with a/ and /dev/null labels', async () => {
         await fs.writeFile('tests/ledger.test.ts', "test('reconciles the ledger balance', () => {});");
         await fs.writeFile('gone.diff', [
@@ -520,6 +533,24 @@ describe('match command rankers', () => {
             assert.ok(lines.includes('e2e/checkout.ts'), lines.join('\n'));
             assert.ok(lines.includes('tests/price.test.ts'), lines.join('\n'));
             assert.ok(lines.every((line) => !line.startsWith('src/')), lines.join('\n'));
+        });
+
+        it('counts only runnable tests toward the candidate cap', async () => {
+            await fs.mkdir('src/generated');
+            await Promise.all(Array.from({ length: 1000 }, (_, index) =>
+                fs.writeFile(`src/generated/module-${index}.ts`, `export const value${index} = ${index};`)
+            ));
+            await execFileAsync('git', ['add', '.']);
+            await execFileAsync('git', ['-c', 'user.name=RBT test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false', 'commit', '-m', 'generated']);
+            await fs.mkdir('e2e');
+            await fs.writeFile('e2e/checkout.test.ts', "test('applies the discount at checkout', () => {});");
+            await fs.appendFile('src/price.ts', '\nexport const discountRate = 0.2;');
+            // Candidates are scanned in order: tests, then 1,000 sources in src, then e2e.
+            const { lines } = await runCli(
+                '--candidates', 'src', 'e2e', '--ranker', 'heuristics', '--selection-policy', 'conservative', '--top-k', '50', '--paths-only'
+            );
+
+            assert.ok(lines.includes('e2e/checkout.test.ts'), lines.join('\n'));
         });
 
         it('selects an edited __tests__ file itself from a broad candidate root', async () => {

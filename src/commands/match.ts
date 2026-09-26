@@ -20,7 +20,7 @@ import {
     type MatchCandidate,
     type RankedMatchCandidate,
 } from '../services/match.ts';
-import { buildDocumentProfile, isTestLike, listDiffFiles, resolveDiffRoot } from '../services/document-profile.ts';
+import { buildDocumentProfile, isTestLike, isTestLikeSource, listDiffFiles, resolveDiffRoot } from '../services/document-profile.ts';
 import { readGitChanges } from '../services/git-changes.ts';
 import { detectTestCommand, promptAndRunTests } from '../services/test-runner.ts';
 import { quoteShellArgument } from '../utils/shell.ts';
@@ -91,7 +91,8 @@ export function registerMatchCommand(program: Command): void {
                 config.match.candidatePaths,
                 config.match.includePatterns,
                 config.match.excludePatterns,
-                cwd
+                cwd,
+                changes.automatic ? (file) => isRunnableCandidate(file, cwd) : undefined
             );
             const candidates = await loadCandidates(candidateScan.files, cwd);
             const reports = await matchChangedFiles(changes, candidates, config, candidateScan.truncated, cwd);
@@ -198,6 +199,17 @@ async function keepGitChangesInRoot(files: string[], root: string, cwd: string):
         console.warn(`Warning: skipping ${path.relative(cwd, file)}, which resolves outside the repository`);
     }
     return files.filter((file) => !outside.has(file));
+}
+
+// Automatic mode runs its selection, so only test-like files may fill the candidate cap there.
+async function isRunnableCandidate(file: string, cwd: string): Promise<boolean> {
+    const relativePath = path.relative(cwd, file);
+    // A test file name decides it without reading the file.
+    if (isTestLikeSource(relativePath, '')) {
+        return true;
+    }
+    const text = await readCandidateText(file);
+    return text !== undefined && isTestLikeSource(relativePath, text);
 }
 
 async function loadCandidates(candidateFiles: string[], cwd: string) {

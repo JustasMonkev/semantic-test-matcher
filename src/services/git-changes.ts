@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { isAllowedFile } from '../utils/files.ts';
+import { listModeOnlyDiffFiles } from './unified-diff.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -33,9 +34,12 @@ export async function readGitChanges(cwd: string): Promise<{ files: string[]; di
     ]);
     // Tracked changes first, then untracked files; -z output ends every name with NUL.
     const changedPaths = [...names, untracked].join('').split('\0').filter(Boolean).map((file) => path.resolve(root, file));
+    const diffText = patches.join('');
+    // A mode-only change (e.g. chmod +x) leaves the content, and so the tests to run, as it was.
+    const modeOnly = new Set(listModeOnlyDiffFiles(diffText, root, root));
     return {
-        files: [...new Set(changedPaths)].filter(isAllowedFile),
-        diffText: patches.join(''),
+        files: [...new Set(changedPaths)].filter((file) => isAllowedFile(file) && !modeOnly.has(file)),
+        diffText,
         root,
     };
 }

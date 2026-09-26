@@ -54,11 +54,13 @@ export interface CollectCandidateFilesResult {
     truncated: boolean;
 }
 
+/** `accept` narrows the candidates; only accepted files count toward {@link MAX_CANDIDATE_FILES}. */
 export async function collectCandidateFilesDetailed(
     seeds: string[],
     includes: string[],
     excludes: string[],
-    cwd: string
+    cwd: string,
+    accept?: (absolutePath: string) => Promise<boolean>
 ): Promise<CollectCandidateFilesResult> {
     // A Set keeps discovery order and drops files reachable through several seeds.
     const files = new Set<string>();
@@ -67,9 +69,9 @@ export async function collectCandidateFilesDetailed(
     const excludeMatcher = createPatternMatcher(excludes, false);
     const relativePath = (absolute: string) => normalizePathSeparators(path.relative(cwd, absolute));
 
-    const addFile = (absolute: string) => {
+    const addFile = async (absolute: string) => {
         const relative = relativePath(absolute);
-        if (includeMatcher(relative) && !excludeMatcher(relative)) {
+        if (includeMatcher(relative) && !excludeMatcher(relative) && !files.has(absolute) && (!accept || await accept(absolute))) {
             files.add(absolute);
         }
     };
@@ -86,7 +88,7 @@ export async function collectCandidateFilesDetailed(
                     await walkDirectory(next);
                 }
             } else if (entry.isFile() && isAllowedFile(next)) {
-                addFile(next);
+                await addFile(next);
             }
         }
     };
@@ -101,7 +103,7 @@ export async function collectCandidateFilesDetailed(
             if (entry.isDirectory()) {
                 await walkDirectory(absolute);
             } else if (entry.isFile()) {
-                addFile(absolute);
+                await addFile(absolute);
             }
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {

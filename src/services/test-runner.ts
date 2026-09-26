@@ -21,10 +21,35 @@ const RUNNER_DEPENDENCIES: Array<[string, string]> = [
     ['mocha', 'npx mocha'],
 ];
 
+// Common runner options that take their value as the next word, so that word is not a test path.
+const VALUE_OPTIONS: Record<string, ReadonlySet<string>> = {
+    jest: new Set([
+        '-c', '--config', '--rootDir', '--roots', '--selectProjects', '--ignoreProjects', '-t', '--testNamePattern',
+        '--testEnvironment', '--env', '-w', '--maxWorkers', '--maxConcurrency', '--reporters', '--shard',
+        '--testTimeout', '--outputFile', '--coverageDirectory', '--coverageProvider', '--seed', '--cacheDirectory',
+    ]),
+    vitest: new Set([
+        '-c', '--config', '-r', '--root', '--dir', '--project', '--reporter', '--outputFile', '--environment',
+        '--pool', '--shard', '--mode', '-t', '--testNamePattern', '--maxWorkers', '--testTimeout', '--retry',
+    ]),
+    playwright: new Set([
+        '-c', '--config', '--project', '--reporter', '-j', '--workers', '-g', '--grep', '--grep-invert', '--shard',
+        '--timeout', '--retries', '--output', '--repeat-each', '--max-failures', '--trace', '--browser',
+        '--global-timeout', '--tsconfig',
+    ]),
+    mocha: new Set([
+        '--config', '--package', '-r', '--require', '-R', '--reporter', '-O', '--reporter-option', '-t', '--timeout',
+        '-s', '--slow', '-g', '--grep', '-f', '--fgrep', '-u', '--ui', '--extension', '--ignore', '--exclude',
+        '-j', '--jobs', '--retries', '-n', '--node-option',
+    ]),
+};
+// Options whose value names test files, which would run alongside the appended selection.
+const SELECTOR_OPTIONS = new Set(['--spec', '--file', '--testPathPattern', '--testPathPatterns', '--testMatch']);
+
 /**
- * Whether a runner script passes its own positional arguments, such as `jest tests` or
- * `mocha 'tests/**'`; with the selected files appended, the runner would still run those too.
- * A value given as a separate word (`--config jest.config.js`) cannot be told apart, so it counts.
+ * Whether a runner script already names test files, as in `jest tests`, `mocha 'tests/**'`, or
+ * `mocha --spec x`; with the selected files appended, the runner would still run those too.
+ * A value that follows an unknown option counts as a path, so that doubt never widens a run.
  */
 function selectsTestPaths(script: string): boolean {
     let args: string[];
@@ -34,7 +59,17 @@ function selectsTestPaths(script: string): boolean {
         return true;
     }
     const runnerWords = args[0] === 'playwright' || (args[0] === 'vitest' && args[1] === 'run') ? 2 : 1;
-    return args.slice(runnerWords).some((arg) => !arg.startsWith('-'));
+    const valueOptions = VALUE_OPTIONS[args[0]] ?? new Set<string>();
+    for (let index = runnerWords; index < args.length; index += 1) {
+        const [name] = args[index].split('=', 1);
+        if (!args[index].startsWith('-') || SELECTOR_OPTIONS.has(name)) {
+            return true;
+        }
+        if (!args[index].includes('=') && valueOptions.has(name)) {
+            index += 1;
+        }
+    }
+    return false;
 }
 
 /** Guesses the command that runs chosen test files, from package.json; undefined when unsure. */
