@@ -116,6 +116,28 @@ diff --git a/src/socket.ts b/src/socket.ts
         assert.deepEqual(profile.changePhraseTokens, ['screenshot', 'capture']);
     });
 
+    it('attributes plain-diff hunks labelled against /dev/null to the unlabelled path', () => {
+        const diff = [
+            '--- /dev/null',
+            '+++ b/src/created.ts',
+            '@@ -0,0 +1 @@',
+            '+export const createdTotal = 1;',
+            '--- a/src/gone.ts',
+            '+++ /dev/null',
+            '@@ -1 +0,0 @@',
+            '-export const goneTotal = 1;',
+        ].join('\n');
+
+        assert.equal(
+            buildDocumentProfile('/repo/src/created.ts', '', '/repo', diff, '.').diffExcerpt,
+            '@@ -0,0 +1 @@\n+export const createdTotal = 1;'
+        );
+        assert.equal(
+            buildDocumentProfile('/repo/src/gone.ts', '', '/repo', diff, '.').diffExcerpt,
+            '@@ -1 +0,0 @@\n-export const goneTotal = 1;'
+        );
+    });
+
     it('treats files under __tests__ as tests', () => {
         assert.equal(buildDocumentProfile('/repo/src/__tests__/checkout.ts', '', '/repo').kind, 'test');
         assert.equal(buildDocumentProfile('/repo/src/checkout.ts', '', '/repo').kind, 'source');
@@ -748,7 +770,7 @@ describe('listDiffFiles', () => {
         ]);
     });
 
-    it('lists pure renames and copies that have no file headers', () => {
+    it('lists header-less renames, copies, binary changes, and empty new files', () => {
         const diff = [
             'diff --git a/src/old-name.ts b/src/new-name.ts',
             'similarity index 100%',
@@ -761,9 +783,55 @@ describe('listDiffFiles', () => {
             'similarity index 100%',
             'copy from src/base.ts',
             'copy to src/base copy.ts',
+            'diff --git old/src/icon.ts new/src/icon.ts',
+            'index 1234567..89abcde 100644',
+            'Binary files old/src/icon.ts and new/src/icon.ts differ',
+            'diff --git a/src/packed.ts b/src/packed.ts',
+            'index 1234567..89abcde 100644',
+            'GIT binary patch',
+            'literal 4',
+            'LcmZ?wU|;|M00aO5',
+            '',
+            'diff --git a/src/empty.ts b/src/empty.ts',
+            'new file mode 100644',
+            'index 0000000..e69de29',
+            'diff --git a/src/removed.ts b/src/removed.ts',
+            'deleted file mode 100644',
+            'index e69de29..0000000',
+            'diff --git a/src/removed-binary.ts b/src/removed-binary.ts',
+            'deleted file mode 100644',
+            'index 1234567..0000000',
+            'Binary files a/src/removed-binary.ts and /dev/null differ',
         ].join('\n');
 
-        assert.deepEqual(listDiffFiles(diff, '/repo', '.'), ['/repo/src/new-name.ts', '/repo/src/base copy.ts']);
+        assert.deepEqual(listDiffFiles(diff, '/repo', '.'), [
+            '/repo/src/new-name.ts',
+            '/repo/src/base copy.ts',
+            '/repo/src/icon.ts',
+            '/repo/src/packed.ts',
+            '/repo/src/empty.ts',
+        ]);
+    });
+
+    it('strips a/ and b/ labels paired with /dev/null in plain diffs unless they are real', async () => {
+        const diff = [
+            '--- /dev/null',
+            '+++ b/src/new.ts',
+            '@@ -0,0 +1 @@',
+            '+export const created = true;',
+            '--- a/src/gone.ts',
+            '+++ /dev/null',
+            '@@ -1 +0,0 @@',
+            '-export const gone = true;',
+        ].join('\n');
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-plain-null-'));
+
+        assert.deepEqual(listDiffFiles(diff, root, '.'), [path.join(root, 'src/new.ts'), path.join(root, 'src/gone.ts')]);
+        await fs.mkdir(path.join(root, 'b/src'), { recursive: true });
+        await fs.writeFile(path.join(root, 'b/src/new.ts'), '');
+        await fs.mkdir(path.join(root, 'a/src'), { recursive: true });
+        assert.deepEqual(listDiffFiles(diff, root, '.'), [path.join(root, 'b/src/new.ts'), path.join(root, 'a/src/gone.ts')]);
+        await fs.rm(root, { recursive: true, force: true });
     });
 
     it('keeps plain unified diff paths and drops their timestamps', () => {

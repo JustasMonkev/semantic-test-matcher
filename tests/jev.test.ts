@@ -203,6 +203,7 @@ describe('JevScorer', () => {
         const result = await makeScorer(impl).score(makeSource(TABS_DIFF), [TABS_TEST]);
 
         assert.equal(calls.length, 3);
+        assert.equal(result.requests, 3);
         assert.equal(result.scores.get('tests/tabs.spec.ts'), 0.9);
     });
 

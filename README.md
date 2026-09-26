@@ -120,7 +120,8 @@ rbt match prompts-idea/src/price-engine.ts --candidates prompts-idea/tests
 git diff main > pr.diff
 rbt match --diff-file pr.diff --candidates tests
 
-npx playwright test $(rbt match --diff-file pr.diff --paths-only)
+# One path per line; xargs -0 keeps spaces in paths and runs nothing for an empty selection
+rbt match --diff-file pr.diff --paths-only | tr '\n' '\0' | xargs -0 -r npx playwright test
 
 cat prompts-idea/candidate-list.txt | \
   rbt match prompts-idea/src/price-engine.ts \

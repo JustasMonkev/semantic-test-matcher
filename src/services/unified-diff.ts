@@ -38,6 +38,9 @@ interface DiffTarget {
 }
 
 const GIT_DIFF_LINE_PREFIX = 'diff --git ';
+const DEV_NULL = '/dev/null';
+// Lines that show a header-less Git section changed content: a binary change or an empty new file.
+const HEADERLESS_CONTENT_PATTERN = /^(?:Binary files |GIT binary patch|new file mode )/;
 const FILE_HEADER_PREFIX_LENGTH = '--- '.length;
 const HUNK_HEADER_PATTERN = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/;
 const HEADER_TIMESTAMP_PATTERN = /\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?: [+-]\d{4})?$/;
@@ -103,9 +106,26 @@ function isStandardPrefixPair(oldPath: string, newPath: string): boolean {
     return oldPath.startsWith('a/') && newPath.startsWith('b/') && oldPath.slice(2) === newPath.slice(2);
 }
 
-// Plain diffs can use Git's a/ and b/ prefixes too; a real b/ directory wins.
-function stripPlainPrefixPair(oldPath: string, newPath: string, basePath: string): string {
-    return isStandardPrefixPair(oldPath, newPath) && !existsSync(path.resolve(basePath, newPath)) ? newPath.slice(2) : newPath;
+/** Plain diffs can use Git's a/ and b/ labels too, with /dev/null for an added or deleted side. */
+function isPlainPrefixPair(oldPath: string, newPath: string): boolean {
+    return isStandardPrefixPair(oldPath, newPath)
+        || oldPath === DEV_NULL && newPath.startsWith('b/')
+        || newPath === DEV_NULL && oldPath.startsWith('a/');
+}
+
+function stripPlainLabel(diffPath: string): string {
+    return diffPath === DEV_NULL ? diffPath : diffPath.slice(2);
+}
+
+/** The path a plain diff changes (its old path for a deletion), without a/ or b/ labels unless they are real. */
+function plainChangedPath(oldPath: string, newPath: string, basePath: string): string {
+    const changedPath = newPath === DEV_NULL ? oldPath : newPath;
+    if (!isPlainPrefixPair(oldPath, newPath)) {
+        return changedPath;
+    }
+    // A deleted file is gone, so only its directory can show that a/ is real.
+    const realPath = path.resolve(basePath, changedPath);
+    return existsSync(newPath === DEV_NULL ? path.dirname(realPath) : realPath) ? changedPath : changedPath.slice(2);
 }
 
 /** Splits unquoted `diff --git` paths, which may contain spaces, after the last `<oldPath> `. */
@@ -347,12 +367,12 @@ function readFileHeader(
             section.plainOldPath = diffPath;
         } else if (
             section.plainOldPath !== undefined
-            && isStandardPrefixPair(section.plainOldPath, diffPath)
+            && isPlainPrefixPair(section.plainOldPath, diffPath)
             && !isTargetPath(section.plainOldPath)
             && !isTargetPath(diffPath)
         ) {
-            fileMatches = isTargetPath(section.plainOldPath.slice(2));
-            diffPath = diffPath.slice(2);
+            fileMatches = isTargetPath(stripPlainLabel(section.plainOldPath));
+            diffPath = stripPlainLabel(diffPath);
         }
     }
 
@@ -458,10 +478,20 @@ export function listDiffFiles(diffText: string, cwd: string, diffRoot?: string):
     const basePath = resolveDiffRoot(cwd, diffRoot);
     const files = new Set<string>();
     let section = emptyFileSection();
-    // A pure rename or copy has no `---`/`+++` headers, only its `rename to`/`copy to` line.
+    let headerlessContentChanged = false;
+    let deleted = false;
+    // A Git section without `---`/`+++` headers: a pure rename or copy names its target on a
+    // `rename to`/`copy to` line; a binary change or an empty new file has only its `diff --git` paths.
+    // Mode-only changes and deletions leave no file content to profile.
     const addHeaderlessTarget = () => {
-        const targetPath = section.logicalPaths[1];
-        if (section.gitDiffLine !== undefined && targetPath !== undefined) {
+        if (section.gitDiffLine === undefined || deleted) {
+            return;
+        }
+        const gitTargetPath = headerlessContentChanged && section.gitPaths
+            ? stripGitPrefix(section.gitPaths[1], section.gitPrefixes?.[1], section, basePath, () => false)
+            : undefined;
+        const targetPath = section.logicalPaths[1] ?? gitTargetPath;
+        if (targetPath !== undefined) {
             files.add(path.resolve(basePath, targetPath));
         }
     };
@@ -488,26 +518,30 @@ export function listDiffFiles(diffText: string, cwd: string, diffRoot?: string):
         if (line.startsWith(GIT_DIFF_LINE_PREFIX)) {
             addHeaderlessTarget();
             section = startGitSection(line);
+            headerlessContentChanged = false;
+            deleted = false;
             continue;
         }
         if (RENAME_OR_COPY_PATTERN.test(line)) {
             readRenameOrCopyLine(line, section);
             continue;
         }
+        headerlessContentChanged ||= HEADERLESS_CONTENT_PATTERN.test(line);
+        deleted ||= line.startsWith('deleted file mode ');
         if (!line.startsWith('--- ') && !line.startsWith('+++ ')) {
             continue;
         }
         const isNewFileHeader = line.startsWith('+++ ');
         const prefix = section.gitPrefixes?.[isNewFileHeader ? 1 : 0];
-        let diffPath = stripGitPrefix(readFileHeaderPath(line), prefix, section, basePath, () => false);
+        const diffPath = stripGitPrefix(readFileHeaderPath(line), prefix, section, basePath, () => false);
         if (!isNewFileHeader) {
             oldPath = diffPath;
             continue;
         }
-        if (section.gitDiffLine === undefined) {
-            diffPath = stripPlainPrefixPair(oldPath, diffPath, basePath);
-        }
-        files.add(path.resolve(basePath, diffPath === '/dev/null' ? oldPath : diffPath));
+        const changedPath = section.gitDiffLine === undefined
+            ? plainChangedPath(oldPath, diffPath, basePath)
+            : diffPath === DEV_NULL ? oldPath : diffPath;
+        files.add(path.resolve(basePath, changedPath));
         section = emptyFileSection();
     }
     addHeaderlessTarget();

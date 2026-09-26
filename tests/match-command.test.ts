@@ -195,6 +195,25 @@ describe('match command rankers', () => {
         assert.ok(output.results[0].score > output.results[1].score);
     });
 
+    it('matches a deleted file from a plain diff with a/ and /dev/null labels', async () => {
+        await fs.writeFile('tests/ledger.test.ts', "test('reconciles the ledger balance', () => {});");
+        await fs.writeFile('gone.diff', [
+            '--- a/src/gone.ts',
+            '+++ /dev/null',
+            '@@ -1,3 +0,0 @@',
+            '-export function reconcileLedgerBalance(entries: number[]) {',
+            '-    return entries.reduce((sum, entry) => sum + entry, 0);',
+            '-}',
+        ].join('\n'));
+
+        const { lines } = await runCli('--diff-file', 'gone.diff', '--diff-root', '.', '--ranker', 'heuristics', '--json');
+        // SAFETY: --json makes the command's last log line its serialized result.
+        const output = JSON.parse(lines[lines.length - 1]) as MatchOutput & { file: string };
+
+        assert.equal(output.file, path.join('src', 'gone.ts'));
+        assert.equal(output.results[0].file, 'tests/ledger.test.ts');
+    });
+
     it('rejects a missing changed file without a diff and keeps other read errors', async () => {
         await assert.rejects(
             runMatchOn('src/gone.ts', '--ranker', 'heuristics'),

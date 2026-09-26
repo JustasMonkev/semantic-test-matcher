@@ -50,6 +50,7 @@ export interface JevScorerOptions {
 
 export interface JevScoreResult {
     scores: Map<string, number>;
+    /** HTTP requests sent, retries included. */
     requests: number;
     cacheHits: number;
     inputTokens: number;
@@ -245,11 +246,11 @@ export class JevScorer {
 
         try {
             await mapWithConcurrency(batchQuestions(uncached, questions), REQUEST_CONCURRENCY, async (batch) => {
-                const response = await this.request({
+                const { response, attempts } = await this.request({
                     state,
                     questions: Object.fromEntries(batch.map((index) => [questionId(index), questions[index]])),
                 });
-                result.requests += 1;
+                result.requests += attempts;
                 result.inputTokens += response.usage?.input_tokens ?? 0;
                 result.model = response.model;
 
@@ -281,14 +282,14 @@ export class JevScorer {
     private async request(body: {
         state: ReturnType<typeof buildJevState>;
         questions: Record<string, JevNoulQuestion>;
-    }): Promise<JevResponse> {
+    }): Promise<{ response: JevResponse; attempts: number }> {
         const payload = JSON.stringify({ model: this.options.model, ...body });
         const retryBaseMs = this.options.retryBaseMs ?? 500;
 
         for (let attempt = 1; ; attempt += 1) {
             const outcome = await this.attempt(payload);
             if ('response' in outcome) {
-                return outcome.response;
+                return { response: outcome.response, attempts: attempt };
             }
             if (attempt >= MAX_ATTEMPTS) {
                 throw new JevError(`Jev request failed after ${attempt} attempts (${outcome.failure})`);
