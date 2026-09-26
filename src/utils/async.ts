@@ -1,3 +1,8 @@
+// Use the global timer so callers' timer mocks also control retries and lock polling.
+export async function sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Maps items with at most `limit` workers in flight. After a worker fails no new items
  * start; the first error is rethrown once the in-flight items have settled.

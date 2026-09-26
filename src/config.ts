@@ -1,8 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { isParentPath } from './utils/patterns.ts';
+import { isWorkspaceContainedPath } from './utils/paths.ts';
+import { mergeArrays } from './utils/arrays.ts';
+import { clamp, firstFiniteNumber, parseBoolean, parseLogLevel, readEnv, type LogLevel } from './utils/values.ts';
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+export { clamp, type LogLevel } from './utils/values.ts';
 
 /**
  * jev: TypeSafe Jev scores + structural heuristics (default; sends diffs and test titles to the TypeSafe API).
@@ -80,61 +82,6 @@ const DEFAULT_CONFIG = {
     },
 } satisfies AppConfig;
 
-export function clamp(value: number, min: number, max: number): number {
-    if (Number.isNaN(value)) return min;
-    return Math.min(Math.max(value, min), max);
-}
-
-// Blank strings and null mean "not set": `Number('')` and `Number(null)` are 0.
-function firstFiniteNumber(...values: Array<unknown>): number | undefined {
-    for (const value of values) {
-        if (value === null || (typeof value === 'string' && !value.trim())) {
-            continue;
-        }
-        const parsed = Number(value);
-        if (Number.isFinite(parsed)) {
-            return parsed;
-        }
-    }
-
-    return undefined;
-}
-
-// CI often sets variables to empty strings; treat those as unset so config and defaults still apply.
-function readEnv(name: string): string | undefined {
-    const value = process.env[name];
-    return value?.trim() ? value : undefined;
-}
-
-// Unrecognized values count as false rather than falling through to the next source.
-function parseBoolean(value: unknown): boolean {
-    if (typeof value === 'boolean') {
-        return value;
-    }
-    if (typeof value === 'string') {
-        if (value === '1' || value === 'true' || value === 'yes') {
-            return true;
-        }
-        if (value === '0' || value === 'false' || value === 'no') {
-            return false;
-        }
-    }
-    return false;
-}
-
-function parseLogLevel(value?: string): LogLevel {
-    const normalized = (value || '').trim().toLowerCase();
-    if (!normalized) {
-        return 'info';
-    }
-
-    if (normalized === 'debug' || normalized === 'info' || normalized === 'warn' || normalized === 'error') {
-        return normalized;
-    }
-
-    throw new Error(`Invalid log level "${value}". Expected "debug", "info", "warn", or "error".`);
-}
-
 function parseRanker(value: unknown): Ranker {
     const normalized = String(value ?? '').trim().toLowerCase();
     if (normalized === 'jev' || normalized === 'heuristics') {
@@ -152,16 +99,6 @@ function parseSelectionPolicy(value: unknown): SelectionPolicy {
     throw new Error(`Invalid selection policy "${value}". Expected "adaptive", "conservative", or "targeted".`);
 }
 
-function mergeArrays(left: string[] = [], right: string[] = []): string[] {
-    if (!left.length) {
-        return right;
-    }
-    if (!right.length) {
-        return left;
-    }
-    return [...new Set([...left, ...right])];
-}
-
 function parseJsonConfig(raw: string, filePath: string): AppConfig {
     try {
         const parsed = JSON.parse(raw) as AppConfig;
@@ -169,35 +106,6 @@ function parseJsonConfig(raw: string, filePath: string): AppConfig {
     } catch (error) {
         throw new Error(`Failed to parse config file ${filePath}: ${(error as Error).message}`);
     }
-}
-
-async function resolveRealPath(targetPath: string): Promise<string> {
-    let current = path.resolve(targetPath);
-    const suffix: string[] = [];
-
-    while (true) {
-        try {
-            const realPath = await fs.realpath(current);
-            return suffix.length ? path.resolve(realPath, ...suffix.reverse()) : realPath;
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-                throw error;
-            }
-
-            const parent = path.dirname(current);
-            if (parent === current) {
-                return current;
-            }
-
-            suffix.push(path.basename(current));
-            current = parent;
-        }
-    }
-}
-
-async function isWorkspaceContainedPath(targetPath: string, workspace: string): Promise<boolean> {
-    return isParentPath(workspace, targetPath) &&
-        isParentPath(workspace, await resolveRealPath(targetPath));
 }
 
 // An auto-discovered config comes from the repo being tested, so it must not reach outside it.

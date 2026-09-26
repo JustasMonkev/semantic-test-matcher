@@ -217,6 +217,24 @@ describe('JevScorer', () => {
         assert.deepEqual(delays, [30_000]);
     });
 
+    it('waits until an HTTP-date retry-after', async (t) => {
+        const delays: number[] = [];
+        const realSetTimeout = globalThis.setTimeout;
+        t.mock.method(globalThis, 'setTimeout', (callback: () => void, ms: number) => {
+            delays.push(ms);
+            return realSetTimeout(callback, 0);
+        });
+        const retryAt = new Date(Date.now() + 20_000).toUTCString();
+        const { impl } = fakeFetch((body, call) => (
+            call === 0 ? new Response('slow down', { status: 429, headers: { 'retry-after': retryAt } })
+                : answer(body, byTabs)
+        ));
+        await makeScorer(impl, { skipCache: true }).score(makeSource(TABS_DIFF), [TABS_TEST]);
+
+        // HTTP dates have one-second precision.
+        assert.ok(delays[0] > 18_000 && delays[0] <= 20_000, String(delays));
+    });
+
     it('stops sending batches after one fails and caches the answers already received', async () => {
         const { impl, calls } = fakeFetch((body, call) => (
             call === 0 ? new Response('bad request', { status: 400 }) : answer(body, () => 0.3)
@@ -249,6 +267,16 @@ describe('JevScorer', () => {
     it('rejects responses that are missing an answer', async () => {
         const { impl } = fakeFetch(() => Response.json({ model: 'jev-1.13.0', answers: {} }));
         await assert.rejects(makeScorer(impl).score(makeSource(TABS_DIFF), [TABS_TEST]), /no answer for tests\/tabs\.spec\.ts/);
+    });
+
+    it('rejects answers that are not probabilities', async () => {
+        for (const noul of [-0.1, 1.5]) {
+            const { impl } = fakeFetch((body) => answer(body, () => noul));
+            await assert.rejects(
+                makeScorer(impl, { skipCache: true }).score(makeSource(TABS_DIFF), [TABS_TEST]),
+                /no answer for tests\/tabs\.spec\.ts/
+            );
+        }
     });
 
     it('requires an API key', () => {

@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { interleaveUniqueTokens } from '../utils/arrays.ts';
+import { normalizePathSeparators } from '../utils/paths.ts';
 import { canonicalizeToken, splitIntoParts, tokenizeText, uniqueTokens } from './text-utils.ts';
 import { collectChangedLines, type ChangedLines } from './unified-diff.ts';
 
@@ -321,8 +323,7 @@ function collectRareAnchorTokens(
 }
 
 function collectPathSegments(value: string): string[] {
-    const segments = value
-        .replace(/\\/g, '/')
+    const segments = normalizePathSeparators(value)
         .split('/')
         .flatMap((segment) => segment.split(/[._-]+/))
         .map((segment) => canonicalizeToken(segment, { skipStopWords: true }))
@@ -346,34 +347,6 @@ function collectPathFamilyTokens(relativePath: string, text: string): string[] {
     return uniqueTokens(
         values.flatMap((value) => buildPathFamilyTokensFromSegments(collectPathSegments(value)))
     ).slice(0, MAX_PATH_FAMILY_TOKENS);
-}
-
-function interleaveUniqueTokens(groups: string[][], limit: number): string[] {
-    const tokens: string[] = [];
-    const seen = new Set<string>();
-
-    for (let index = 0; tokens.length < limit; index += 1) {
-        let hasValue = false;
-        for (const group of groups) {
-            const token = group[index];
-            if (token === undefined) {
-                continue;
-            }
-            hasValue = true;
-            if (!seen.has(token)) {
-                seen.add(token);
-                tokens.push(token);
-                if (tokens.length === limit) {
-                    break;
-                }
-            }
-        }
-        if (!hasValue) {
-            break;
-        }
-    }
-
-    return tokens;
 }
 
 function collectChangeSignalValues(changedLines: string[]): string[] {
@@ -451,8 +424,7 @@ function collectChangePhraseTokens(changedLines: ChangedLines, relativePath: str
     }).slice(0, MAX_CHANGE_PHRASE_TOKENS);
 }
 
-// An unterminated string is matched and kept as-is instead of failing: every later quote
-// it spans would fail the same way, so retrying at each one only made stripping quadratic.
+// Keeps an unterminated string instead of failing the match, which made the scan retry at every quote.
 function stripClosedString(match: string, closingQuote?: string): string {
     return closingQuote ? ' ' : match;
 }
@@ -479,7 +451,7 @@ function collectLateCallTokens(text: string, contentTokens: string[]): string[] 
 }
 
 function determineKind(relativePath: string): DocumentKind {
-    const normalized = relativePath.replace(/\\/g, '/');
+    const normalized = normalizePathSeparators(relativePath);
     if (/\.(test|spec)\.[cm]?[jt]sx?$/i.test(normalized) || /(^|\/)(test|tests)\//i.test(normalized)) {
         return 'test';
     }
@@ -539,7 +511,7 @@ export function buildDocumentProfile(
     diffRoot?: string
 ): DocumentProfile {
     const absolutePath = path.resolve(cwd, filePath);
-    const relativePath = path.relative(cwd, absolutePath).replace(/\\/g, '/');
+    const relativePath = normalizePathSeparators(path.relative(cwd, absolutePath));
     const basename = path.basename(absolutePath);
     const basenameTokens = tokenizeText(basename);
     const stemTokens = collectStemTokens(basename);

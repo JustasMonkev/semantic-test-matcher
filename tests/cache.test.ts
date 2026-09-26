@@ -15,11 +15,9 @@ async function makeTempCacheFile(): Promise<string> {
 }
 
 describe('buildCacheKey', () => {
-    it('normalizes whitespace so equivalent texts share a key', () => {
-        assert.equal(
-            buildCacheKey('typesafe', 'model', 'hello   world'),
-            buildCacheKey('typesafe', 'model', ' hello\r\nworld ')
-        );
+    it('keeps whitespace significant, since it can be the change being scored', () => {
+        assert.notEqual(buildCacheKey('typesafe', 'model', 'a  b'), buildCacheKey('typesafe', 'model', 'a b'));
+        assert.equal(buildCacheKey('typesafe', 'model', 'a\r\nb'), buildCacheKey('typesafe', 'model', 'a\nb'));
     });
 
     it('separates keys by provider, model, and text', () => {

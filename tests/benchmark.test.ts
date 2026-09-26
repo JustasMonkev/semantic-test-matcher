@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { registerBenchmarkCommand } from '../src/commands/benchmark.ts';
+import { getJevCacheEntryCount } from '../src/services/jev.ts';
 
 describe('benchmark command', () => {
     let cwd: string;
@@ -79,6 +80,31 @@ describe('benchmark command', () => {
             program.parseAsync(['benchmark', '--cases', 'cases.json', '--candidates', 'tests', '--json'], { from: 'user' }),
             /TYPESAFE_API_KEY is required/
         );
+    });
+
+    it('keeps Jev answers already received when a later case fails', async (t) => {
+        await makeWorkspace();
+        process.env.TYPESAFE_API_KEY = 'test-key';
+        t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+            // SAFETY: JevScorer always sends a JSON body with a questions map.
+            const { questions } = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> };
+            return Response.json({
+                model: 'jev-1.13.0',
+                answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.9 }])),
+            });
+        });
+        await fs.writeFile('cases.json', JSON.stringify([
+            { source: 'src/price.ts', expectedTop1: 'tests/price.test.ts' },
+            { source: 'src/missing.ts' },
+        ]));
+        const program = new Command();
+        registerBenchmarkCommand(program);
+
+        await assert.rejects(
+            program.parseAsync(['benchmark', '--cases', 'cases.json', '--candidates', 'tests', '--json'], { from: 'user' }),
+            /Benchmark source not found: src\/missing\.ts/
+        );
+        assert.equal(await getJevCacheEntryCount('.rbt/cache'), 1);
     });
 
     it('scores a deleted source from its diff and rejects one without a diff', async () => {

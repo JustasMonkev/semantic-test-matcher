@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { normalizePathSeparators } from '../utils/paths.ts';
 import { resolveConfig } from '../config.ts';
 import { buildDocumentProfile, type DocumentProfile } from '../services/document-profile.ts';
 import { JEV_API_KEY_ENV, JevScorer } from '../services/jev.ts';
@@ -36,12 +37,8 @@ interface PreparedCandidate {
     profile: DocumentProfile;
 }
 
-function normalizeRelativePath(filePath: string): string {
-    return filePath.replace(/\\/g, '/');
-}
-
 function normalizeOptionalPaths(values?: string[]): string[] | undefined {
-    return values?.map(normalizeRelativePath);
+    return values?.map(normalizePathSeparators);
 }
 
 function getExpectedTop1(entry: BenchmarkCase): string | undefined {
@@ -70,8 +67,8 @@ async function loadBenchmarkCases(filePath: string): Promise<BenchmarkCase[]> {
     const parsed = JSON.parse(raw) as BenchmarkCase[];
 
     return parsed.map((entry) => ({
-        source: normalizeRelativePath(entry.source),
-        expectedTop1: entry.expectedTop1 ? normalizeRelativePath(entry.expectedTop1) : undefined,
+        source: normalizePathSeparators(entry.source),
+        expectedTop1: entry.expectedTop1 ? normalizePathSeparators(entry.expectedTop1) : undefined,
         expectedTop3: normalizeOptionalPaths(entry.expectedTop3),
         expectedTop10Includes: normalizeOptionalPaths(entry.expectedTop10Includes),
         diffText: entry.diffText,
@@ -86,7 +83,7 @@ async function prepareCandidates(candidateFiles: string[], cwd: string): Promise
         }
         const candidateProfile = buildDocumentProfile(candidatePath, candidateText, cwd);
         return {
-            file: normalizeRelativePath(path.relative(cwd, candidatePath)),
+            file: normalizePathSeparators(path.relative(cwd, candidatePath)),
             preview: candidateProfile.preview,
             profile: candidateProfile,
         };
@@ -173,87 +170,90 @@ export function registerBenchmarkCommand(program: Command): void {
             let top10IncludeTotal = 0;
             const misses: BenchmarkMiss[] = [];
 
-            for (const entry of cases) {
-                const sourcePath = path.resolve(cwd, entry.source);
-                const sourceFileText = await readFileIfExists(sourcePath);
-                const sourceText = sourceFileText ?? '';
-                const sourceProfile = buildDocumentProfile(
-                    sourcePath,
-                    sourceText,
-                    cwd,
-                    entry.diffText,
-                    options.diffRoot
-                );
-                if (sourceFileText === undefined && !sourceProfile.diffExcerpt) {
-                    throw new Error(`Benchmark source not found: ${entry.source} (add a diffText that deletes it)`);
-                }
-                let caseCandidates = preparedCandidates.filter(
-                    (candidate) => path.resolve(cwd, candidate.file) !== sourcePath
-                );
-                if (jevScorer) {
-                    const result = await jevScorer.score({ profile: sourceProfile, text: sourceText }, caseCandidates);
-                    jevStats.requests += result.requests;
-                    jevStats.cacheHits += result.cacheHits;
-                    jevStats.inputTokens += result.inputTokens;
-                    caseCandidates = caseCandidates.map((candidate) => ({
-                        ...candidate,
-                        jevScore: result.scores.get(candidate.file),
-                    }));
-                }
+            // Flush even when a later case fails, so answers already paid for stay cached.
+            try {
+                for (const entry of cases) {
+                    const sourcePath = path.resolve(cwd, entry.source);
+                    const sourceFileText = await readFileIfExists(sourcePath);
+                    const sourceText = sourceFileText ?? '';
+                    const sourceProfile = buildDocumentProfile(
+                        sourcePath,
+                        sourceText,
+                        cwd,
+                        entry.diffText,
+                        options.diffRoot
+                    );
+                    if (sourceFileText === undefined && !sourceProfile.diffExcerpt) {
+                        throw new Error(`Benchmark source not found: ${entry.source} (add a diffText that deletes it)`);
+                    }
+                    let caseCandidates = preparedCandidates.filter(
+                        (candidate) => path.resolve(cwd, candidate.file) !== sourcePath
+                    );
+                    if (jevScorer) {
+                        const result = await jevScorer.score({ profile: sourceProfile, text: sourceText }, caseCandidates);
+                        jevStats.requests += result.requests;
+                        jevStats.cacheHits += result.cacheHits;
+                        jevStats.inputTokens += result.inputTokens;
+                        caseCandidates = caseCandidates.map((candidate) => ({
+                            ...candidate,
+                            jevScore: result.scores.get(candidate.file),
+                        }));
+                    }
 
-                const matches = filterMatches(
-                    rankMatches({ profile: sourceProfile }, caseCandidates),
-                    config.match.minScore
-                );
-                const topThree = matches.slice(0, 3);
-                const topTen = matches.slice(0, 10);
-                const failedChecks: string[] = [];
+                    const matches = filterMatches(
+                        rankMatches({ profile: sourceProfile }, caseCandidates),
+                        config.match.minScore
+                    );
+                    const topThree = matches.slice(0, 3);
+                    const topTen = matches.slice(0, 10);
+                    const failedChecks: string[] = [];
 
-                const expectedTop1 = getExpectedTop1(entry);
-                if (expectedTop1) {
-                    top1Total += 1;
-                    if ((matches[0]?.file ?? '') === expectedTop1) {
-                        top1Hits += 1;
-                    } else {
-                        failedChecks.push('top1');
+                    const expectedTop1 = getExpectedTop1(entry);
+                    if (expectedTop1) {
+                        top1Total += 1;
+                        if ((matches[0]?.file ?? '') === expectedTop1) {
+                            top1Hits += 1;
+                        } else {
+                            failedChecks.push('top1');
+                        }
+                    }
+
+                    const expectedTop3 = getExpectedTop3(entry);
+                    if (expectedTop3.length) {
+                        top3Total += 1;
+                        if (topThree.some((match) => expectedTop3.includes(match.file))) {
+                            top3Hits += 1;
+                        } else {
+                            failedChecks.push('top3');
+                        }
+                    }
+
+                    const expectedTop10Includes = entry.expectedTop10Includes ?? [];
+                    if (expectedTop10Includes.length) {
+                        top10IncludeTotal += 1;
+                        if (expectedTop10Includes.every((file) => topTen.some((match) => match.file === file))) {
+                            top10IncludeHits += 1;
+                        } else {
+                            failedChecks.push('top10Includes');
+                        }
+                    }
+
+                    if (failedChecks.length) {
+                        const expectedFiles = uniqueExpectedFiles(expectedTop1, expectedTop3, expectedTop10Includes);
+                        misses.push({
+                            source: entry.source,
+                            failedChecks,
+                            expectedTop1,
+                            expectedTop3: expectedTop3.length ? expectedTop3 : undefined,
+                            expectedTop10Includes: expectedTop10Includes.length ? expectedTop10Includes : undefined,
+                            observedTop10: topTen.map((match) => match.file),
+                            observedRanks: getObservedRanks(matches, expectedFiles),
+                        });
                     }
                 }
-
-                const expectedTop3 = getExpectedTop3(entry);
-                if (expectedTop3.length) {
-                    top3Total += 1;
-                    if (topThree.some((match) => expectedTop3.includes(match.file))) {
-                        top3Hits += 1;
-                    } else {
-                        failedChecks.push('top3');
-                    }
-                }
-
-                const expectedTop10Includes = entry.expectedTop10Includes ?? [];
-                if (expectedTop10Includes.length) {
-                    top10IncludeTotal += 1;
-                    if (expectedTop10Includes.every((file) => topTen.some((match) => match.file === file))) {
-                        top10IncludeHits += 1;
-                    } else {
-                        failedChecks.push('top10Includes');
-                    }
-                }
-
-                if (failedChecks.length) {
-                    const expectedFiles = uniqueExpectedFiles(expectedTop1, expectedTop3, expectedTop10Includes);
-                    misses.push({
-                        source: entry.source,
-                        failedChecks,
-                        expectedTop1,
-                        expectedTop3: expectedTop3.length ? expectedTop3 : undefined,
-                        expectedTop10Includes: expectedTop10Includes.length ? expectedTop10Includes : undefined,
-                        observedTop10: topTen.map((match) => match.file),
-                        observedRanks: getObservedRanks(matches, expectedFiles),
-                    });
-                }
+            } finally {
+                await jevScorer?.flush();
             }
-
-            await jevScorer?.flush();
 
             const summary = {
                 ranker: config.ranker,

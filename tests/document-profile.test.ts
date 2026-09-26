@@ -704,4 +704,33 @@ describe('listDiffFiles', () => {
 
         assert.deepEqual(listDiffFiles(diff, '/repo', 'root'), ['/repo/root/a/src/price.ts']);
     });
+
+    it('drops space-separated timestamps from plain unified diff paths', () => {
+        const diff = [
+            '--- src/price.ts 2026-01-01 00:00:00 +0000',
+            '+++ src/price.ts 2026-01-02 00:00:01 +0000',
+            '@@ -1 +1 @@',
+            '-1',
+            '+2',
+        ].join('\n');
+
+        assert.deepEqual(listDiffFiles(diff, '/repo', '.'), ['/repo/src/price.ts']);
+    });
+
+    it('strips paired a/ and b/ prefixes from plain unified diffs unless the prefixed path exists', async () => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-list-diff-'));
+        const diff = [
+            '--- a/src/price.ts',
+            '+++ b/src/price.ts',
+            '@@ -1 +1 @@',
+            '-1',
+            '+2',
+        ].join('\n');
+
+        assert.deepEqual(listDiffFiles(diff, root, '.'), [path.join(root, 'src/price.ts')]);
+        await fs.mkdir(path.join(root, 'b/src'), { recursive: true });
+        await fs.writeFile(path.join(root, 'b/src/price.ts'), '');
+        assert.deepEqual(listDiffFiles(diff, root, '.'), [path.join(root, 'b/src/price.ts')]);
+        await fs.rm(root, { recursive: true, force: true });
+    });
 });

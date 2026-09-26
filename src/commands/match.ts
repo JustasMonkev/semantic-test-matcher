@@ -22,7 +22,8 @@ import {
 } from '../services/match.ts';
 import { buildDocumentProfile, listDiffFiles } from '../services/document-profile.ts';
 import { readGitChanges } from '../services/git-changes.ts';
-import { detectTestCommand, promptAndRunTests, quoteShellArgument } from '../services/test-runner.ts';
+import { detectTestCommand, promptAndRunTests } from '../services/test-runner.ts';
+import { quoteShellArgument } from '../utils/shell.ts';
 
 const READ_CONCURRENCY = 8;
 
@@ -194,12 +195,15 @@ async function matchChangedFiles(
     let rankerFallback: string | undefined;
     let scorer: JevScorer | undefined;
     const reports: ChangeReport[] = [];
+    const changedPaths = new Set(changes.paths);
+    const isChangedSource = (candidate: RankedMatchCandidate) =>
+        candidate.profile.kind !== 'test' && changedPaths.has(path.resolve(cwd, candidate.file));
     try {
         // One at a time: a Jev failure switches every later file to heuristics.
         for (const changedPath of changes.paths) {
             const source = await readChangedFile(changedPath, changes, cwd);
-            // In the automatic flow, an edited test is itself a candidate to rerun.
-            const fileCandidates = changes.automatic ? candidates
+            const fileCandidates = changes.automatic
+                ? candidates.filter((candidate) => !isChangedSource(candidate))
                 : candidates.filter((candidate) => path.resolve(cwd, candidate.file) !== changedPath);
 
             let jevResult: JevScoreResult | undefined;
@@ -290,7 +294,10 @@ function mergeSelections(reports: ChangeReport[]) {
             bestByFile.set(match.file, match);
         }
     }
-    return [...bestByFile.values()].sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
+    const merged = [...bestByFile.values()].sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
+    // All reports share one config, so the per-file limit is also the overall limit.
+    const limit = reports[0]?.selectionLimit;
+    return typeof limit === 'number' ? merged.slice(0, limit) : merged;
 }
 
 function printJson(reports: ChangeReport[], selected: MatchCandidate[], cacheEntries: number) {

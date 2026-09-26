@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { normalizePathSeparators } from './paths.ts';
 import { createPatternMatcher } from './patterns.ts';
 
 const SKIP_DIRS = new Set([
@@ -64,7 +65,7 @@ export async function collectCandidateFilesDetailed(
     const isFull = () => files.size >= MAX_CANDIDATE_FILES;
     const includeMatcher = createPatternMatcher(includes, true);
     const excludeMatcher = createPatternMatcher(excludes, false);
-    const relativePath = (absolute: string) => path.relative(cwd, absolute).replace(/\\/g, '/');
+    const relativePath = (absolute: string) => normalizePathSeparators(path.relative(cwd, absolute));
 
     const addFile = (absolute: string) => {
         const relative = relativePath(absolute);

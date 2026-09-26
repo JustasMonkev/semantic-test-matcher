@@ -345,11 +345,7 @@ function capSelection(
     };
 }
 
-/**
- * Keeps every affirmative Jev answer plus the strongest structural neighbors. When
- * Jev is unavailable or unsure, the neighbor share widens, and with no strong
- * structural evidence either, every candidate is kept.
- */
+/** Every affirmative Jev answer plus the strongest structural neighbors; wider when evidence is weak. */
 function selectAdaptive(matches: MatchCandidate[], topK: number | undefined, ranker: Ranker): SelectionResult {
     const structuralScores = matches.map((match) => match.structuralScore).sort((a, b) => b - a);
     const strongestStructural = structuralScores[0] ?? 0;

@@ -1,4 +1,6 @@
-import path from 'node:path';
+import { normalizePathSeparators } from './paths.ts';
+
+export { isParentPath } from './paths.ts';
 
 export interface PathPattern {
     test(candidate: string): boolean;
@@ -11,12 +13,11 @@ function splitTokens(pattern: string): string[] {
         .filter(Boolean);
 }
 
-// Wildcard steps; every other step is one literal UTF-16 unit.
-// "**/" matches zero or more whole directories, so "**/foo.ts" also matches a root-level "foo.ts".
+// Every other step is one literal UTF-16 unit. "**/" also matches no directories at all.
 const STARS = new Set(['*', '**', '**/']);
 
 function compileGlob(token: string): string[] {
-    const withUnix = token.replace(/\\/g, '/').toLowerCase();
+    const withUnix = normalizePathSeparators(token).toLowerCase();
     const anchored = withUnix.includes('/') ? withUnix : `**/${withUnix}`;
     const steps: string[] = [];
     let index = 0;
@@ -28,16 +29,11 @@ function compileGlob(token: string): string[] {
     return steps;
 }
 
-/**
- * Advances every live step at once instead of backtracking, so matching costs
- * O(steps × path length) even for wildcard-heavy patterns from repo config.
- */
+// Tracks every live step at once instead of backtracking, so hostile repo-config globs stay linear.
 function matchesGlob(steps: string[], candidate: string): boolean {
-    // Stars may match nothing, so a live star also makes the next step live.
-    // Set iteration visits indexes added here, which chains consecutive stars.
     const skipStars = (live: Set<number>): Set<number> => {
-        for (const index of live) {
-            if (STARS.has(steps[index])) {
+        for (let index = 0; index < steps.length; index += 1) {
+            if (live.has(index) && STARS.has(steps[index])) {
                 live.add(index + 1);
             }
         }
@@ -45,9 +41,9 @@ function matchesGlob(steps: string[], candidate: string): boolean {
     };
 
     let live = skipStars(new Set([0]));
-    // "**/" steps that have consumed characters; each later "/" may end the directory prefix.
+    // "**/" steps still inside their directories; any later "/" can close them.
     const openDirectories = new Set<number>();
-    // Walk UTF-16 units, as compileGlob does, so astral characters line up.
+    // UTF-16 units, like compileGlob, so emoji paths line up.
     for (let position = 0; position < candidate.length; position += 1) {
         const char = candidate[position];
         const next = new Set<number>();
@@ -94,12 +90,7 @@ export function createPatternMatcher(
     }
 
     return (candidate: string) => {
-        const normalized = candidate.replace(/\\/g, '/');
+        const normalized = normalizePathSeparators(candidate);
         return matchers.some((pattern) => pattern.test(normalized));
     };
-}
-
-export function isParentPath(base: string, target: string): boolean {
-    const relative = path.relative(base, target);
-    return !relative.startsWith('..') && !path.isAbsolute(relative);
 }

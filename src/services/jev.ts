@@ -1,7 +1,8 @@
 import path from 'node:path';
+import { isProbability } from '../utils/values.ts';
 import { buildCacheKey, loadCache, writeCacheEntries } from './cache.ts';
 import type { DocumentProfile } from './document-profile.ts';
-import { mapWithConcurrency } from '../utils/async.ts';
+import { mapWithConcurrency, sleep } from '../utils/async.ts';
 import { isDebug } from '../utils/io.ts';
 
 export const JEV_PROVIDER = 'typesafe';
@@ -162,6 +163,12 @@ function describeFailure(status: number, body: string): string {
     return `HTTP ${status}${hint}: ${body.slice(0, 200)}`;
 }
 
+/** Retry-After is either delay-seconds or an HTTP date; anything else means no hint. */
+function parseRetryAfterMs(header: string | null): number {
+    const seconds = Number(header ?? 0);
+    return Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header ?? '') - Date.now();
+}
+
 // Honors the server's Retry-After (capped) but never waits less than exponential backoff.
 function retryDelayMs(attempt: number, retryAfterMs: number, retryBaseMs: number): number {
     return Math.max(
@@ -175,19 +182,7 @@ function questionId(index: number): string {
     return `t${index}`;
 }
 
-async function sleep(ms: number): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Scores candidate test files against a changed file with TypeSafe's Jev model.
- *
- * Each candidate is one Noul question ("should this test file be re-run?") evaluated
- * against a shared state describing the change, so a whole candidate list usually
- * costs one request. Answers are cached per question: the cache is read once per
- * scorer and new answers are written in one locked write on flush(), which score()
- * also calls before rethrowing a failure so answers already paid for are kept.
- */
+/** Asks Jev, once per candidate test file, whether it should re-run for a change; answers are cached. */
 export class JevScorer {
     private cachePromise?: Promise<Record<string, CachedJevAnswer>>;
     private pending: Record<string, CachedJevAnswer> = {};
@@ -226,7 +221,7 @@ export class JevScorer {
 
         keys.forEach((key, index) => {
             const hit = this.pending[key] ?? cache[key];
-            if (typeof hit?.noul === 'number') {
+            if (isProbability(hit?.noul)) {
                 scores.set(candidates[index].file, hit.noul);
             } else {
                 uncached.push(index);
@@ -252,7 +247,7 @@ export class JevScorer {
 
                 for (const index of batch) {
                     const noul = response.answers?.[questionId(index)]?.noul;
-                    if (typeof noul !== 'number' || !Number.isFinite(noul)) {
+                    if (!isProbability(noul)) {
                         throw new JevError(`Jev response has no answer for ${candidates[index].file}`);
                     }
                     scores.set(candidates[index].file, noul);
@@ -313,7 +308,7 @@ export class JevScorer {
             if (!isRetryableStatus(response.status)) {
                 throw new JevError(`Jev request failed (${failure})`);
             }
-            return { failure, retryAfterMs: Number(response.headers.get('retry-after') ?? 0) * 1000 };
+            return { failure, retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')) };
         } catch (error) {
             // Network, timeout, and body-read errors are retryable; our own JevError is final.
             if (error instanceof JevError) {

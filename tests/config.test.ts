@@ -130,6 +130,23 @@ describe('resolveConfig', () => {
         assert.equal((await resolveConfig({ config: configFile }, {})).match.threshold, 0);
     });
 
+    it('keeps explicit false flags ahead of truthy environment values', async () => {
+        process.env.RBT_QUIET = 'yes';
+        process.env.RBT_VERBOSE = '1';
+        const config = await resolveConfig({ quiet: false, verbose: false }, {});
+        assert.equal(config.quiet, false);
+        assert.equal(config.verbose, false);
+    });
+
+    it('treats false and unrecognized boolean env values as overrides', async () => {
+        process.env.RBT_QUIET = 'false';
+        process.env.RBT_VERBOSE = 'unknown';
+        const configFile = await writeTempConfig({ quiet: true, verbose: true });
+        const config = await resolveConfig({ config: configFile }, {});
+        assert.equal(config.quiet, false);
+        assert.equal(config.verbose, false);
+    });
+
     it('treats empty string env vars as unset', async () => {
         for (const name of ['RBT_RANKER', 'RBT_JEV_MODEL', 'RBT_LOG_LEVEL', 'RBT_QUIET', 'RBT_VERBOSE', 'RBT_CACHE_DIR', 'RBT_SELECTION_POLICY']) {
             process.env[name] = '';

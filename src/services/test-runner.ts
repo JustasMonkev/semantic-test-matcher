@@ -3,6 +3,9 @@ import fs from 'node:fs/promises';
 import { constants } from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { commandArguments } from '../utils/shell.ts';
+
+export { quoteShellArgument } from '../utils/shell.ts';
 
 // Test scripts that take test file paths as trailing arguments.
 const RUNNER_SCRIPT = /^(?:vitest|jest|playwright test|mocha)(?:\s|$)/;
@@ -31,44 +34,6 @@ export async function detectTestCommand(cwd: string): Promise<string | undefined
     }
     const dependencies = { ...manifest.dependencies, ...manifest.devDependencies };
     return RUNNER_DEPENDENCIES.find(([name]) => name in dependencies)?.[1];
-}
-
-/** Quotes an argument so a printed command can be pasted into a POSIX shell. */
-export function quoteShellArgument(value: string): string {
-    return /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-// Accept quoted arguments, but never evaluate shell syntax or expand variables.
-function commandArguments(command: string): string[] {
-    const args: string[] = [];
-    let word = '';
-    // Tracked apart from `word` so an empty quoted argument ("") is still passed.
-    let inWord = false;
-    let quote = '';
-    for (let index = 0; index < command.length; index += 1) {
-        const char = command[index];
-        if (!quote && /\s/.test(char)) {
-            if (inWord) args.push(word);
-            word = '';
-            inWord = false;
-            continue;
-        }
-        inWord = true;
-        if (char === '\\' && quote !== "'" && /[\s\\"']/.test(command[index + 1] ?? '')) {
-            index += 1;
-            word += command[index];
-        } else if (char === quote) {
-            quote = '';
-        } else if (!quote && (char === '"' || char === "'")) {
-            quote = char;
-        } else {
-            word += char;
-        }
-    }
-    if (quote) throw new Error('Unclosed quote in test command');
-    if (inWord) args.push(word);
-    if (!args[0]) throw new Error('A test executable is required');
-    return args;
 }
 
 export async function runSelectedTests(command: string, files: string[], cwd: string): Promise<number> {

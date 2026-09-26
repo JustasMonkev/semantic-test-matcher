@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { normalizePathSeparators } from '../utils/paths.ts';
 
 export interface ChangedLines {
     added: string[];
@@ -100,6 +101,11 @@ function decodeGitPath(value: string): string {
 
 function isStandardPrefixPair(oldPath: string, newPath: string): boolean {
     return oldPath.startsWith('a/') && newPath.startsWith('b/') && oldPath.slice(2) === newPath.slice(2);
+}
+
+// Plain diffs can use Git's a/ and b/ prefixes too; a real b/ directory wins.
+function stripPlainPrefixPair(oldPath: string, newPath: string, basePath: string): string {
+    return isStandardPrefixPair(oldPath, newPath) && !existsSync(path.resolve(basePath, newPath)) ? newPath.slice(2) : newPath;
 }
 
 /** Splits unquoted `diff --git` paths, which may contain spaces, after the last `<oldPath> `. */
@@ -365,7 +371,7 @@ export function collectChangedLines(
         rootPath: resolveDiffRoot(cwd, diffRoot),
         allowCwdRelativeGitPaths: diffRoot === undefined,
     };
-    const rootRelativePath = path.relative(target.rootPath, target.absolutePath).replace(/\\/g, '/');
+    const rootRelativePath = normalizePathSeparators(path.relative(target.rootPath, target.absolutePath));
     let section = emptyFileSection();
     let fileMatches = true;
     let hunk: HunkCounts | undefined;
@@ -460,15 +466,18 @@ export function listDiffFiles(diffText: string, cwd: string, diffRoot?: string):
         if (!line.startsWith('--- ') && !line.startsWith('+++ ')) {
             continue;
         }
-        let diffPath = decodeGitPath(line.slice(FILE_HEADER_PREFIX_LENGTH).split('\t', 1)[0].trim());
+        let diffPath = readFileHeaderPath(line);
         if (isGitDiff && /^[ab]\//.test(diffPath)) {
             diffPath = diffPath.slice(2);
         }
         if (line.startsWith('--- ')) {
             oldPath = diffPath;
-        } else {
-            files.add(path.resolve(basePath, diffPath === '/dev/null' ? oldPath : diffPath));
+            continue;
         }
+        if (!isGitDiff) {
+            diffPath = stripPlainPrefixPair(oldPath, diffPath, basePath);
+        }
+        files.add(path.resolve(basePath, diffPath === '/dev/null' ? oldPath : diffPath));
     }
     return [...files];
 }

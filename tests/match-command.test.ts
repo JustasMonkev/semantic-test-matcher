@@ -308,6 +308,12 @@ describe('match command rankers', () => {
             assert.ok(lines.some((line) => /^ {2}Why: /.test(line)), lines.join('\n'));
         });
 
+        it('caps the merged selection at --top-k', async () => {
+            const { lines } = await runCli('src/price.ts', 'src/socket.ts', '--ranker', 'heuristics', '--top-k', '1', '--paths-only');
+
+            assert.equal(lines.length, 1);
+        });
+
         it('rejects runs without a changed source file', async () => {
             await assert.rejects(runCli('--ranker', 'heuristics'), /not a git repository/);
             await fs.writeFile('docs.diff', priceDiff.slice(priceDiff.indexOf('diff --git a/README.md')));
@@ -333,6 +339,14 @@ describe('match command rankers', () => {
             assert.equal(output.results[0].file, 'tests/price.test.ts');
             const paths = await runCli('--ranker', 'heuristics', '--paths-only');
             assert.deepEqual(paths.lines, output.results.map(match => match.file));
+        });
+
+        it('never selects changed source modules, even from a broad candidate root', async () => {
+            await fs.appendFile('src/price.ts', '\nexport const discountRate = 0.2;');
+            const { lines } = await runCli('--candidates', '.', '--ranker', 'heuristics', '--paths-only');
+
+            assert.ok(lines.includes('tests/price.test.ts'), lines.join('\n'));
+            assert.ok(!lines.includes('src/price.ts'), lines.join('\n'));
         });
 
         it('selects an edited test itself', async () => {

@@ -1,3 +1,4 @@
+import { sleep } from '../utils/async.ts';
 import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import type { FileHandle } from 'node:fs/promises';
@@ -34,10 +35,6 @@ function getCacheLockFile(filePath: string): string {
 function getDelayMs(): number {
     const parsed = Number(process.env.RBT_CACHE_WRITE_DELAY_MS || 0);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-}
-
-async function sleep(ms: number): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Creates the lock file exclusively; resolves undefined while another writer holds it. */
@@ -139,12 +136,9 @@ export async function persistCache<T>(filePath: string, cache: Record<string, T>
     await fs.rename(tempFile, filePath);
 }
 
+// Whitespace stays significant: a whitespace-only edit is still a change to score.
 export function buildCacheKey(provider: string, model: string, text: string): string {
-    const normalized = text
-        .replace(/\r\n/g, '\n')
-        .replace(/\s+/g, ' ')
-        .trim();
-    return sanitizeKey(`${provider}|${model}|${normalized}`);
+    return sanitizeKey(`${provider}|${model}|${text.replace(/\r\n/g, '\n')}`);
 }
 
 /** Merges entries into a JSON cache file under a lock, keeping entries other processes wrote. */
