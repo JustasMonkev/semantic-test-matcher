@@ -61,7 +61,7 @@ flowchart TD
 
 ## Requirements
 
-- Node.js 20 or newer
+- Node.js 22.12 or newer
 - a TypeSafe API key from [console.typesafe.ai/keys](https://console.typesafe.ai/keys) in `TYPESAFE_API_KEY` (without one, `rbt` ranks with local heuristics only)
 
 ## Install
