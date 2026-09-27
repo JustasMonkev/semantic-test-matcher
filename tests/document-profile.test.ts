@@ -3,14 +3,53 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { buildDocumentProfile } from '../src/services/document-profile.ts';
+import { buildDocumentProfile, isTestLike, listDiffFiles, listModeOnlyDiffFiles } from '../src/services/document-profile.ts';
 
 describe('buildDocumentProfile', () => {
-    it('places the bounded summary before verbose sections', () => {
-        const tests = Array.from({ length: 500 }, (_, index) => `test('case ${index}', () => {});`).join('\n');
-        const profile = buildDocumentProfile('/repo/tests/large.spec.ts', tests, '/repo');
+    it('keeps raw test titles, including describe blocks and modifiers', () => {
+        const profile = buildDocumentProfile(
+            '/workspace/tests/tabs.spec.ts',
+            [
+                "test.describe('tab management', () => {",
+                "    test('selects a tab by index', async () => {});",
+                '    test.skip("closes the last tab", async () => {});',
+                "    it('selects a tab by index', () => {});",
+                '});',
+            ].join('\n'),
+            '/workspace'
+        );
 
-        assert.ok(profile.embeddingText.indexOf('summary:') < profile.embeddingText.indexOf('tests:'));
+        assert.deepEqual(profile.testTitles, ['tab management', 'selects a tab by index', 'closes the last tab']);
+    });
+
+    it('keeps the profiled file\'s own diff hunks as an excerpt', () => {
+        const diff = [
+            'diff --git a/src/tabs.ts b/src/tabs.ts',
+            '--- a/src/tabs.ts',
+            '+++ b/src/tabs.ts',
+            '@@ -2,2 +2,2 @@ export function selectTab(index: number) {',
+            '     const tab = tabs[index];',
+            '-    return index && tab;',
+            '+    return tab;',
+            'diff --git a/src/other.ts b/src/other.ts',
+            '--- a/src/other.ts',
+            '+++ b/src/other.ts',
+            '@@ -1 +1 @@',
+            '-export const other = 1;',
+            '+export const other = 2;',
+        ].join('\n');
+        const source = 'export function selectTab(index: number) {\n    const tab = tabs[index];\n    return tab;\n}\n';
+
+        assert.equal(
+            buildDocumentProfile('/workspace/src/tabs.ts', source, '/workspace', diff).diffExcerpt,
+            [
+                '@@ -2,2 +2,2 @@ export function selectTab(index: number) {',
+                '     const tab = tabs[index];',
+                '-    return index && tab;',
+                '+    return tab;',
+            ].join('\n')
+        );
+        assert.equal(buildDocumentProfile('/workspace/src/tabs.ts', source, '/workspace').diffExcerpt, '');
     });
 
     it('keeps changed identifiers ahead of verbose source metadata', () => {
@@ -34,7 +73,6 @@ describe('buildDocumentProfile', () => {
         );
 
         assert.ok(profile.semanticTokens.includes('screenshot'));
-        assert.ok(profile.embeddingText.indexOf('changes:') < profile.embeddingText.indexOf('imports:'));
     });
 
     it('keeps identifiers that actually changed instead of surrounding line noise', () => {
@@ -76,6 +114,82 @@ diff --git a/src/socket.ts b/src/socket.ts
 
         assert.deepEqual(profile.changeTokens, ['screenshot', 'capture']);
         assert.deepEqual(profile.changePhraseTokens, ['screenshot', 'capture']);
+    });
+
+    it('attributes plain-diff hunks labelled against /dev/null to the unlabelled path', () => {
+        const diff = [
+            '--- /dev/null',
+            '+++ b/src/created.ts',
+            '@@ -0,0 +1 @@',
+            '+export const createdTotal = 1;',
+            '--- a/src/gone.ts',
+            '+++ /dev/null',
+            '@@ -1 +0,0 @@',
+            '-export const goneTotal = 1;',
+        ].join('\n');
+
+        assert.equal(
+            buildDocumentProfile('/repo/src/created.ts', '', '/repo', diff, '.').diffExcerpt,
+            '@@ -0,0 +1 @@\n+export const createdTotal = 1;'
+        );
+        assert.equal(
+            buildDocumentProfile('/repo/src/gone.ts', '', '/repo', diff, '.').diffExcerpt,
+            '@@ -1 +0,0 @@\n-export const goneTotal = 1;'
+        );
+    });
+
+    it('masks regex literals after keywords and control statements', () => {
+        const profile = buildDocumentProfile('/repo/src/matchers.ts', [
+            "export function a(x: string) { return /test('after return')/.exec(x); }",
+            "export function b(x: string) { if (x) /it('after if')/.exec(x); }",
+            "export const c = (x: string) => typeof /describe('after typeof')/;",
+            "export const d = (total: number, count: number) => (total) / count / 2;",
+        ].join('\n'), '/repo');
+
+        assert.deepEqual(profile.testTitles, []);
+        const division = buildDocumentProfile('/repo/e2e/checkout.ts', "const half = (total) / 2; test('checks out', () => {});", '/repo');
+        assert.deepEqual(division.testTitles, ['checks out']);
+    });
+
+    it('does not run fixtures or helpers under test directories', () => {
+        const fixture = buildDocumentProfile('/repo/tests/fixtures/accounts.ts', "test('sample suite', () => {});", '/repo');
+        assert.equal(fixture.kind, 'fixture');
+        assert.equal(isTestLike(fixture), false);
+        assert.equal(isTestLike(buildDocumentProfile('/repo/tests/helpers/db.ts', 'export const db = {};', '/repo')), false);
+        assert.equal(isTestLike(buildDocumentProfile('/repo/tests/fixtures/sample.test.ts', '', '/repo')), true);
+        assert.equal(isTestLike(buildDocumentProfile('/repo/tests/checkout.ts', "it('checks out', () => {});", '/repo')), true);
+    });
+
+    it('ignores test calls inside comments and strings, so a source module is not test-like', () => {
+        const profile = buildDocumentProfile('/repo/src/checkout.ts', [
+            "// test('commented out', () => {});",
+            "/* describe('in a block comment', () => {}) */",
+            'const usage = "it(\'is documentation\', () => {})";',
+            "const pattern = /test('in a regex')/;",
+            "const template = `test('in a template')`;",
+            "export const total = (price: number) => price * 2; // divides / nothing",
+        ].join('\n'), '/repo');
+
+        assert.deepEqual(profile.testTitles, []);
+        assert.equal(isTestLike(profile), false);
+        const withCall = buildDocumentProfile('/repo/e2e/checkout.ts', "const a = b / 2; test('checks out', () => {});", '/repo');
+        assert.deepEqual(withCall.testTitles, ['checks out']);
+        assert.equal(isTestLike(withCall), true);
+    });
+
+    it('recognizes Deno test files and Deno.test declarations', () => {
+        assert.equal(buildDocumentProfile('/repo/src/checkout_test.ts', '', '/repo').kind, 'test');
+        const profile = buildDocumentProfile('/repo/e2e/checkout.ts', [
+            'Deno.test("applies the discount", () => {});',
+            "Deno.test.ignore('skips the coupon', () => {});",
+        ].join('\n'), '/repo');
+        assert.deepEqual(profile.testTitles, ['applies the discount', 'skips the coupon']);
+        assert.equal(isTestLike(profile), true);
+    });
+
+    it('treats files under __tests__ as tests', () => {
+        assert.equal(buildDocumentProfile('/repo/src/__tests__/checkout.ts', '', '/repo').kind, 'test');
+        assert.equal(buildDocumentProfile('/repo/src/checkout.ts', '', '/repo').kind, 'source');
     });
 
     it('accepts custom git diff prefixes', () => {
@@ -586,55 +700,278 @@ diff --git a/src/page.ts a/src/page.ts
         assert.ok(profile.semanticTokens.includes('critical'));
     });
 
-    it('bounds verbose test names in embedding input', () => {
-        const tests = Array.from(
-            { length: 500 },
-            (_, index) => `test('page screenshot case${index}', () => {});`
-        ).join('\n');
-        const profile = buildDocumentProfile('/repo/tests/page-screenshot.spec.ts', tests, '/repo');
-        const testSections = profile.embeddingText.split('\n').filter((line) => line.startsWith('tests:'));
-        const testSection = testSections[testSections.length - 1];
+    it('keeps titles of parameterized, concurrent, and conditional tests', () => {
+        const profile = buildDocumentProfile('/workspace/tests/price.test.ts', [
+            "test.each([[1, 2], [total(3), 4]])('applies discount %i', () => {});",
+            'it.concurrent("works concurrently", async () => {});',
+            'describe.each`\n  a | b\n  ${1} | ${2}\n`(\'adds $a\', () => {});',
+            "test.skipIf(process.env.CI)('skips on CI', () => {});",
+            "it.concurrent.each(cases)('runs case %s', async () => {});",
+            "test.step('is a step, not a test', async () => {});",
+            "const isNumber = /^\\d+$/.test('42');",
+        ].join('\n'), '/workspace');
 
-        assert.ok(testSection);
-        assert.ok(testSection.split(/\s+/).length <= 33);
+        assert.deepEqual(profile.testTitles, ['applies discount %i', 'works concurrently', 'adds $a', 'skips on CI', 'runs case %s']);
     });
 
-    it('bounds the complete embedding input and emits changes once', () => {
-        const imports = Array.from(
-            { length: 500 },
-            (_, index) => `import { Service${index} } from '../service-${index}.ts';`
-        ).join('\n');
-        const exports = Array.from(
-            { length: 500 },
-            (_, index) => `export const feature${index} = ${index};`
-        ).join('\n');
-        const tests = Array.from(
-            { length: 500 },
-            (_, index) => `test('behavior case ${index}', () => command.option('--flag-${index}'));`
-        ).join('\n');
-        const profile = buildDocumentProfile('/repo/tests/large.spec.ts', `${imports}\n${exports}\n${tests}`, '/repo', `
---- tests/large.spec.ts
-+++ tests/large.spec.ts
-@@ -1 +1,2 @@
--return oldScreenshot;
-+const screenshot = oldScreenshot;
-+return screenshot;
-`);
+    it('keeps escaped quotes inside test titles', () => {
+        const profile = buildDocumentProfile('/workspace/tests/a.spec.ts', 'test("says \\"hi\\"", () => {});', '/workspace');
 
-        assert.ok(profile.embeddingText.split(/\s+/).length <= 512);
-        assert.equal(profile.embeddingText.match(/^changes:/gm)?.length, 1);
-        assert.ok(profile.embeddingText.includes('signals:'));
+        assert.deepEqual(profile.testTitles, ['says \\"hi\\"']);
     });
 
-    it('keeps all no-diff section tokens when the complete input already fits', () => {
-        const tests = Array.from(
-            { length: 40 },
-            (_, index) => `test('behavior${index}', () => {});`
-        ).join('\n');
-        const profile = buildDocumentProfile('/repo/tests/behavior.spec.ts', tests, '/repo');
-        const testSections = profile.embeddingText.split('\n').filter((line) => line.startsWith('tests:'));
+    // Each payload took seconds, or hung, when a regex could backtrack over it.
+    for (const [name, text, diffText] of [
+        ['an unterminated test title of backslashes', `test("${'\\'.repeat(40)}`, undefined],
+        ['many unclosed parameterized tests', `test.each(${'a'.repeat(3000)} `.repeat(300), undefined],
+        ['many escaped quotes', "\\'aaaaaaaaaa".repeat(20_000), undefined],
+        ['a quoted diff header of backslashes', 'export const a = 1;', `diff --git "${'\\'.repeat(48)}\n`],
+    ] as const) {
+        it(`profiles ${name} quickly`, () => {
+            const started = performance.now();
+            buildDocumentProfile('/workspace/src/evil.spec.ts', text, '/workspace', diffText);
 
-        assert.ok(profile.embeddingText.split(/\s+/).length <= 512);
-        assert.match(testSections[testSections.length - 1] || '', /\bbehavior39\b/);
+            assert.ok(performance.now() - started < 1000);
+        });
+    }
+});
+
+describe('listDiffFiles', () => {
+    it('lists changed, added, renamed, and deleted files from a Git diff', () => {
+        const diff = [
+            'diff --git a/src/price.ts b/src/price.ts',
+            '--- a/src/price.ts',
+            '+++ b/src/price.ts',
+            '@@ -1,2 +1,2 @@',
+            '--- a removed line that looks like a header',
+            '+++ an added line that looks like a header',
+            ' unchanged',
+            'diff --git a/src/new.ts b/src/new.ts',
+            'new file mode 100644',
+            '--- /dev/null',
+            '+++ b/src/new.ts',
+            '@@ -0,0 +1 @@',
+            '+export const created = true;',
+            'diff --git a/src/old-name.ts b/src/new-name.ts',
+            'similarity index 90%',
+            'rename from src/old-name.ts',
+            'rename to src/new-name.ts',
+            '--- a/src/old-name.ts',
+            '+++ b/src/new-name.ts',
+            '@@ -1 +1 @@',
+            '-export const name = 1;',
+            '+export const name = 2;',
+            'diff --git a/src/gone.ts b/src/gone.ts',
+            'deleted file mode 100644',
+            '--- a/src/gone.ts',
+            '+++ /dev/null',
+            '@@ -1 +0,0 @@',
+            '-export const gone = true;',
+            'diff --git "a/src/caf\\303\\251.ts" "b/src/caf\\303\\251.ts"',
+            '--- "a/src/caf\\303\\251.ts"',
+            '+++ "b/src/caf\\303\\251.ts"',
+            '@@ -1 +1 @@',
+            '-a',
+            '+b',
+        ].join('\n');
+
+        assert.deepEqual(listDiffFiles(diff, '/repo', '.'), [
+            '/repo/src/price.ts',
+            '/repo/src/new.ts',
+            '/repo/src/new-name.ts',
+            '/repo/src/gone.ts',
+            '/repo/src/café.ts',
+        ]);
+    });
+
+    it('strips custom Git prefixes taken from the diff --git line', () => {
+        const diff = [
+            'diff --git old/src/price.ts new/src/price.ts',
+            '--- old/src/price.ts',
+            '+++ new/src/price.ts',
+            '@@ -1 +1 @@',
+            '-1',
+            '+2',
+            'diff --git a/old/src/tax.ts b/new/src/tax.ts',
+            '--- a/old/src/tax.ts',
+            '+++ b/new/src/tax.ts',
+            '@@ -1 +1 @@',
+            '-1',
+            '+2',
+            'diff --git a/src dir/page file.ts b/src dir/page file.ts',
+            '--- a/src dir/page file.ts',
+            '+++ b/src dir/page file.ts',
+            '@@ -1 +1 @@',
+            '-1',
+            '+2',
+            'diff --git src/no-prefix.ts src/no-prefix.ts',
+            '--- src/no-prefix.ts',
+            '+++ src/no-prefix.ts',
+            '@@ -1 +1 @@',
+            '-1',
+            '+2',
+        ].join('\n');
+
+        assert.deepEqual(listDiffFiles(diff, '/repo', '.'), [
+            '/repo/src/price.ts',
+            '/repo/src/tax.ts',
+            '/repo/src dir/page file.ts',
+            '/repo/src/no-prefix.ts',
+        ]);
+    });
+
+    it('strips one-segment custom prefixes from repository-root files', () => {
+        const diff = [
+            'diff --git old/foo.ts new/foo.ts',
+            '--- old/foo.ts',
+            '+++ new/foo.ts',
+            '@@ -1 +1 @@',
+            '-export const fooTotal = 1;',
+            '+export const fooTotal = 2;',
+        ].join('\n');
+
+        assert.deepEqual(listDiffFiles(diff, '/repo', '.'), ['/repo/foo.ts']);
+        assert.equal(
+            buildDocumentProfile('/repo/foo.ts', '', '/repo', diff, '.').diffExcerpt,
+            '@@ -1 +1 @@\n-export const fooTotal = 1;\n+export const fooTotal = 2;'
+        );
+    });
+
+    it('lists header-less renames, copies, binary changes, and empty new or deleted files', () => {
+        const diff = [
+            'diff --git a/src/old-name.ts b/src/new-name.ts',
+            'similarity index 100%',
+            'rename from src/old-name.ts',
+            'rename to src/new-name.ts',
+            'diff --git a/src/mode.ts b/src/mode.ts',
+            'old mode 100644',
+            'new mode 100755',
+            'diff --git old/src/base.ts new/src/base copy.ts',
+            'similarity index 100%',
+            'copy from src/base.ts',
+            'copy to src/base copy.ts',
+            'diff --git old/src/icon.ts new/src/icon.ts',
+            'index 1234567..89abcde 100644',
+            'Binary files old/src/icon.ts and new/src/icon.ts differ',
+            'diff --git a/src/packed.ts b/src/packed.ts',
+            'index 1234567..89abcde 100644',
+            'GIT binary patch',
+            'literal 4',
+            'LcmZ?wU|;|M00aO5',
+            '',
+            'diff --git a/src/empty.ts b/src/empty.ts',
+            'new file mode 100644',
+            'index 0000000..e69de29',
+            'diff --git a/src/removed.ts b/src/removed.ts',
+            'deleted file mode 100644',
+            'index e69de29..0000000',
+            'diff --git a/src/removed-binary.ts b/src/removed-binary.ts',
+            'deleted file mode 100644',
+            'index 1234567..0000000',
+            'Binary files a/src/removed-binary.ts and /dev/null differ',
+        ].join('\n');
+
+        assert.deepEqual(listDiffFiles(diff, '/repo', '.'), [
+            '/repo/src/new-name.ts',
+            '/repo/src/base copy.ts',
+            '/repo/src/icon.ts',
+            '/repo/src/packed.ts',
+            '/repo/src/empty.ts',
+            '/repo/src/removed.ts',
+            '/repo/src/removed-binary.ts',
+        ]);
+        assert.deepEqual(listModeOnlyDiffFiles(diff, '/repo', '.'), ['/repo/src/mode.ts']);
+    });
+
+    it('keeps a pure rename\'s old path in the change profile', () => {
+        const diff = [
+            'diff --git a/src/price-engine.ts b/src/pricing.ts',
+            'similarity index 100%',
+            'rename from src/price-engine.ts',
+            'rename to src/pricing.ts',
+        ].join('\n');
+        const profile = buildDocumentProfile('/repo/src/pricing.ts', 'export const price = 1;', '/repo', diff, '.');
+
+        assert.equal(profile.diffExcerpt, 'rename from src/price-engine.ts\nrename to src/pricing.ts');
+        assert.ok(profile.changeTokens.includes('engine'), profile.changeTokens.join(', '));
+    });
+
+    it('profiles a header-less deletion from its deletion marker', () => {
+        const diff = [
+            'diff --git a/src/removed.ts b/src/removed.ts',
+            'deleted file mode 100644',
+            'index e69de29..0000000',
+            'diff --git a/src/kept.ts b/src/kept.ts',
+            '--- a/src/kept.ts',
+            '+++ b/src/kept.ts',
+            '@@ -1 +1 @@',
+            '-a',
+            '+b',
+        ].join('\n');
+
+        assert.equal(buildDocumentProfile('/repo/src/removed.ts', '', '/repo', diff, '.').diffExcerpt, 'deleted file mode 100644');
+        assert.equal(buildDocumentProfile('/repo/src/kept.ts', '', '/repo', diff, '.').diffExcerpt, '@@ -1 +1 @@\n-a\n+b');
+    });
+
+    it('strips a/ and b/ labels paired with /dev/null in plain diffs unless they are real', async () => {
+        const diff = [
+            '--- /dev/null',
+            '+++ b/src/new.ts',
+            '@@ -0,0 +1 @@',
+            '+export const created = true;',
+            '--- a/src/gone.ts',
+            '+++ /dev/null',
+            '@@ -1 +0,0 @@',
+            '-export const gone = true;',
+        ].join('\n');
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-plain-null-'));
+
+        assert.deepEqual(listDiffFiles(diff, root, '.'), [path.join(root, 'src/new.ts'), path.join(root, 'src/gone.ts')]);
+        await fs.mkdir(path.join(root, 'b/src'), { recursive: true });
+        await fs.writeFile(path.join(root, 'b/src/new.ts'), '');
+        await fs.mkdir(path.join(root, 'a/src'), { recursive: true });
+        assert.deepEqual(listDiffFiles(diff, root, '.'), [path.join(root, 'b/src/new.ts'), path.join(root, 'a/src/gone.ts')]);
+        await fs.rm(root, { recursive: true, force: true });
+    });
+
+    it('keeps plain unified diff paths and drops their timestamps', () => {
+        const diff = [
+            '--- a/src/price.ts\t2026-01-01 00:00:00.000000000 +0000',
+            '+++ a/src/price.ts\t2026-01-02 00:00:00.000000000 +0000',
+            '@@ -1 +1 @@',
+            '-1',
+            '+2',
+        ].join('\n');
+
+        assert.deepEqual(listDiffFiles(diff, '/repo', 'root'), ['/repo/root/a/src/price.ts']);
+    });
+
+    it('drops space-separated timestamps from plain unified diff paths', () => {
+        const diff = [
+            '--- src/price.ts 2026-01-01 00:00:00 +0000',
+            '+++ src/price.ts 2026-01-02 00:00:01 +0000',
+            '@@ -1 +1 @@',
+            '-1',
+            '+2',
+        ].join('\n');
+
+        assert.deepEqual(listDiffFiles(diff, '/repo', '.'), ['/repo/src/price.ts']);
+    });
+
+    it('strips paired a/ and b/ prefixes from plain unified diffs unless the prefixed path exists', async () => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-list-diff-'));
+        const diff = [
+            '--- a/src/price.ts',
+            '+++ b/src/price.ts',
+            '@@ -1 +1 @@',
+            '-1',
+            '+2',
+        ].join('\n');
+
+        assert.deepEqual(listDiffFiles(diff, root, '.'), [path.join(root, 'src/price.ts')]);
+        await fs.mkdir(path.join(root, 'b/src'), { recursive: true });
+        await fs.writeFile(path.join(root, 'b/src/price.ts'), '');
+        assert.deepEqual(listDiffFiles(diff, root, '.'), [path.join(root, 'b/src/price.ts')]);
+        await fs.rm(root, { recursive: true, force: true });
     });
 });

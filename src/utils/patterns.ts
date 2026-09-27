@@ -1,6 +1,10 @@
-import path from 'node:path';
+import { normalizePathSeparators } from './paths.ts';
 
-const SPECIALS = /[.+?^${}()|[\]\\]/;
+export { isParentPath } from './paths.ts';
+
+export interface PathPattern {
+    test(candidate: string): boolean;
+}
 
 function splitTokens(pattern: string): string[] {
     return pattern
@@ -9,41 +13,71 @@ function splitTokens(pattern: string): string[] {
         .filter(Boolean);
 }
 
-export function normalizePattern(pattern: string): RegExp {
-    const tokens = splitTokens(pattern);
-    if (!tokens.length) {
-        return /^$/i;
-    }
+// Every other step is one literal UTF-16 unit. "**/" also matches no directories at all.
+const STARS = new Set(['*', '**', '**/']);
 
-    const escaped = tokens.map((token) => {
-        const withUnix = token.replace(/\\/g, '/');
-        const anchored = withUnix.includes('/') ? withUnix : `**/${withUnix}`;
-        let regex = '';
-        for (let index = 0; index < anchored.length; index += 1) {
-            const char = anchored[index];
-            const next = anchored[index + 1];
-            if (char === '*' && next === '*') {
-                if (anchored[index + 2] === '/') {
-                    // "**/" matches zero or more whole directories, so
-                    // "**/foo.ts" also matches a root-level "foo.ts".
-                    regex += '(?:.*/)?';
-                    index += 2;
-                } else {
-                    regex += '.*';
-                    index += 1;
-                }
-            } else if (char === '*') {
-                regex += '[^/]*';
-            } else if (char === '?') {
-                regex += '.';
-            } else {
-                regex += SPECIALS.test(char) ? `\\${char}` : char;
+function compileGlob(token: string): string[] {
+    const withUnix = normalizePathSeparators(token).toLowerCase();
+    const anchored = withUnix.includes('/') ? withUnix : `**/${withUnix}`;
+    const steps: string[] = [];
+    let index = 0;
+    while (index < anchored.length) {
+        const step = ['**/', '**'].find((star) => anchored.startsWith(star, index)) ?? anchored[index];
+        steps.push(step);
+        index += step.length;
+    }
+    return steps;
+}
+
+// Tracks every live step at once instead of backtracking, so hostile repo-config globs stay linear.
+function matchesGlob(steps: string[], candidate: string): boolean {
+    const skipStars = (live: Set<number>): Set<number> => {
+        for (let index = 0; index < steps.length; index += 1) {
+            if (live.has(index) && STARS.has(steps[index])) {
+                live.add(index + 1);
             }
         }
-        return `(?:${regex})`;
-    });
+        return live;
+    };
 
-    return new RegExp(`^(?:${escaped.join('|')})$`, 'i');
+    let live = skipStars(new Set([0]));
+    // "**/" steps still inside their directories; any later "/" can close them.
+    const openDirectories = new Set<number>();
+    // UTF-16 units, like compileGlob, so emoji paths line up.
+    for (let position = 0; position < candidate.length; position += 1) {
+        const char = candidate[position];
+        const next = new Set<number>();
+        for (const index of live) {
+            const step = steps[index];
+            if (step === '**' || (step === '*' && char !== '/')) {
+                next.add(index);
+            } else if (step === '**/') {
+                openDirectories.add(index);
+            } else if (step === '?' || step === char) {
+                next.add(index + 1);
+            }
+        }
+        if (char === '/') {
+            for (const index of openDirectories) {
+                next.add(index + 1);
+            }
+        }
+        live = skipStars(next);
+        if (!live.size && !openDirectories.size) {
+            return false;
+        }
+    }
+    return live.has(steps.length);
+}
+
+export function normalizePattern(pattern: string): PathPattern {
+    const alternatives = splitTokens(pattern).map(compileGlob);
+    return {
+        test: (candidate) => {
+            const lowered = candidate.toLowerCase();
+            return alternatives.some((steps) => matchesGlob(steps, lowered));
+        },
+    };
 }
 
 export function createPatternMatcher(
@@ -56,12 +90,7 @@ export function createPatternMatcher(
     }
 
     return (candidate: string) => {
-        const normalized = candidate.replace(/\\/g, '/');
+        const normalized = normalizePathSeparators(candidate);
         return matchers.some((pattern) => pattern.test(normalized));
     };
-}
-
-export function isParentPath(base: string, target: string): boolean {
-    const relative = path.relative(base, target);
-    return !relative.startsWith('..') && !path.isAbsolute(relative);
 }

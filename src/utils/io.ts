@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+
 export async function readStdinText(): Promise<string> {
     return new Promise((resolve, reject) => {
         if (process.stdin.isTTY) {
@@ -12,8 +14,16 @@ export async function readStdinText(): Promise<string> {
     });
 }
 
+let debugLogLevel = false;
+
+/** Set once the log level resolves, so `--log-level debug` and its equivalents enable diagnostics. */
+export function setDebugLogLevel(enabled: boolean): void {
+    debugLogLevel = enabled;
+}
+
+// RBT_DEBUG=1 also covers errors raised before any config resolves.
 export function isDebug(): boolean {
-    return process.env.RBT_DEBUG === '1';
+    return debugLogLevel || process.env.RBT_DEBUG === '1';
 }
 
 export function parseStdinList(raw: string): string[] {
@@ -34,3 +44,13 @@ export function parseStdinList(raw: string): string[] {
     return trimmed.split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
+export async function readFileIfExists(filePath: string): Promise<string | undefined> {
+    try {
+        return await fs.readFile(filePath, 'utf8');
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            return undefined;
+        }
+        throw error;
+    }
+}

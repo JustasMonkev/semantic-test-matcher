@@ -41,4 +41,22 @@ describe('mapWithConcurrency', () => {
             /boom/
         );
     });
+
+    it('stops starting items after a failure and lets in-flight items finish first', async () => {
+        const started: number[] = [];
+        const finished: number[] = [];
+        await assert.rejects(
+            mapWithConcurrency([0, 1, 2, 3], 2, async (value) => {
+                started.push(value);
+                if (value === 0) {
+                    throw new Error('boom');
+                }
+                await delay(10);
+                finished.push(value);
+            }),
+            /boom/
+        );
+        assert.deepEqual(started, [0, 1]);
+        assert.deepEqual(finished, [1]);
+    });
 });

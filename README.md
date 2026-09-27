@@ -1,22 +1,23 @@
 # semantic-test-matcher
 
-`semantic-test-matcher` is a TypeScript CLI for semantic test matching. It exposes the `rbt` command, which can embed free-form text, inspect resolved runtime configuration, print shell completion scripts, and rank likely test files for a changed source file.
+`semantic-test-matcher` is a TypeScript CLI for semantic test matching. It exposes the `rbt` command, which ranks likely test files for a changed source file, inspects resolved runtime configuration, and prints shell completion scripts.
 
 The matching flow combines:
 
-- document profiling from file paths and code structure
-- local GGUF embeddings through `node-llama-cpp`
-- a local embedding cache
-- score blending for semantic and structural signals
+- document profiling from file paths, code structure, and diffs
+- TypeSafe's [Jev](https://docs.typesafe.ai/) System One model, which judges whether each candidate test file should re-run for the change
+- a local answer cache
+- score blending for Jev and structural signals
 
 ## Features
 
 - `rbt match <file>` ranks candidate tests for a changed file
-- `rbt embed [text]` generates an embedding for text or stdin
+- `rbt benchmark` scores the matcher against a file of expected rankings
 - `rbt status` shows the resolved runtime configuration
 - `rbt completion [bash|zsh]` prints a shell completion script
-- runs embeddings in-process with no cloud service or local daemon
-- caches embeddings in `.rbt/cache` by default
+- scores all candidates for a change in one Jev request, typically 150–500 ms
+- falls back to local structural heuristics when no API key is available
+- caches Jev answers in `.rbt/cache` by default
 - accepts candidate file lists from CLI flags, config, or stdin
 
 ## Architecture
@@ -24,34 +25,32 @@ The matching flow combines:
 ```mermaid
 flowchart TD
     A["CLI entry<br/>src/cli.ts"] --> B["Commander program<br/>global options + subcommands"]
-    B --> C["Command layer<br/>embed / match / status / completion"]
+    B --> C["Command layer<br/>match / benchmark / status / completion"]
 
     C --> D["Config resolution<br/>src/config.ts"]
     D --> D1["Sources<br/>CLI flags -> env vars -> config file -> defaults"]
 
     C --> E["Input handling"]
-    E --> E1["Changed file / text / stdin"]
+    E --> E1["Changed file / diff / stdin"]
     E --> E2["Candidate discovery<br/>src/utils/files.ts"]
 
     E1 --> F["Document profiling<br/>src/services/document-profile.ts"]
     E2 --> F2["Candidate profiles"]
 
-    F --> G["Embedding service<br/>src/services/embeddings.ts"]
+    F --> G["Jev scorer<br/>src/services/jev.ts"]
     F2 --> G
+    G --> H["Answer cache<br/>src/services/cache.ts"]
+    G --> I["TypeSafe API<br/>POST /v1/systemone"]
 
-    G --> H["Cache layer<br/>src/services/cache.ts"]
-    G --> I["Local inference<br/>node-llama-cpp + GGUF"]
-
-    G --> J["Vectors"]
-    J --> K["Ranking engine<br/>src/services/match.ts"]
+    G --> K["Ranking engine<br/>src/services/match.ts"]
     F --> K
     F2 --> K
 
     K --> L["Scoring blend"]
-    L --> L1["Embedding similarity"]
-    L --> L2["Basename overlap"]
-    L --> L3["Semantic token overlap"]
-    L --> L4["Export/import/test anchor overlap"]
+    L --> L1["Jev probability (60%)"]
+    L --> L2["Change, phrase, and anchor overlap"]
+    L --> L3["Semantic token and interface overlap"]
+    L --> L4["Path family and basename overlap"]
 
     C --> M["Output"]
     K --> M
@@ -63,24 +62,14 @@ flowchart TD
 ## Requirements
 
 - Node.js 20 or newer
-- about 278 MB of disk space for the local embedding model
+- a TypeSafe API key from [console.typesafe.ai/keys](https://console.typesafe.ai/keys) in `TYPESAFE_API_KEY` (without one, `rbt` ranks with local heuristics only)
 
 ## Install
 
 ```bash
 npm install --global semantic-test-matcher
+export TYPESAFE_API_KEY=...
 ```
-
-From your project root, download the compatible EmbeddingGemma model:
-
-```bash
-npx --yes node-llama-cpp@3.19.0 pull \
-  --dir models \
-  --filename embeddinggemma-300M-Q4_0.gguf \
-  hf:ggml-org/embeddinggemma-300M-qat-q4_0-GGUF:Q4_0
-```
-
-The model is stored at `models/embeddinggemma-300M-Q4_0.gguf`. You can use a different local GGUF file with `--model`. Model inference is fully local, and the model is distributed separately under the [Gemma license](https://huggingface.co/ggml-org/embeddinggemma-300M-qat-q4_0-GGUF).
 
 Verify the installation:
 
@@ -91,16 +80,11 @@ rbt status
 
 ## Quick Start
 
-Generate an embedding:
+Match a changed file to likely tests, passing the change as a diff:
 
 ```bash
-rbt embed "discount and tax edge cases" --json
-```
-
-Match a changed file to likely tests:
-
-```bash
-rbt match prompts-idea/src/price-engine.ts --candidates prompts-idea/tests --json
+git diff > change.diff
+rbt match src/price-engine.ts --candidates tests --diff-file change.diff --json
 ```
 
 Inspect resolved settings:
@@ -117,31 +101,27 @@ rbt completion zsh
 
 ## Commands
 
-### `embed`
-
-Embeds the provided text or stdin input.
-
-Examples:
-
-```bash
-rbt embed "checkout pricing logic"
-printf "coupon validation" | rbt embed --json
-```
-
-Useful flags:
-
-- `--model <path-to-gguf>`
-- `--cache-dir <path>`
-- `--json`
-
 ### `match`
 
-Ranks likely candidate files for a changed source file.
+Ranks likely candidate files for one or more changed source files and merges the selections; a test picked for several files keeps its best score.
+
+With no file arguments or `--diff-file`, `rbt match` detects local Git changes under the current directory (staged, unstaged, deleted, and non-ignored untracked JS/TS files). It shows the selected tests, then asks which test command to run, pre-filled from your `test` script when that script runs Vitest, Jest, Playwright, or Mocha with options and their values only (a script that already names test paths, such as `jest tests` or `mocha --spec ...`, would run them too, so the plain runner is suggested instead). Enter a command such as `npx playwright test`, `npx vitest run`, or `node --test`; press Enter to skip. Selected absolute paths are appended as separate arguments, and RBT returns the runner's exit code. The command accepts quoted arguments, but does not interpret shell operators, variable expansion, or pipelines. Use an executable or wrapper script that accepts test paths as trailing arguments.
+
+This is a one-shot flow, not a watcher. A clean tree or empty selection runs nothing. A changed file that resolves outside the repository, such as an untracked symlink, is skipped with a warning. Because it runs what it selects, this mode only considers test-like candidates: `.test`/`.spec` and Deno `_test` files, and any other file outside fixture directories that declares tests (with `test(...)`, `it(...)`, `describe(...)`, or `Deno.test(...)`). Helpers and fixtures under test directories are not run. `--json` and `--paths-only` only report selections and never prompt or execute tests; use these modes without an interactive terminal. Explicit files and `--diff-file` retain their selection-only behavior. Committed branch changes still require a supplied diff.
 
 Examples:
 
 ```bash
+# Detect local changes, select tests, and ask which test command to run
+rbt match --candidates tests
+
 rbt match prompts-idea/src/price-engine.ts --candidates prompts-idea/tests
+
+git diff main > pr.diff
+rbt match --diff-file pr.diff --candidates tests
+
+# One path per line; xargs -0 keeps spaces in paths and runs nothing for an empty selection
+rbt match --diff-file pr.diff --paths-only | tr '\n' '\0' | xargs -0 -r npx playwright test
 
 cat prompts-idea/candidate-list.txt | \
   rbt match prompts-idea/src/price-engine.ts \
@@ -155,28 +135,52 @@ Useful flags:
 
 - `--threshold <number>`
 - `--min-score <number>`
-- `--top-k <number>`
-- `--candidates <paths...>`
-- `--include-file <glob...>`
-- `--exclude-file <glob...>`
+- `--top-k <number>` (optional cap on selected files)
+- `--selection-policy <adaptive|conservative|targeted>`
+- `--candidates <path>` (repeat for several, e.g. `--candidates tests --candidates e2e`)
+- `--include-file <glob>` (repeatable)
+- `--exclude-file <glob>` (repeatable)
 - `--candidates-from-stdin`
-- `--model <path-to-gguf>`
+- `--ranker <jev|heuristics>`
+- `--jev-model <id>`
 - `--cache-dir <path>`
 - `--diff-file <path>`
 - `--diff-root <path>` (set the base for relative diff paths, such as `.` for `git diff --relative`)
 - `--json`
+- `--paths-only` (print only the selected test paths, one per line)
+
+A deleted file can still be matched: pass a `--diff-file` that contains its deletion. Every path a `--diff-file` changes must stay inside its diff root (`--diff-root`, else the Git root); a diff that names a file outside it is rejected. Candidate files larger than 1 MB are skipped with a warning. In text output, a `Why:` line explains fallback selections, such as widening coverage when neither Jev nor the structural score is confident.
 
 How matching works:
 
-1. The changed file is read and converted into a `DocumentProfile`.
+1. The changed file (and its hunks from `--diff-file`) is read and converted into a `DocumentProfile`.
 2. Candidate files are collected from configured paths or stdin.
-3. Each profile is embedded locally with the configured GGUF model.
-4. `rankMatches` blends embedding similarity with structural overlap.
-5. Results are filtered by threshold and truncated to `topK`.
+3. Jev asks one yes/no question per candidate, "should the tests in this file be re-run to check this change?", and returns a probability. All candidates go in one request; larger suites are batched.
+4. `rankMatches` blends the Jev probability (60%) with structural overlap (40%). With `--ranker heuristics`, or when Jev is unavailable, the structural score is used alone.
+5. Results are filtered by the configured minimum score. The default `adaptive` policy selects every Jev-affirmative candidate (probability at least 0.5) plus structurally strong neighbors: candidates in the top structural decile with structural score at least 0.2. When no Jev score reaches 0.7, it widens the structural band to the top quartile; if structural evidence is also weak, it retains all candidates. Without Jev, the wider structural rule applies. These are selection heuristics, not inferred test dependencies or calibrated probabilities. A shared-code change can therefore select more files than a localized change.
+
+There is no default count cap for `adaptive`. `--top-k` (or its config/environment equivalent) limits output after eligibility is computed and may exclude useful tests; JSON reports `eligibleCount`, `selectionLimit`, `selectionTruncated`, and `selectionEvidence`. Explicit `conservative` retains the blended top five by default. Explicit `targeted` retains up to five Jev-affirmative candidates by default and falls back to conservative selection when Jev is unavailable or has no affirmative answers. Both legacy policies also honor an explicit `--top-k`. The fixed bands above are uncalibrated.
+
+### How Jev is used
+
+- **Data leaves your machine.** Each request sends the changed file's path, exported symbol names, and its diff hunks (or, without `--diff-file`, the first 6,000 characters of the file; with `--diff-file`, source text is never sent, even for a file the diff has no text hunks for), plus each candidate test file's path and test titles, to `api.typesafe.ai`. Candidate file bodies are not sent. Review TypeSafe's [data handling](https://docs.typesafe.ai/legal) before using it on private code. Use `--ranker heuristics` to keep everything local.
+- **Pass a diff.** Jev is most useful with `--diff-file`, because it can then judge the actual change rather than the whole file.
+- **Fallback.** If `TYPESAFE_API_KEY` is missing or the API fails after retries, `match` prints a warning to stderr and ranks with heuristics only. JSON output reports the effective `ranker` and a `rankerFallback` reason, so CI can detect the downgrade. When Jev answers, JSON also lists every model version whose answers were used in `jev.models`. `benchmark` fails instead of falling back.
+- **Caching and model pinning.** Answers are cached per change and candidate in `<cacheDir>/jev.json`, so repeat runs make no requests. The default model is pinned to `jev-1.13.0`. `jev-latest` also works, but its answers can change when TypeSafe ships a new version, so they are never cached: only answers from the exact model requested are reused.
+- **Cost.** Jev bills input tokens only, at $0.042 per million. A change with ~30 candidates is roughly 2,000–7,000 tokens.
+
+### `benchmark`
+
+Runs the matcher over a JSON file of cases (`source`, optional `diffText`, and `expectedTop1`, `expectedTop3`, or `expectedTop10Includes`) and reports hit rates. It takes the same `--ranker`, `--jev-model`, candidate, and threshold flags as `match`. Benchmark reports ranking hit rates; it does not apply `match` selection policies. With Jev, it also reports request counts, cache hits, input tokens, and every model version that answered, so runs against a moving alias such as `jev-latest` stay comparable.
+
+```bash
+rbt benchmark --cases cases.json --candidates tests --json
+rbt benchmark --cases cases.json --candidates tests --ranker heuristics
+```
 
 ### `status`
 
-Prints the resolved runtime configuration and cache stats.
+Prints the resolved runtime configuration, whether `TYPESAFE_API_KEY` is set, and cache stats.
 
 ```bash
 rbt status
@@ -211,12 +215,13 @@ Example config:
 
 ```json
 {
-  "model": "models/embeddinggemma-300M-Q4_0.gguf",
+  "ranker": "jev",
+  "jevModel": "jev-1.13.0",
   "cacheDir": ".rbt/cache",
   "logLevel": "info",
   "match": {
-    "topK": 5,
     "threshold": 0,
+    "selectionPolicy": "adaptive",
     "candidatePaths": ["test", "tests"],
     "includePatterns": ["**/*"],
     "excludePatterns": [
@@ -231,7 +236,8 @@ Example config:
 
 Environment variables used by the resolver include:
 
-- `RBT_MODEL`
+- `RBT_RANKER`
+- `RBT_JEV_MODEL`
 - `RBT_CACHE_DIR`
 - `RBT_LOG_LEVEL`
 - `RBT_VERBOSE`
@@ -242,18 +248,15 @@ Environment variables used by the resolver include:
 - `RBT_MATCH_THRESHOLD`
 - `RBT_MIN_SCORE`
 - `RBT_MATCH_MIN_SCORE`
+- `RBT_SELECTION_POLICY`
 
-## Local Embeddings and Caching
+A variable set to an empty string counts as unset, so config and defaults still apply.
 
-- uses `node-llama-cpp` with an embedding-capable local GGUF file
-- defaults to `models/embeddinggemma-300M-Q4_0.gguf`
-- applies EmbeddingGemma's `sentence similarity` prompt for semantic matching
-- truncates oversized profiles to the embedding context
-- does not call a cloud API or require a local model server
+`TYPESAFE_API_KEY` supplies the Jev API key. It is only read from the environment, never from config files.
 
 ### Cache
 
-- embeddings are cached under `.rbt/cache` by default
+- Jev answers are cached in `.rbt/cache/jev.json` by default, keyed by model, change, and candidate
 - cache writes are best-effort and do not fail the command if they break
 - `status` reports the current cache entry count
 
@@ -263,7 +266,7 @@ Environment variables used by the resolver include:
 src/
   cli.ts                CLI entrypoint
   commands/             Commander subcommands
-  services/             embeddings, ranking, document profiling, cache
+  services/             Jev scoring, ranking, document profiling, cache
   utils/                candidate collection, stdin helpers, glob matching
 prompts-idea/
   src/                  synthetic source files for matching experiments
@@ -302,4 +305,4 @@ npm test
 npm run build
 ```
 
-The repo currently uses `node:test` for tests and TypeScript for type-checking and build output.
+The repo currently uses `node:test` for tests and TypeScript for type-checking and build output. Tests stub the TypeSafe API and never make network calls.

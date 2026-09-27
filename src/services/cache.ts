@@ -1,25 +1,24 @@
+import { sleep } from '../utils/async.ts';
 import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import type { FileHandle } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { isDebug } from '../utils/io.ts';
-import type { EmbeddingBackend } from './embedding-types.ts';
-
-export interface CachedEmbedding {
-    createdAt: string;
-    provider: string;
-    model: string;
-    vector: number[];
-    backend?: EmbeddingBackend;
-}
-
-export interface EmbeddingCache {
-    [hash: string]: CachedEmbedding;
-}
 
 const LOCK_POLL_MS = 20;
 const LOCK_TIMEOUT_MS = 10_000;
 const STALE_LOCK_MS = 30_000;
+// A lock whose owner still runs is only taken over after this long, in case its PID was reused.
+const ABANDONED_LOCK_MS = 10 * 60_000;
+const STALE_TAKEOVER_MS = 5_000;
+
+interface CacheLock {
+    handle: FileHandle;
+    lockPath: string;
+    /** Written into the lock so its owner never removes a lock another writer took over. */
+    token: string;
+}
 
 function sanitizeKey(input: string): string {
     return crypto.createHash('sha256').update(input).digest('hex');
@@ -35,10 +34,6 @@ function isMissingFile(error: unknown): boolean {
     return (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
-function isMalformedCache(error: unknown): boolean {
-    return error instanceof SyntaxError;
-}
-
 function getCacheLockFile(filePath: string): string {
     const parsed = path.parse(filePath);
     return path.join(parsed.dir, `${parsed.name}.lock`);
@@ -49,55 +44,140 @@ function getDelayMs(): number {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
-async function sleep(ms: number): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, ms));
+/** Creates the lock file exclusively; resolves undefined while another writer holds it. */
+async function tryCreateLock(lockPath: string): Promise<CacheLock | undefined> {
+    const token = crypto.randomUUID();
+    try {
+        const handle = await fs.open(lockPath, 'wx');
+        await handle.writeFile(`${process.pid}\n${os.hostname()}\n${token}\n`, 'utf8');
+        return { handle, lockPath, token };
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+            return undefined;
+        }
+        throw error;
+    }
 }
 
-async function acquireCacheLock(filePath: string): Promise<{ handle: FileHandle; lockPath: string }> {
+/** Whether a lock's writer is known to have exited: same host, and its PID no longer exists. */
+function hasLockOwnerExited(contents: string): boolean {
+    const [pidLine, host] = contents.split('\n');
+    const pid = Number(pidLine);
+    if (!Number.isInteger(pid) || pid <= 0 || host !== os.hostname()) {
+        return false;
+    }
+    try {
+        process.kill(pid, 0);
+        return false;
+    } catch (error) {
+        return (error as NodeJS.ErrnoException).code === 'ESRCH';
+    }
+}
+
+interface LockSnapshot {
+    contents: string;
+    mtimeMs: number;
+}
+
+async function readLockSnapshot(lockPath: string): Promise<LockSnapshot> {
+    const { mtimeMs } = await fs.stat(lockPath);
+    return { contents: await fs.readFile(lockPath, 'utf8'), mtimeMs };
+}
+
+/**
+ * True when the held lock is already gone or was stale and removed, so a retry can go at once.
+ * A lock is only taken over when its writer has exited, or after ABANDONED_LOCK_MS when its writer
+ * cannot be checked (another host, an unknown format) or its PID may have been reused. Such a writer
+ * can no longer release the lock, so it cannot vanish and be replaced while it is being removed.
+ */
+async function clearStaleLock(lockPath: string): Promise<boolean> {
+    let stale: LockSnapshot;
+    try {
+        stale = await readLockSnapshot(lockPath);
+    } catch (error) {
+        if (isMissingFile(error)) {
+            return true;
+        }
+        throw error;
+    }
+    const ageMs = Date.now() - stale.mtimeMs;
+    if (ageMs <= STALE_LOCK_MS || (ageMs <= ABANDONED_LOCK_MS && !hasLockOwnerExited(stale.contents))) {
+        return false;
+    }
+    return removeStaleLock(lockPath, stale);
+}
+
+/**
+ * Removes a stale lock while holding a separate takeover lock, so writers never remove it in parallel,
+ * and only if a re-read shows the same stale lock. No writer can create a lock while one exists, and a
+ * stale lock's owner is gone, so the lock cannot change between that re-read and its removal.
+ */
+async function removeStaleLock(lockPath: string, stale: LockSnapshot): Promise<boolean> {
+    const takeoverPath = `${lockPath}.takeover`;
+    let takeover: FileHandle;
+    try {
+        takeover = await fs.open(takeoverPath, 'wx');
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+            throw error;
+        }
+        // Another writer is removing it. A takeover lock is held for a few file operations,
+        // so an old one was left by a crash.
+        const takeoverAgeMs = Date.now() - ((await fs.stat(takeoverPath).catch(() => undefined))?.mtimeMs ?? Date.now());
+        if (takeoverAgeMs > STALE_TAKEOVER_MS) {
+            await fs.unlink(takeoverPath).catch(() => {});
+        }
+        return false;
+    }
+    try {
+        const current = await readLockSnapshot(lockPath);
+        if (current.contents !== stale.contents || current.mtimeMs !== stale.mtimeMs) {
+            return false;
+        }
+        await fs.unlink(lockPath);
+        return true;
+    } catch (error) {
+        if (isMissingFile(error)) {
+            return true;
+        }
+        throw error;
+    } finally {
+        await takeover.close();
+        await fs.unlink(takeoverPath).catch(() => {});
+    }
+}
+
+async function acquireCacheLock(filePath: string): Promise<CacheLock> {
     const lockPath = getCacheLockFile(filePath);
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
 
     await fs.mkdir(path.dirname(filePath), { recursive: true });
 
     while (true) {
-        try {
-            const handle = await fs.open(lockPath, 'wx');
-            await handle.writeFile(`${process.pid}\n${new Date().toISOString()}\n`, 'utf8');
-            return { handle, lockPath };
-        } catch (error) {
-            const code = (error as NodeJS.ErrnoException).code;
-            if (code !== 'EEXIST') {
-                throw error;
-            }
-
-            try {
-                const stats = await fs.stat(lockPath);
-                if ((Date.now() - stats.mtimeMs) > STALE_LOCK_MS) {
-                    await fs.unlink(lockPath).catch(() => {});
-                    continue;
-                }
-            } catch (statError) {
-                if (!isMissingFile(statError)) {
-                    throw statError;
-                }
-                continue;
-            }
-
-            if (Date.now() >= deadline) {
-                throw new Error(`Timed out acquiring cache lock for ${lockPath}`);
-            }
-
-            await sleep(LOCK_POLL_MS);
+        const lock = await tryCreateLock(lockPath);
+        if (lock) {
+            return lock;
         }
+        if (await clearStaleLock(lockPath)) {
+            continue;
+        }
+        if (Date.now() >= deadline) {
+            throw new Error(`Timed out acquiring cache lock for ${lockPath}`);
+        }
+        await sleep(LOCK_POLL_MS);
     }
 }
 
-async function releaseCacheLock(lockPath: string, handle: FileHandle): Promise<void> {
+async function releaseCacheLock({ handle, lockPath, token }: CacheLock): Promise<void> {
     try {
         await handle.close();
     } finally {
         try {
-            await fs.unlink(lockPath);
+            if ((await fs.readFile(lockPath, 'utf8')).includes(token)) {
+                await fs.unlink(lockPath);
+            } else {
+                debugCache(`Cache lock ${lockPath} was taken over; leaving it to its new owner`);
+            }
         } catch (error) {
             if (!isMissingFile(error)) {
                 debugCache(`Unable to remove cache lock ${lockPath}: ${(error as Error).message}`);
@@ -106,17 +186,22 @@ async function releaseCacheLock(lockPath: string, handle: FileHandle): Promise<v
     }
 }
 
-export async function loadCache(filePath: string): Promise<EmbeddingCache> {
+export async function loadCache<T>(filePath: string): Promise<Record<string, T>> {
     try {
-        const raw = await fs.readFile(filePath, 'utf8');
-        return JSON.parse(raw) as EmbeddingCache;
+        const parsed: unknown = JSON.parse(await fs.readFile(filePath, 'utf8'));
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+            debugCache(`Ignoring cache file at ${filePath} that is not a JSON object`);
+            return {};
+        }
+        // SAFETY: entries are checked where they are read (e.g. JevScorer checks model and noul).
+        return parsed as Record<string, T>;
     } catch (error) {
         if (isMissingFile(error)) {
             return {};
         }
 
-        if (isMalformedCache(error)) {
-            debugCache(`Ignoring malformed cache file at ${filePath}: ${(error as Error).message}`);
+        if (error instanceof SyntaxError) {
+            debugCache(`Ignoring malformed cache file at ${filePath}: ${error.message}`);
             return {};
         }
 
@@ -124,7 +209,7 @@ export async function loadCache(filePath: string): Promise<EmbeddingCache> {
     }
 }
 
-export async function persistCache(filePath: string, cache: EmbeddingCache): Promise<void> {
+export async function persistCache<T>(filePath: string, cache: Record<string, T>): Promise<void> {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     const tempFile = path.join(
         path.dirname(filePath),
@@ -139,35 +224,15 @@ export async function persistCache(filePath: string, cache: EmbeddingCache): Pro
     await fs.rename(tempFile, filePath);
 }
 
+// Whitespace stays significant: a whitespace-only edit is still a change to score.
 export function buildCacheKey(provider: string, model: string, text: string): string {
-    const normalized = text
-        .replace(/\r\n/g, '\n')
-        .replace(/\s+/g, ' ')
-        .trim();
-    return sanitizeKey(`${provider}|${model}|${normalized}`);
+    return sanitizeKey(`${provider}|${model}|${text.replace(/\r\n/g, '\n')}`);
 }
 
-export async function readCachedEmbedding(
+/** Merges entries into a JSON cache file under a lock, keeping entries other processes wrote. */
+export async function writeCacheEntries<T>(
     filePath: string,
-    provider: string,
-    model: string,
-    text: string
-): Promise<{ vector: number[]; backend: EmbeddingBackend } | null> {
-    const cache = await loadCache(filePath);
-    const hit = cache[buildCacheKey(provider, model, text)];
-    if (!hit || !hit.backend) {
-        return null;
-    }
-
-    return {
-        vector: hit.vector,
-        backend: hit.backend,
-    };
-}
-
-export async function writeCachedEmbeddings(
-    filePath: string,
-    entries: EmbeddingCache
+    entries: Record<string, T>
 ): Promise<void> {
     if (!Object.keys(entries).length) {
         return;
@@ -175,33 +240,10 @@ export async function writeCachedEmbeddings(
 
     const lock = await acquireCacheLock(filePath);
     try {
-        const cache = await loadCache(filePath);
+        const cache = await loadCache<T>(filePath);
         Object.assign(cache, entries);
         await persistCache(filePath, cache);
     } finally {
-        await releaseCacheLock(lock.lockPath, lock.handle);
+        await releaseCacheLock(lock);
     }
-}
-
-export async function writeCachedEmbedding(
-    filePath: string,
-    provider: string,
-    model: string,
-    text: string,
-    vector: number[],
-    backend: EmbeddingBackend
-): Promise<void> {
-    await writeCachedEmbeddings(filePath, {
-        [buildCacheKey(provider, model, text)]: {
-            createdAt: new Date().toISOString(),
-            provider,
-            model,
-            vector,
-            backend,
-        },
-    });
-}
-
-export function getCacheFile(cacheDirectory: string): string {
-    return path.join(cacheDirectory, 'embeddings.json');
 }

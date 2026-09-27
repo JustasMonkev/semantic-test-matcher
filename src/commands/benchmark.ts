@@ -1,15 +1,16 @@
 import { Command } from 'commander';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { findPathsOutside, normalizePathSeparators } from '../utils/paths.ts';
 import { resolveConfig } from '../config.ts';
-import { EmbeddingSession } from '../services/embeddings.ts';
-import { buildDocumentProfile, type DocumentProfile } from '../services/document-profile.ts';
-import type { EmbeddingBackend } from '../services/embedding-types.ts';
-import { filterMatches, rankMatches } from '../services/match.ts';
-import { collectCandidateFilesDetailed } from '../utils/files.ts';
+import { buildDocumentProfile, isTestLike } from '../services/document-profile.ts';
+import { JEV_API_KEY_ENV, JevScorer } from '../services/jev.ts';
+import { filterMatches, rankMatches, type RankedMatchCandidate } from '../services/match.ts';
+import { collectCandidateFilesDetailed, readCandidateText } from '../utils/files.ts';
 import { mapWithConcurrency } from '../utils/async.ts';
+import { readFileIfExists } from '../utils/io.ts';
 
-const EMBED_CONCURRENCY = 8;
+const READ_CONCURRENCY = 8;
 
 interface BenchmarkCase {
     source: string;
@@ -29,54 +30,11 @@ interface BenchmarkMiss {
     observedRanks: Record<string, number | null>;
 }
 
-interface PreparedCandidate {
-    file: string;
-    vector: number[];
-    preview: string;
-    profile: DocumentProfile;
-    embeddingBackend: EmbeddingBackend;
-    cacheHit: boolean;
-}
-
-interface EmbeddingSummary {
-    sourceEmbeddingBackends: EmbeddingBackend[];
-    candidateEmbeddingBackends: EmbeddingBackend[];
-    cacheHitCount: number;
-}
-
-function summarizeEmbeddingBackends(
-    sourceEmbeddings: Array<{ backend: EmbeddingBackend; cacheHit: boolean }>,
-    candidates: PreparedCandidate[]
-): EmbeddingSummary {
-    const sourceEmbeddingBackends = [...new Set(sourceEmbeddings.map((entry) => entry.backend))];
-    const candidateEmbeddingBackends = [...new Set(candidates.map((entry) => entry.embeddingBackend))];
-    const cacheHitCount = sourceEmbeddings.filter((entry) => entry.cacheHit).length +
-        candidates.filter((entry) => entry.cacheHit).length;
-
-    return {
-        sourceEmbeddingBackends,
-        candidateEmbeddingBackends,
-        cacheHitCount,
-    };
-}
-
-function normalizeRelativePath(filePath: string): string {
-    return filePath.replace(/\\/g, '/');
-}
-
-function normalizeOptionalPaths(values?: string[]): string[] | undefined {
-    return values?.map(normalizeRelativePath);
-}
-
-function getExpectedTop1(entry: BenchmarkCase): string | undefined {
-    return entry.expectedTop1;
-}
-
 function getExpectedTop3(entry: BenchmarkCase): string[] {
     if (entry.expectedTop3?.length) {
         return entry.expectedTop3;
     }
-    const top1 = getExpectedTop1(entry);
+    const top1 = entry.expectedTop1;
     return top1 ? [top1] : [];
 }
 
@@ -94,33 +52,28 @@ async function loadBenchmarkCases(filePath: string): Promise<BenchmarkCase[]> {
     const parsed = JSON.parse(raw) as BenchmarkCase[];
 
     return parsed.map((entry) => ({
-        source: normalizeRelativePath(entry.source),
-        expectedTop1: entry.expectedTop1 ? normalizeRelativePath(entry.expectedTop1) : undefined,
-        expectedTop3: normalizeOptionalPaths(entry.expectedTop3),
-        expectedTop10Includes: normalizeOptionalPaths(entry.expectedTop10Includes),
+        source: normalizePathSeparators(entry.source),
+        expectedTop1: entry.expectedTop1 ? normalizePathSeparators(entry.expectedTop1) : undefined,
+        expectedTop3: entry.expectedTop3?.map(normalizePathSeparators),
+        expectedTop10Includes: entry.expectedTop10Includes?.map(normalizePathSeparators),
         diffText: entry.diffText,
     }));
 }
 
-async function prepareCandidates(
-    candidateFiles: string[],
-    session: EmbeddingSession,
-    cwd: string
-): Promise<PreparedCandidate[]> {
-    return mapWithConcurrency(candidateFiles, EMBED_CONCURRENCY, async (candidatePath) => {
-        const candidateText = await fs.readFile(candidatePath, 'utf8');
+async function prepareCandidates(candidateFiles: string[], cwd: string): Promise<RankedMatchCandidate[]> {
+    const candidates = await mapWithConcurrency(candidateFiles, READ_CONCURRENCY, async (candidatePath) => {
+        const candidateText = await readCandidateText(candidatePath);
+        if (candidateText === undefined) {
+            return undefined;
+        }
         const candidateProfile = buildDocumentProfile(candidatePath, candidateText, cwd);
-        const candidateVector = await session.embed(candidateProfile.embeddingText);
-
         return {
-            file: normalizeRelativePath(path.relative(cwd, candidatePath)),
-            vector: candidateVector.vector,
+            file: normalizePathSeparators(path.relative(cwd, candidatePath)),
             preview: candidateProfile.preview,
             profile: candidateProfile,
-            embeddingBackend: candidateVector.backend,
-            cacheHit: candidateVector.cacheHit,
         };
     });
+    return candidates.filter((candidate) => candidate !== undefined);
 }
 
 export function registerBenchmarkCommand(program: Command): void {
@@ -131,8 +84,9 @@ export function registerBenchmarkCommand(program: Command): void {
         .option('-c, --candidates <patterns...>', 'Candidate file paths, directories, or file globs')
         .option('--include-file <patterns...>', 'Include only matching files (glob pattern)')
         .option('--exclude-file <patterns...>', 'Exclude matching files (glob pattern)')
-        .option('--model <path>', 'Path to a local GGUF embedding model')
-        .option('--cache-dir <path>', 'Directory used to cache embeddings')
+        .option('--ranker <name>', `jev (TypeSafe API, default; key from ${JEV_API_KEY_ENV}) or heuristics (local only)`)
+        .option('--jev-model <id>', 'TypeSafe Jev model id')
+        .option('--cache-dir <path>', 'Directory used to cache Jev answers')
         .option('--diff-root <path>', 'Base directory for relative paths in case diffs')
         .option('-t, --threshold <number>', 'Minimum similarity threshold')
         .option('--min-score <number>', 'Minimum similarity score override')
@@ -142,7 +96,8 @@ export function registerBenchmarkCommand(program: Command): void {
             candidates?: string[];
             includeFile?: string[];
             excludeFile?: string[];
-            model?: string;
+            ranker?: string;
+            jevModel?: string;
             cacheDir?: string;
             diffRoot?: string;
             threshold?: string;
@@ -154,7 +109,6 @@ export function registerBenchmarkCommand(program: Command): void {
             const config = await resolveConfig(
                 {
                     config: rootOptions.config,
-                    model: rootOptions.model,
                     cacheDir: rootOptions.cacheDir,
                     logLevel: rootOptions.logLevel,
                     verbose: rootOptions.verbose,
@@ -164,7 +118,8 @@ export function registerBenchmarkCommand(program: Command): void {
                     candidates: options.candidates,
                     includeFile: options.includeFile,
                     excludeFile: options.excludeFile,
-                    model: options.model,
+                    ranker: options.ranker,
+                    jevModel: options.jevModel,
                     cacheDir: options.cacheDir,
                     threshold: options.threshold,
                     minScore: options.minScore,
@@ -181,11 +136,21 @@ export function registerBenchmarkCommand(program: Command): void {
                 config.match.excludePatterns,
                 cwd
             );
-            const embeddingSession = new EmbeddingSession({
-                model: config.model,
-                cacheDir: config.cacheDir,
-            });
-            const preparedCandidates = await prepareCandidates(candidateResult.files, embeddingSession, cwd);
+            // Unlike match, a benchmark never falls back: a missing key or API failure is an error.
+            const jevScorer = config.ranker === 'jev'
+                ? new JevScorer({
+                    apiKey: process.env[JEV_API_KEY_ENV] ?? '',
+                    model: config.jevModel,
+                    cacheDir: config.cacheDir,
+                })
+                : undefined;
+            // A moving alias such as jev-latest can answer with several versions, so all are reported.
+            const jevStats = { requests: 0, cacheHits: 0, inputTokens: 0, models: new Set<string>() };
+            const sourcePaths = new Set(cases.map((entry) => path.resolve(cwd, entry.source)));
+            // As in match, no case's source module is a candidate test; a test-like source stays one.
+            const preparedCandidates = (await prepareCandidates(candidateResult.files, cwd)).filter((candidate) =>
+                isTestLike(candidate.profile) || !sourcePaths.has(path.resolve(cwd, candidate.file))
+            );
 
             let top1Hits = 0;
             let top1Total = 0;
@@ -194,83 +159,104 @@ export function registerBenchmarkCommand(program: Command): void {
             let top10IncludeHits = 0;
             let top10IncludeTotal = 0;
             const misses: BenchmarkMiss[] = [];
-            const sourceEmbeddings: Array<{ backend: EmbeddingBackend; cacheHit: boolean }> = [];
 
-            for (const entry of cases) {
-                const sourcePath = path.resolve(cwd, entry.source);
-                const sourceText = await fs.readFile(sourcePath, 'utf8');
-                const sourceProfile = buildDocumentProfile(
-                    sourcePath,
-                    sourceText,
-                    cwd,
-                    entry.diffText,
-                    options.diffRoot
-                );
-                const sourceVector = await embeddingSession.embed(sourceProfile.embeddingText);
-                sourceEmbeddings.push({
-                    backend: sourceVector.backend,
-                    cacheHit: sourceVector.cacheHit,
-                });
-
-                const matches = filterMatches(
-                    rankMatches(
-                        { profile: sourceProfile, vector: sourceVector.vector },
-                        preparedCandidates.filter((candidate) => path.resolve(cwd, candidate.file) !== sourcePath)
-                    ),
-                    config.match.minScore
-                );
-                const topThree = matches.slice(0, 3);
-                const topTen = matches.slice(0, 10);
-                const failedChecks: string[] = [];
-
-                const expectedTop1 = getExpectedTop1(entry);
-                if (expectedTop1) {
-                    top1Total += 1;
-                    if ((matches[0]?.file ?? '') === expectedTop1) {
-                        top1Hits += 1;
-                    } else {
-                        failedChecks.push('top1');
-                    }
-                }
-
-                const expectedTop3 = getExpectedTop3(entry);
-                if (expectedTop3.length) {
-                    top3Total += 1;
-                    if (topThree.some((match) => expectedTop3.includes(match.file))) {
-                        top3Hits += 1;
-                    } else {
-                        failedChecks.push('top3');
-                    }
-                }
-
-                const expectedTop10Includes = entry.expectedTop10Includes ?? [];
-                if (expectedTop10Includes.length) {
-                    top10IncludeTotal += 1;
-                    if (expectedTop10Includes.every((file) => topTen.some((match) => match.file === file))) {
-                        top10IncludeHits += 1;
-                    } else {
-                        failedChecks.push('top10Includes');
-                    }
-                }
-
-                if (failedChecks.length) {
-                    const expectedFiles = uniqueExpectedFiles(expectedTop1, expectedTop3, expectedTop10Includes);
-                    misses.push({
-                        source: entry.source,
-                        failedChecks,
-                        expectedTop1,
-                        expectedTop3: expectedTop3.length ? expectedTop3 : undefined,
-                        expectedTop10Includes: expectedTop10Includes.length ? expectedTop10Includes : undefined,
-                        observedTop10: topTen.map((match) => match.file),
-                        observedRanks: getObservedRanks(matches, expectedFiles),
-                    });
-                }
+            // A cases file may come from an untrusted checkout; its sources are read and sent to Jev.
+            const [outsideSource] = await findPathsOutside([...sourcePaths], cwd);
+            if (outsideSource) {
+                throw new Error(`Benchmark source ${outsideSource} is outside the workspace ${cwd}`);
             }
 
-            await embeddingSession.flush();
+            // Flush even when a later case fails, so answers already paid for stay cached.
+            try {
+                for (const entry of cases) {
+                    const sourcePath = path.resolve(cwd, entry.source);
+                    const sourceFileText = await readFileIfExists(sourcePath);
+                    const sourceText = sourceFileText ?? '';
+                    const sourceProfile = buildDocumentProfile(
+                        sourcePath,
+                        sourceText,
+                        cwd,
+                        entry.diffText,
+                        options.diffRoot
+                    );
+                    if (sourceFileText === undefined && !sourceProfile.diffExcerpt) {
+                        throw new Error(`Benchmark source not found: ${entry.source} (add a diffText that deletes it)`);
+                    }
+                    let caseCandidates = preparedCandidates.filter(
+                        (candidate) => path.resolve(cwd, candidate.file) !== sourcePath
+                    );
+                    if (jevScorer) {
+                        const result = await jevScorer.score(
+                            { profile: sourceProfile, text: sourceText, diffOnly: entry.diffText !== undefined },
+                            caseCandidates
+                        );
+                        jevStats.requests += result.requests;
+                        jevStats.cacheHits += result.cacheHits;
+                        jevStats.inputTokens += result.inputTokens;
+                        result.models.forEach((model) => jevStats.models.add(model));
+                        caseCandidates = caseCandidates.map((candidate) => ({
+                            ...candidate,
+                            jevScore: result.scores.get(candidate.file),
+                        }));
+                    }
 
-            const embeddingSummary = summarizeEmbeddingBackends(sourceEmbeddings, preparedCandidates);
+                    const matches = filterMatches(
+                        rankMatches({ profile: sourceProfile }, caseCandidates),
+                        config.match.minScore
+                    );
+                    const topThree = matches.slice(0, 3);
+                    const topTen = matches.slice(0, 10);
+                    const failedChecks: string[] = [];
+
+                    const expectedTop1 = entry.expectedTop1;
+                    if (expectedTop1) {
+                        top1Total += 1;
+                        if ((matches[0]?.file ?? '') === expectedTop1) {
+                            top1Hits += 1;
+                        } else {
+                            failedChecks.push('top1');
+                        }
+                    }
+
+                    const expectedTop3 = getExpectedTop3(entry);
+                    if (expectedTop3.length) {
+                        top3Total += 1;
+                        if (topThree.some((match) => expectedTop3.includes(match.file))) {
+                            top3Hits += 1;
+                        } else {
+                            failedChecks.push('top3');
+                        }
+                    }
+
+                    const expectedTop10Includes = entry.expectedTop10Includes ?? [];
+                    if (expectedTop10Includes.length) {
+                        top10IncludeTotal += 1;
+                        if (expectedTop10Includes.every((file) => topTen.some((match) => match.file === file))) {
+                            top10IncludeHits += 1;
+                        } else {
+                            failedChecks.push('top10Includes');
+                        }
+                    }
+
+                    if (failedChecks.length) {
+                        const expectedFiles = uniqueExpectedFiles(expectedTop1, expectedTop3, expectedTop10Includes);
+                        misses.push({
+                            source: entry.source,
+                            failedChecks,
+                            expectedTop1,
+                            expectedTop3: expectedTop3.length ? expectedTop3 : undefined,
+                            expectedTop10Includes: expectedTop10Includes.length ? expectedTop10Includes : undefined,
+                            observedTop10: topTen.map((match) => match.file),
+                            observedRanks: getObservedRanks(matches, expectedFiles),
+                        });
+                    }
+                }
+            } finally {
+                await jevScorer?.flush();
+            }
+
             const summary = {
+                ranker: config.ranker,
                 cases: cases.length,
                 threshold: config.match.threshold,
                 minScore: config.match.minScore,
@@ -282,7 +268,7 @@ export function registerBenchmarkCommand(program: Command): void {
                 top10IncludeRate: top10IncludeTotal ? top10IncludeHits / top10IncludeTotal : 0,
                 misses,
                 candidateLimitReached: candidateResult.truncated,
-                ...embeddingSummary,
+                jev: jevScorer ? { ...jevStats, models: [...jevStats.models].sort() } : undefined,
             };
 
             if (options.json) {
@@ -290,6 +276,7 @@ export function registerBenchmarkCommand(program: Command): void {
                 return;
             }
 
+            console.log(`ranker: ${summary.ranker}`);
             console.log(`cases: ${summary.cases}`);
             console.log(`top1Cases: ${summary.top1Cases}`);
             console.log(`top1Rate: ${summary.top1Rate.toFixed(4)}`);
@@ -298,9 +285,12 @@ export function registerBenchmarkCommand(program: Command): void {
             console.log(`top10IncludeCases: ${summary.top10IncludeCases}`);
             console.log(`top10IncludeRate: ${summary.top10IncludeRate.toFixed(4)}`);
             console.log(`candidateLimitReached: ${summary.candidateLimitReached}`);
-            console.log(`sourceEmbeddingBackends: ${summary.sourceEmbeddingBackends.join(', ') || 'none'}`);
-            console.log(`candidateEmbeddingBackends: ${summary.candidateEmbeddingBackends.join(', ') || 'none'}`);
-            console.log(`cacheHitCount: ${summary.cacheHitCount}`);
+            if (summary.jev) {
+                console.log(`jevRequests: ${summary.jev.requests}`);
+                console.log(`jevCacheHits: ${summary.jev.cacheHits}`);
+                console.log(`jevInputTokens: ${summary.jev.inputTokens}`);
+                console.log(`jevModels: ${summary.jev.models.join(', ') || 'none'}`);
+            }
             if (!summary.misses.length) {
                 console.log('misses: none');
                 return;

@@ -1,6 +1,10 @@
-import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { canonicalizeToken, tokenizeText, uniqueTokens } from './text-utils.ts';
+import { interleaveUniqueTokens } from '../utils/arrays.ts';
+import { normalizePathSeparators } from '../utils/paths.ts';
+import { canonicalizeToken, splitIntoParts, tokenizeText, uniqueTokens } from './text-utils.ts';
+import { collectChangedLines, type ChangedLines } from './unified-diff.ts';
+
+export { listDiffFiles, listModeOnlyDiffFiles, resolveDiffRoot } from './unified-diff.ts';
 
 export type DocumentKind = 'source' | 'test' | 'fixture' | 'unknown';
 
@@ -19,13 +23,14 @@ export interface DocumentProfile {
     exports: string[];
     imports: string[];
     testNames: string[];
+    testTitles: string[];
     commandTokens: string[];
     optionTokens: string[];
     contentTokens: string[];
     lateCallTokens: string[];
     semanticTokens: string[];
+    diffExcerpt: string;
     summary: string;
-    embeddingText: string;
     preview: string;
 }
 
@@ -84,18 +89,17 @@ const GENERIC_ANCHOR_TOKENS = new Set([
 
 const GENERIC_CHANGE_TOKENS = new Set([...GENERIC_ANCHOR_TOKENS, 'is']);
 
-interface ChangedLines {
-    added: string[];
-    removed: string[];
-}
-
-type GitPrefixes = [string | undefined, string | undefined];
-
 const MAX_SEMANTIC_TOKENS = 72;
 const MAX_CHANGE_SEMANTIC_TOKENS = 24;
-const MAX_EMBEDDING_SECTION_TOKENS = 32;
-const MAX_EMBEDDING_WORDS = 512;
+const MAX_CHANGE_TOKENS = 64;
+const MAX_CHANGE_PHRASE_TOKENS = 96;
+const MAX_PHRASE_TOKENS = 128;
+const MAX_RARE_ANCHOR_TOKENS = 96;
+const MAX_PATH_FAMILY_TOKENS = 96;
+const MAX_CONTENT_TOKENS = 64;
 const MAX_LATE_CALL_TOKENS = 128;
+const MAX_TITLE_LENGTH = 160;
+const MAX_PREVIEW_LENGTH = 160;
 
 function collectIdentifierTokens(value: string, filterGenericAnchors = false): string[] {
     const tokens = uniqueTokens([
@@ -112,9 +116,7 @@ function collectIdentifierTokens(value: string, filterGenericAnchors = false): s
 
 function collectMatches(value: string, pattern: RegExp, splitter?: (input: string) => string[]): string[] {
     const matches: string[] = [];
-    const regex = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`);
-
-    for (const match of value.matchAll(regex)) {
+    for (const match of value.matchAll(pattern)) {
         const captured = match[1] || '';
         if (!captured) {
             continue;
@@ -127,48 +129,42 @@ function collectMatches(value: string, pattern: RegExp, splitter?: (input: strin
     return uniqueTokens(matches);
 }
 
+/** Original names from a `{ a, b as c }` list. */
+function collectListedIdentifiers(list: string): string[] {
+    return list
+        .split(',')
+        .map((entry) => entry.split(/\s+as\s+/i)[0].trim())
+        .filter(Boolean)
+        .flatMap((entry) => collectIdentifierTokens(entry));
+}
+
 function collectExportedSymbols(text: string): string[] {
     const direct = collectMatches(
         text,
         /export\s+(?:declare\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)/g,
-        (input) => collectIdentifierTokens(input)
+        collectIdentifierTokens
     );
     const classes = collectMatches(
         text,
         /export\s+(?:class|interface|type|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
-        (input) => collectIdentifierTokens(input)
+        collectIdentifierTokens
     );
     const variables = collectMatches(
         text,
         /export\s+(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
-        (input) => collectIdentifierTokens(input)
+        collectIdentifierTokens
     );
-    const braceExports = collectMatches(
-        text,
-        /export\s*{\s*([^}]+)\s*}/g,
-        (input) =>
-            input
-                .split(',')
-                .map((entry) => entry.split(/\s+as\s+/i)[0].trim())
-                .filter(Boolean)
-                .flatMap((entry) => collectIdentifierTokens(entry))
-    );
+    const braceExports = collectMatches(text, /export\s*{\s*([^}]+)\s*}/g, collectListedIdentifiers);
 
     return uniqueTokens([...direct, ...classes, ...variables, ...braceExports]);
 }
 
 function collectImportedSymbols(text: string): string[] {
-    const direct = collectMatches(text, /import\s+{([^}]+)}\s+from\s+['"][^'"]+['"]/g, (input) =>
-        input
-            .split(',')
-            .map((entry) => entry.split(/\s+as\s+/i)[0].trim())
-            .filter(Boolean)
-            .flatMap((entry) => collectIdentifierTokens(entry))
-    );
+    const direct = collectMatches(text, /import\s+{([^}]+)}\s+from\s+['"][^'"]+['"]/g, collectListedIdentifiers);
     const defaultImports = collectMatches(
         text,
         /import\s+([A-Za-z_][A-Za-z0-9_]*)\s+from\s+['"][^'"]+['"]/g,
-        (input) => collectIdentifierTokens(input)
+        collectIdentifierTokens
     );
     return uniqueTokens([...direct, ...defaultImports]);
 }
@@ -193,16 +189,106 @@ function collectTestNames(text: string): string[] {
     return uniqueTokens(names);
 }
 
+// `.each(table)`, `.each`table``, `.for(table)`, and `.skipIf(condition)` call once before the title;
+// the bounded table keeps an unclosed call cheap to reject.
+// The lookbehind skips method calls such as `/\d+/.test('42')`; `Deno.test` is the dotted call that declares tests.
+const TEST_TITLE_PATTERN = /(?<![\w$.])(?:Deno\.test|test|it|describe)(?:\.(?:describe|only|skip|ignore|todo|fixme|fail|failing|slow|serial|parallel|concurrent|sequential))*(?:\.(?:each|for|skipIf|runIf)(?:`[^`]{0,4000}`|\((?:[^()]|\([^()]{0,400}\)){0,4000}\)))?\(\s*(['"`])((?:\\.|(?!\1|\\).)+)\1/g;
+
+// After these keywords an expression follows, so `/` starts a regex literal: `return /x/`.
+const KEYWORDS_BEFORE_EXPRESSION = new Set([
+    'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await',
+]);
+// A statement head such as `if (x)` is followed by a statement, which may start with a regex.
+const CONTROL_KEYWORDS = new Set(['if', 'while', 'for', 'with']);
+const IDENTIFIER_CHARACTER = /[\w$]/;
+
+/**
+ * The text at the same offsets with comments blanked and string, template, and regex contents
+ * masked, so a match can be checked for being code. A heuristic lexer: a misread literal only
+ * masks up to the end of its line.
+ */
+function maskNonCode(text: string): string {
+    let masked = '';
+    let previousCode = '';
+    let lastWord = '';
+    let closedControlParen = false;
+    const parens: boolean[] = [];
+    // `/` is division after an operand (a name, number, literal, `)` or `]`) and a regex elsewhere.
+    const startsRegex = () => {
+        if (previousCode === ')') {
+            return closedControlParen;
+        }
+        if (IDENTIFIER_CHARACTER.test(previousCode)) {
+            return KEYWORDS_BEFORE_EXPRESSION.has(lastWord);
+        }
+        return previousCode !== ']';
+    };
+    let index = 0;
+    while (index < text.length) {
+        const character = text[index];
+        const next = text[index + 1];
+        if (character === '/' && (next === '/' || next === '*')) {
+            const close = next === '/' ? text.indexOf('\n', index) : text.indexOf('*/', index + 2);
+            const end = close === -1 ? text.length : next === '/' ? close : close + 2;
+            masked += text.slice(index, end).replace(/[^\n]/g, ' ');
+            index = end;
+            continue;
+        }
+        if (character === '"' || character === "'" || character === '`' || (character === '/' && startsRegex())) {
+            let end = index + 1;
+            // Only template literals span lines.
+            while (end < text.length && text[end] !== character && (character === '`' || text[end] !== '\n')) {
+                end += text[end] === '\\' ? 2 : 1;
+            }
+            end = Math.min(end, text.length);
+            const closed = text[end] === character;
+            masked += character + text.slice(index + 1, end).replace(/[^\n]/g, 'x') + (closed ? character : '');
+            index = closed ? end + 1 : end;
+            // A literal is an operand, like a name that is not a keyword.
+            previousCode = 'x';
+            lastWord = '';
+            continue;
+        }
+        masked += character;
+        if (IDENTIFIER_CHARACTER.test(character)) {
+            lastWord = IDENTIFIER_CHARACTER.test(text[index - 1] ?? '') ? lastWord + character : character;
+        } else if (character === '(') {
+            parens.push(IDENTIFIER_CHARACTER.test(previousCode) && CONTROL_KEYWORDS.has(lastWord));
+        } else if (character === ')') {
+            closedControlParen = parens.pop() ?? false;
+        }
+        if (!/\s/.test(character)) {
+            previousCode = character;
+        }
+        index += 1;
+    }
+    return masked;
+}
+
+/** Raw test titles, kept verbatim for consumers that read them as prose. */
+function collectTestTitles(text: string): string[] {
+    const titles: string[] = [];
+    const code = maskNonCode(text);
+    for (const match of text.matchAll(TEST_TITLE_PATTERN)) {
+        // A call inside a comment or string, such as `// test('example')`, declares no test.
+        if (code[match.index] !== text[match.index]) {
+            continue;
+        }
+        const title = match[2].trim().slice(0, MAX_TITLE_LENGTH);
+        if (title) {
+            titles.push(title);
+        }
+    }
+    return [...new Set(titles)];
+}
+
 function collectStemTokens(basename: string): string[] {
     const stem = basename
         .replace(/\.[^.]+$/u, '')
         .replace(/\.(test|spec)$/iu, '');
 
     return uniqueTokens(
-        stem
-            .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-            .replace(/[_./\\-]+/g, ' ')
-            .split(/\s+/)
+        splitIntoParts(stem)
             .map((token) => canonicalizeToken(token, { skipStopWords: true }))
             .filter((token): token is string => Boolean(token))
     );
@@ -288,7 +374,7 @@ function collectPhraseTokens(
         rawValues.push(value);
     }
 
-    return uniqueTokens(rawValues.flatMap((value) => buildPhraseTokens(splitPhraseParts(value)))).slice(0, 128);
+    return uniqueTokens(rawValues.flatMap((value) => buildPhraseTokens(splitPhraseParts(value)))).slice(0, MAX_PHRASE_TOKENS);
 }
 
 function collectRareAnchorTokens(
@@ -302,8 +388,7 @@ function collectRareAnchorTokens(
 
     for (const value of rawValues) {
         for (const pattern of RARE_ANCHOR_PATTERNS) {
-            const regex = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`);
-            for (const match of value.matchAll(regex)) {
+            for (const match of value.matchAll(pattern)) {
                 anchors.push(match[0]);
             }
         }
@@ -313,12 +398,11 @@ function collectRareAnchorTokens(
         anchors.flatMap((value) => collectIdentifierTokens(value, true))
     )
         .filter((token) => includeInternalFragments || !/(selector|attribute)/i.test(token))
-        .slice(0, 96);
+        .slice(0, MAX_RARE_ANCHOR_TOKENS);
 }
 
 function collectPathSegments(value: string): string[] {
-    const segments = value
-        .replace(/\\/g, '/')
+    const segments = normalizePathSeparators(value)
         .split('/')
         .flatMap((segment) => segment.split(/[._-]+/))
         .map((segment) => canonicalizeToken(segment, { skipStopWords: true }))
@@ -341,384 +425,23 @@ function collectPathFamilyTokens(relativePath: string, text: string): string[] {
     const values = [relativePath, ...collectImportedPaths(text)];
     return uniqueTokens(
         values.flatMap((value) => buildPathFamilyTokensFromSegments(collectPathSegments(value)))
-    ).slice(0, 96);
-}
-
-function interleaveUniqueTokens(groups: string[][], limit: number): string[] {
-    const tokens: string[] = [];
-    const seen = new Set<string>();
-
-    for (let index = 0; tokens.length < limit; index += 1) {
-        let hasValue = false;
-        for (const group of groups) {
-            const token = group[index];
-            if (token === undefined) {
-                continue;
-            }
-            hasValue = true;
-            if (!seen.has(token)) {
-                seen.add(token);
-                tokens.push(token);
-                if (tokens.length === limit) {
-                    break;
-                }
-            }
-        }
-        if (!hasValue) {
-            break;
-        }
-    }
-
-    return tokens;
-}
-
-const GIT_ESCAPE_BYTES: Record<string, number> = {
-    a: 0x07,
-    b: 0x08,
-    t: 0x09,
-    n: 0x0a,
-    v: 0x0b,
-    f: 0x0c,
-    r: 0x0d,
-    '"': 0x22,
-    '\\': 0x5c,
-};
-
-function decodeGitPath(value: string): string {
-    if (!value.startsWith('"') || !value.endsWith('"')) {
-        return value;
-    }
-
-    const bytes: number[] = [];
-    const quotedValue = value.slice(1, -1);
-    for (let index = 0; index < quotedValue.length; index += 1) {
-        const character = quotedValue[index];
-        if (character !== '\\') {
-            const codePoint = quotedValue.codePointAt(index);
-            if (codePoint !== undefined) {
-                bytes.push(...Buffer.from(String.fromCodePoint(codePoint)));
-                if (codePoint > 0xffff) {
-                    index += 1;
-                }
-            }
-            continue;
-        }
-
-        const escapedCharacter = quotedValue[index + 1];
-        if (escapedCharacter === undefined) {
-            bytes.push(0x5c);
-            continue;
-        }
-        const octal = /^[0-7]{1,3}/.exec(quotedValue.slice(index + 1))?.[0];
-        if (octal) {
-            bytes.push(Number.parseInt(octal, 8));
-            index += octal.length;
-            continue;
-        }
-        const escapedByte = GIT_ESCAPE_BYTES[escapedCharacter];
-        if (escapedByte !== undefined) {
-            bytes.push(escapedByte);
-            index += 1;
-            continue;
-        }
-        bytes.push(0x5c, ...Buffer.from(escapedCharacter));
-        index += 1;
-    }
-
-    return Buffer.from(bytes).toString('utf8');
-}
-
-function parseGitDiffPaths(line: string, relativePath: string): [string, string] | undefined {
-    const value = line.slice('diff --git '.length);
-    const tokenizedPaths = /^("(?:\\.|[^"])*"|\S+) ("(?:\\.|[^"])*"|\S+)$/.exec(value);
-    if (tokenizedPaths) {
-        return [decodeGitPath(tokenizedPaths[1]), decodeGitPath(tokenizedPaths[2])];
-    }
-
-    const samePathBoundary = value.lastIndexOf(`${relativePath} `);
-    if (samePathBoundary !== -1) {
-        const oldPathEnd = samePathBoundary + relativePath.length;
-        const paths: [string, string] = [value.slice(0, oldPathEnd), value.slice(oldPathEnd + 1)];
-        if (paths[0].endsWith(relativePath) && paths[1].endsWith(relativePath)) {
-            return paths;
-        }
-    }
-
-    const standardNewPath = `b/${relativePath}`;
-    if (value.startsWith('a/') && value.endsWith(` ${standardNewPath}`)) {
-        return [value.slice(0, -standardNewPath.length - 1), standardNewPath];
-    }
-
-    const paths = /^(\S+) (\S+)$/.exec(value);
-    return paths ? [paths[1], paths[2]] : undefined;
-}
-
-function inferGitPrefixes(paths: [string, string]): GitPrefixes | undefined {
-    const [oldPath, newPath] = paths;
-    const oldParts = oldPath.split('/');
-    const newParts = newPath.split('/');
-    let sharedParts = 0;
-    while (
-        sharedParts < oldParts.length
-        && sharedParts < newParts.length
-        && oldParts[oldParts.length - sharedParts - 1] === newParts[newParts.length - sharedParts - 1]
-    ) {
-        sharedParts += 1;
-    }
-
-    if (oldPath.startsWith('a/') && newPath.startsWith('b/') && (
-        oldPath.slice(2) === newPath.slice(2) || sharedParts <= 1
-    )) {
-        return ['a/', 'b/'];
-    }
-    if (sharedParts <= 1) {
-        return undefined;
-    }
-
-    const sharedPath = oldParts.slice(-sharedParts).join('/');
-    const prefixes: GitPrefixes = [
-        oldPath.slice(0, -sharedPath.length),
-        newPath.slice(0, -sharedPath.length),
-    ];
-    return prefixes[0] !== prefixes[1] ? prefixes : undefined;
-}
-
-function parseGitPathMetadata(line: string): [0 | 1, string] | undefined {
-    const metadata = /^(?:rename|copy) (from|to) (.+)$/.exec(line);
-    if (!metadata) {
-        return undefined;
-    }
-    return [metadata[1] === 'to' ? 1 : 0, decodeGitPath(metadata[2])];
-}
-
-function parseGitDiffPathsFromMetadata(
-    line: string,
-    logicalPaths: [string, string]
-): [string, string] | undefined {
-    const value = line.slice('diff --git '.length);
-    const oldPathBoundary = value.lastIndexOf(`${logicalPaths[0]} `);
-    if (oldPathBoundary === -1) {
-        return undefined;
-    }
-
-    const oldPathEnd = oldPathBoundary + logicalPaths[0].length;
-    const paths: [string, string] = [value.slice(0, oldPathEnd), value.slice(oldPathEnd + 1)];
-    return paths[0].endsWith(logicalPaths[0]) && paths[1].endsWith(logicalPaths[1])
-        ? paths
-        : undefined;
-}
-
-function applyGitPathMetadata(
-    gitPaths: [string, string] | undefined,
-    logicalPaths: [string | undefined, string | undefined],
-    gitPrefixes: GitPrefixes | undefined
-): GitPrefixes | undefined {
-    if (!gitPaths) {
-        return gitPrefixes;
-    }
-
-    const prefixes: GitPrefixes = gitPrefixes ? [...gitPrefixes] : [undefined, undefined];
-    let updated = false;
-    for (let pathIndex = 0; pathIndex < gitPaths.length; pathIndex += 1) {
-        const logicalPath = logicalPaths[pathIndex];
-        if (logicalPath !== undefined && gitPaths[pathIndex].endsWith(logicalPath)) {
-            prefixes[pathIndex] = gitPaths[pathIndex].slice(0, -logicalPath.length);
-            updated = true;
-        }
-    }
-    return updated ? prefixes : gitPrefixes;
-}
-
-function matchesDiffPath(
-    diffPath: string,
-    absolutePath: string,
-    basePath: string,
-    fallbackBasePath?: string
-): boolean {
-    if (path.isAbsolute(diffPath)) {
-        return path.resolve(diffPath) === absolutePath;
-    }
-    const resolvedPath = path.resolve(basePath, diffPath);
-    if (resolvedPath === absolutePath) {
-        return true;
-    }
-    if (fallbackBasePath === undefined || path.resolve(fallbackBasePath, diffPath) !== absolutePath) {
-        return false;
-    }
-    if (existsSync(resolvedPath)) {
-        throw new Error(`Ambiguous diff path "${diffPath}"; use --diff-root to select its base directory`);
-    }
-    return true;
-}
-
-function collectChangedLines(
-    diffText: string | undefined,
-    relativePath: string,
-    cwd: string,
-    gitRoot: string,
-    allowCwdRelativeGitPaths: boolean
-): ChangedLines {
-    const changedLines: ChangedLines = { added: [], removed: [] };
-    if (!diffText) {
-        return changedLines;
-    }
-
-    let currentFileMatches = true;
-    let inHunk = false;
-    let oldLinesRemaining = 0;
-    let newLinesRemaining = 0;
-    let structuredDiff = false;
-    let plainOldPath: string | undefined;
-    let gitDiffLine: string | undefined;
-    let gitPaths: [string, string] | undefined;
-    let gitLogicalPaths: [string | undefined, string | undefined] = [undefined, undefined];
-    let gitPrefixes: GitPrefixes | undefined;
-    let copySection = false;
-    const absolutePath = path.resolve(cwd, relativePath);
-    const diffRootRelativePath = path.relative(gitRoot, absolutePath).replace(/\\/g, '/');
-    for (const line of diffText.split(/\r?\n/)) {
-        if (line.startsWith('diff --git ')) {
-            currentFileMatches = false;
-            inHunk = false;
-            structuredDiff = true;
-            plainOldPath = undefined;
-            gitDiffLine = line;
-            gitPaths = parseGitDiffPaths(line, diffRootRelativePath);
-            if (!gitPaths && diffRootRelativePath !== relativePath) {
-                gitPaths = parseGitDiffPaths(line, relativePath);
-            }
-            gitLogicalPaths = [undefined, undefined];
-            gitPrefixes = gitPaths ? inferGitPrefixes(gitPaths) : undefined;
-            copySection = false;
-            continue;
-        }
-        if (!inHunk && /^(?:rename|copy) (?:from|to) /.test(line)) {
-            copySection ||= line.startsWith('copy ');
-            const metadata = parseGitPathMetadata(line);
-            if (metadata) {
-                gitLogicalPaths[metadata[0]] = metadata[1];
-            }
-            const [oldLogicalPath, newLogicalPath] = gitLogicalPaths;
-            if (!gitPaths && gitDiffLine && oldLogicalPath !== undefined && newLogicalPath !== undefined) {
-                gitPaths = parseGitDiffPathsFromMetadata(gitDiffLine, [oldLogicalPath, newLogicalPath]);
-                gitPrefixes = gitPaths ? inferGitPrefixes(gitPaths) : undefined;
-            }
-            gitPrefixes = applyGitPathMetadata(gitPaths, gitLogicalPaths, gitPrefixes);
-            continue;
-        }
-        if (!inHunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
-            const headerPath = line.slice(4).split('\t', 1)[0]
-                .replace(/\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?: [+-]\d{4})?$/, '')
-                .trim();
-            let diffPath = decodeGitPath(headerPath);
-            const isNewFileHeader = line.startsWith('+++ ');
-            const diffBase = gitDiffLine || !allowCwdRelativeGitPaths ? gitRoot : cwd;
-            const prefixedPathExists = gitPaths?.some(candidatePath => (
-                existsSync(path.resolve(diffBase, candidatePath))
-            )) ?? false;
-            const prefixIsSynthetic = Boolean(
-                gitLogicalPaths[0] !== undefined && gitLogicalPaths[1] !== undefined
-                || gitPaths
-                    && gitPaths[0].startsWith('a/')
-                    && gitPaths[1].startsWith('b/')
-                    && gitPaths[0].slice(2) === gitPaths[1].slice(2)
-            );
-            const prefix = isNewFileHeader ? gitPrefixes?.[1] : gitPrefixes?.[0];
-            if (
-                prefix
-                && diffPath.startsWith(prefix)
-                && (
-                    prefixIsSynthetic
-                    || !prefixedPathExists && !matchesDiffPath(diffPath, absolutePath, diffBase)
-                )
-            ) {
-                diffPath = diffPath.slice(prefix.length);
-            }
-            if (!isNewFileHeader && !gitDiffLine) {
-                plainOldPath = diffPath;
-            } else if (
-                isNewFileHeader
-                && !gitDiffLine
-                && plainOldPath?.startsWith('a/')
-                && diffPath.startsWith('b/')
-                && plainOldPath.slice(2) === diffPath.slice(2)
-                && !matchesDiffPath(plainOldPath, absolutePath, diffBase)
-                && !matchesDiffPath(diffPath, absolutePath, diffBase)
-            ) {
-                plainOldPath = plainOldPath.slice(2);
-                diffPath = diffPath.slice(2);
-                currentFileMatches = matchesDiffPath(plainOldPath, absolutePath, diffBase);
-            }
-            const diffPathMatches = matchesDiffPath(
-                diffPath,
-                absolutePath,
-                diffBase,
-                gitDiffLine && allowCwdRelativeGitPaths ? cwd : undefined
-            );
-            if (copySection) {
-                currentFileMatches = isNewFileHeader && diffPathMatches;
-            } else {
-                currentFileMatches = isNewFileHeader
-                    ? currentFileMatches || diffPathMatches
-                    : diffPathMatches;
-            }
-            if (isNewFileHeader) {
-                plainOldPath = undefined;
-                gitDiffLine = undefined;
-                gitPaths = undefined;
-                gitLogicalPaths = [undefined, undefined];
-                gitPrefixes = undefined;
-                copySection = false;
-            }
-            structuredDiff = true;
-            continue;
-        }
-        if (line.startsWith('@@')) {
-            const header = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
-            if (header) {
-                oldLinesRemaining = Number(header[1] ?? 1);
-                newLinesRemaining = Number(header[2] ?? 1);
-                inHunk = true;
-                structuredDiff = true;
-            }
-            continue;
-        }
-        if (!line || (!inHunk && structuredDiff)) {
-            continue;
-        }
-        if (currentFileMatches) {
-            if (line.startsWith('+')) {
-                changedLines.added.push(line.slice(1));
-            } else if (line.startsWith('-')) {
-                changedLines.removed.push(line.slice(1));
-            }
-        }
-        if (inHunk) {
-            if (line.startsWith('+')) {
-                newLinesRemaining -= 1;
-            } else if (line.startsWith('-')) {
-                oldLinesRemaining -= 1;
-            } else if (line.startsWith(' ')) {
-                oldLinesRemaining -= 1;
-                newLinesRemaining -= 1;
-            }
-            inHunk = oldLinesRemaining > 0 || newLinesRemaining > 0;
-        }
-    }
-
-    return changedLines;
+    ).slice(0, MAX_PATH_FAMILY_TOKENS);
 }
 
 function collectChangeSignalValues(changedLines: string[]): string[] {
     const values: string[] = [];
 
-    for (const line of changedLines) {
-        for (const match of line.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)) {
-            const value = match[0]?.trim();
+    const pushMatches = (line: string, pattern: RegExp) => {
+        for (const match of line.matchAll(pattern)) {
+            const value = match[0].trim();
             if (value) {
                 values.push(value);
             }
         }
+    };
+
+    for (const line of changedLines) {
+        pushMatches(line, /\b[A-Za-z_][A-Za-z0-9_]*\b/g);
 
         for (const match of line.matchAll(/['"`]([^'"`\n]{1,240})['"`]/g)) {
             const value = (match[1] || '').replace(/\$\{[^}]+\}/g, ' ').trim();
@@ -727,26 +450,9 @@ function collectChangeSignalValues(changedLines: string[]): string[] {
             }
         }
 
-        for (const match of line.matchAll(/--[a-z0-9][a-z0-9-]*/gi)) {
-            const value = match[0]?.trim();
-            if (value) {
-                values.push(value);
-            }
-        }
-
-        for (const match of line.matchAll(/\b(?:\.{0,2}\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\b/g)) {
-            const value = match[0]?.trim();
-            if (value) {
-                values.push(value);
-            }
-        }
-
-        for (const match of line.matchAll(/\b[a-z-]+:[a-z-]+\b/gi)) {
-            const value = match[0]?.trim();
-            if (value) {
-                values.push(value);
-            }
-        }
+        pushMatches(line, /--[a-z0-9][a-z0-9-]*/gi);
+        pushMatches(line, /\b(?:\.{0,2}\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\b/g);
+        pushMatches(line, /\b[a-z-]+:[a-z-]+\b/gi);
     }
 
     return values;
@@ -783,7 +489,7 @@ function collectChangeTokens(changedLines: ChangedLines): string[] {
         collectChangeSignalValues(lines)
             .flatMap((value) => tokenizeText(value))
             .filter(isUsefulChangeToken)
-    ).slice(0, 64);
+    ).slice(0, MAX_CHANGE_TOKENS);
 }
 
 function collectChangePhraseTokens(changedLines: ChangedLines, relativePath: string): string[] {
@@ -794,16 +500,21 @@ function collectChangePhraseTokens(changedLines: ChangedLines, relativePath: str
             ...values.flatMap((value) => buildPhraseTokens(splitPhraseParts(value))),
             ...collectRareAnchorTokens(values.join('\n'), relativePath, values, true),
         ].filter(isUsefulChangeToken);
-    }).slice(0, 96);
+    }).slice(0, MAX_CHANGE_PHRASE_TOKENS);
+}
+
+// Keeps an unterminated string instead of failing the match, which made the scan retry at every quote.
+function stripClosedString(match: string, closingQuote?: string): string {
+    return closingQuote ? ' ' : match;
 }
 
 function stripCommentsAndStrings(text: string): string {
     return text
         .replace(/\/\*[\s\S]*?\*\//g, ' ')
         .replace(/\/\/.*$/gm, ' ')
-        .replace(/'([^'\\]|\\.)*'/g, ' ')
-        .replace(/"([^"\\]|\\.)*"/g, ' ')
-        .replace(/`([^`\\]|\\.)*`/g, ' ');
+        .replace(/'(?:[^'\\]|\\.)*(')?/g, stripClosedString)
+        .replace(/"(?:[^"\\]|\\.)*(")?/g, stripClosedString)
+        .replace(/`(?:[^`\\]|\\.)*(`)?/g, stripClosedString);
 }
 
 function collectLateCallTokens(text: string, contentTokens: string[]): string[] {
@@ -818,34 +529,26 @@ function collectLateCallTokens(text: string, contentTokens: string[]): string[] 
         .slice(0, MAX_LATE_CALL_TOKENS);
 }
 
-function findGitRoot(cwd: string): string {
-    let currentPath = path.resolve(cwd);
-    while (true) {
-        if (existsSync(path.join(currentPath, '.git'))) {
-            return currentPath;
-        }
-        const parentPath = path.dirname(currentPath);
-        if (parentPath === currentPath) {
-            return path.resolve(cwd);
-        }
-        currentPath = parentPath;
-    }
-}
+// `.test`/`.spec` files and Deno's `_test` files.
+const TEST_FILE_NAME = /(?:\.(?:test|spec)|_test)\.[cm]?[jt]sx?$/i;
 
 function determineKind(relativePath: string): DocumentKind {
-    const normalized = relativePath.replace(/\\/g, '/');
-    if (/\.(test|spec)\.[cm]?[jt]sx?$/i.test(normalized) || /(^|\/)(test|tests)\//i.test(normalized)) {
+    const normalized = normalizePathSeparators(relativePath);
+    if (TEST_FILE_NAME.test(normalized)) {
         return 'test';
     }
-
-    if (/(^|\/)(fixture|fixtures)\//i.test(normalized) || /\.(fixture)\.[cm]?[jt]sx?$/i.test(normalized)) {
+    // Fixtures often live under test directories, so they are recognized first.
+    if (/(^|\/)(fixture|fixtures|__fixtures__)\//i.test(normalized) || /\.(fixture)\.[cm]?[jt]sx?$/i.test(normalized)) {
         return 'fixture';
+    }
+    if (/(^|\/)(test|tests|__tests__)\//i.test(normalized)) {
+        return 'test';
     }
 
     return 'source';
 }
 
-function createSummary(profile: Omit<DocumentProfile, 'summary' | 'embeddingText' | 'preview'>): string {
+function createSummary(profile: Omit<DocumentProfile, 'summary' | 'preview'>): string {
     const subject = profile.kind === 'test' ? 'test file' : profile.kind === 'fixture' ? 'fixture file' : 'source module';
     const focus = profile.semanticTokens.slice(0, 12).join(', ');
     const lines = [`${subject} about ${focus || profile.basenameTokens.join(', ')}`];
@@ -885,38 +588,19 @@ function createSummary(profile: Omit<DocumentProfile, 'summary' | 'embeddingText
     return lines.join('\n');
 }
 
-function createEmbeddingText(profile: Omit<DocumentProfile, 'summary' | 'embeddingText' | 'preview'> & { summary: string }): string {
-    const buildSections = (limit?: number): string[] => {
-        const take = (tokens: string[]): string[] => limit === undefined ? tokens : tokens.slice(0, limit);
-        const sections = [
-            `path: ${profile.relativePath}`,
-            `kind: ${profile.kind}`,
-            `basename: ${profile.basenameTokens.join(' ')}`,
-            `summary: ${profile.summary}`,
-        ];
-        const tokenSections: Array<[string, string[]]> = [
-            ['exports', profile.exports],
-            ['imports', profile.imports],
-            ['tests', profile.testNames],
-            ['commands', profile.commandTokens],
-            ['options', profile.optionTokens],
-            ['path-families', profile.pathFamilyTokens],
-            ['anchors', profile.rareAnchorTokens],
-        ];
+/**
+ * Whether a file can be handed to a test runner: a test file by name, or a file outside fixtures
+ * that declares tests, such as `e2e/checkout.ts`. A helper or fixture in a test directory is neither.
+ */
+export function isTestLikeSource(relativePath: string, text: string): boolean {
+    return TEST_FILE_NAME.test(normalizePathSeparators(relativePath))
+        || (determineKind(relativePath) !== 'fixture' && collectTestTitles(text).length > 0);
+}
 
-        for (const [label, tokens] of tokenSections) {
-            if (tokens.length) {
-                sections.push(`${label}: ${take(tokens).join(' ')}`);
-            }
-        }
-        sections.push(`signals: ${profile.semanticTokens.join(' ')}`);
-        return sections;
-    };
-
-    const completeText = buildSections().join('\n');
-    return completeText.split(/\s+/).length <= MAX_EMBEDDING_WORDS
-        ? completeText
-        : buildSections(MAX_EMBEDDING_SECTION_TOKENS).join('\n');
+/** {@link isTestLikeSource} for an already built profile. */
+export function isTestLike(profile: DocumentProfile): boolean {
+    return TEST_FILE_NAME.test(normalizePathSeparators(profile.relativePath))
+        || (profile.kind !== 'fixture' && profile.testTitles.length > 0);
 }
 
 export function buildDocumentProfile(
@@ -927,24 +611,12 @@ export function buildDocumentProfile(
     diffRoot?: string
 ): DocumentProfile {
     const absolutePath = path.resolve(cwd, filePath);
-    const relativePath = path.relative(cwd, absolutePath).replace(/\\/g, '/');
+    const relativePath = normalizePathSeparators(path.relative(cwd, absolutePath));
     const basename = path.basename(absolutePath);
     const basenameTokens = tokenizeText(basename);
     const stemTokens = collectStemTokens(basename);
     const pathFamilyTokens = collectPathFamilyTokens(relativePath, text);
-    let resolvedDiffRoot = cwd;
-    if (diffRoot) {
-        resolvedDiffRoot = path.resolve(cwd, diffRoot);
-    } else if (diffText) {
-        resolvedDiffRoot = findGitRoot(cwd);
-    }
-    const changedLines = collectChangedLines(
-        diffText,
-        relativePath,
-        cwd,
-        resolvedDiffRoot,
-        diffRoot === undefined
-    );
+    const changedLines = collectChangedLines(diffText, relativePath, cwd, diffRoot);
     const phraseTokens = collectPhraseTokens(text, relativePath);
     const rareAnchorTokens = collectRareAnchorTokens(text, relativePath);
     const hasChangedLines = changedLines.added.length > 0 || changedLines.removed.length > 0;
@@ -958,11 +630,12 @@ export function buildDocumentProfile(
     const exports = collectExportedSymbols(text);
     const imports = collectImportedSymbols(text);
     const testNames = collectTestNames(text);
+    const testTitles = collectTestTitles(text);
     const commandTokens = collectCommandTokens(text);
     const optionTokens = collectOptionTokens(text);
     const contentText = stripCommentsAndStrings(text);
     const contentTokens = uniqueTokens(tokenizeText(contentText));
-    const boundedContentTokens = contentTokens.slice(0, 64);
+    const boundedContentTokens = contentTokens.slice(0, MAX_CONTENT_TOKENS);
     const lateCallTokens = collectLateCallTokens(contentText, boundedContentTokens);
 
     const changeSemanticTokens = uniqueTokens([
@@ -1003,20 +676,20 @@ export function buildDocumentProfile(
         exports,
         imports,
         testNames,
+        testTitles,
         commandTokens,
         optionTokens,
         contentTokens: boundedContentTokens,
         lateCallTokens,
         semanticTokens,
+        diffExcerpt: changedLines.hunks.join('\n'),
     };
 
     const summary = createSummary(partialProfile);
-    const embeddingText = createEmbeddingText({ ...partialProfile, summary });
 
     return {
         ...partialProfile,
         summary,
-        embeddingText,
-        preview: (summary.split('\n')[0] || relativePath).slice(0, 160),
+        preview: (summary.split('\n')[0] || relativePath).slice(0, MAX_PREVIEW_LENGTH),
     };
 }

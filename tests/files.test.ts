@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { collectCandidateFilesDetailed } from '../src/utils/files.ts';
+import { collectCandidateFilesDetailed, MAX_CANDIDATE_BYTES, readCandidateText } from '../src/utils/files.ts';
 
 async function makeTree(files: string[]): Promise<string> {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-files-'));
@@ -78,5 +78,16 @@ describe('collectCandidateFilesDetailed', () => {
             root
         );
         assert.equal(result.files.length, 1);
+    });
+
+    it('skips candidate files too large to profile, with a warning', async (t) => {
+        const root = await makeTree(['tests/small.spec.ts']);
+        const large = path.join(root, 'tests/large.spec.ts');
+        await fs.writeFile(large, 'x'.repeat(MAX_CANDIDATE_BYTES + 1));
+        const warn = t.mock.method(console, 'warn', () => {});
+
+        assert.equal(await readCandidateText(large), undefined);
+        assert.match(String(warn.mock.calls[0]?.arguments[0]), /skipped .*large\.spec\.ts/);
+        assert.equal(typeof await readCandidateText(path.join(root, 'tests/small.spec.ts')), 'string');
     });
 });

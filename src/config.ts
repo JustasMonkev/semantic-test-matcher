@@ -1,20 +1,32 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { isParentPath } from './utils/patterns.ts';
+import { isWorkspaceContainedPath } from './utils/paths.ts';
+import { mergeArrays } from './utils/arrays.ts';
+import { clamp, firstFiniteNumber, parseBoolean, parseLogLevel, readEnv, type LogLevel } from './utils/values.ts';
+import { setDebugLogLevel } from './utils/io.ts';
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+export { clamp, type LogLevel } from './utils/values.ts';
+
+/**
+ * jev: TypeSafe Jev scores + structural heuristics (default; sends diffs and test titles to the TypeSafe API).
+ * heuristics: structural heuristics only (fully local).
+ */
+export type Ranker = 'jev' | 'heuristics';
+export type SelectionPolicy = 'adaptive' | 'conservative' | 'targeted';
 
 export interface MatchDefaults {
-    topK: number;
+    topK?: number;
     threshold: number;
     minScore: number;
+    selectionPolicy: SelectionPolicy;
     candidatePaths: string[];
     includePatterns: string[];
     excludePatterns: string[];
 }
 
 export interface AppConfig {
-    model?: string;
+    ranker?: Ranker;
+    jevModel?: string;
     cacheDir?: string;
     logLevel?: LogLevel;
     quiet?: boolean;
@@ -23,7 +35,8 @@ export interface AppConfig {
 }
 
 export interface RuntimeConfig {
-    model: string;
+    ranker: Ranker;
+    jevModel: string;
     cacheDir: string;
     logLevel: LogLevel;
     quiet: boolean;
@@ -34,7 +47,6 @@ export interface RuntimeConfig {
 
 export interface RootOptions {
     config?: string;
-    model?: string;
     cacheDir?: string;
     logLevel?: string;
     verbose?: boolean;
@@ -45,80 +57,47 @@ export interface MatchCommandOptions {
     threshold?: string;
     topK?: string;
     minScore?: string;
+    selectionPolicy?: string;
     candidates?: string[];
     includeFile?: string[];
     excludeFile?: string[];
-    model?: string;
+    ranker?: string;
+    jevModel?: string;
     cacheDir?: string;
     json?: boolean;
 }
 
-const DEFAULT_CONFIG: AppConfig = {
-    model: 'models/embeddinggemma-300M-Q4_0.gguf',
+const DEFAULT_CONFIG = {
+    ranker: 'jev',
+    // Pinned so cached answers and tuned thresholds survive `jev-latest` moving.
+    jevModel: 'jev-1.13.0',
     cacheDir: '.rbt/cache',
     logLevel: 'info',
     match: {
-        topK: 5,
         threshold: 0,
         minScore: 0,
+        selectionPolicy: 'adaptive',
         candidatePaths: ['test', 'tests'],
         includePatterns: ['**/*'],
         excludePatterns: ['**/dist/**', '**/.git/**', '**/node_modules/**', '**/build/**']
     },
-};
+} satisfies AppConfig;
 
-export function clamp(value: number, min: number, max: number): number {
-    if (Number.isNaN(value)) return min;
-    return Math.min(Math.max(value, min), max);
-}
-
-function firstFiniteNumber(...values: Array<unknown>): number | undefined {
-    for (const value of values) {
-        const parsed = Number(value);
-        if (Number.isFinite(parsed)) {
-            return parsed;
-        }
-    }
-
-    return undefined;
-}
-
-function parseBoolean(value: unknown, fallback = false): boolean {
-    if (typeof value === 'boolean') {
-        return value;
-    }
-    if (typeof value === 'string') {
-        if (value === '1' || value === 'true' || value === 'yes') {
-            return true;
-        }
-        if (value === '0' || value === 'false' || value === 'no') {
-            return false;
-        }
-    }
-    return fallback;
-}
-
-function parseLogLevel(value?: string): LogLevel {
-    const normalized = (value || '').trim().toLowerCase();
-    if (!normalized) {
-        return 'info';
-    }
-
-    if (normalized === 'debug' || normalized === 'info' || normalized === 'warn' || normalized === 'error') {
+function parseRanker(value: unknown): Ranker {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (normalized === 'jev' || normalized === 'heuristics') {
         return normalized;
     }
 
-    throw new Error(`Invalid log level "${value}". Expected "debug", "info", "warn", or "error".`);
+    throw new Error(`Invalid ranker "${value}". Expected "jev" or "heuristics".`);
 }
 
-function mergeArrays(left: string[] = [], right: string[] = []): string[] {
-    if (!left.length) {
-        return right;
+function parseSelectionPolicy(value: unknown): SelectionPolicy {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (normalized === 'adaptive' || normalized === 'conservative' || normalized === 'targeted') {
+        return normalized;
     }
-    if (!right.length) {
-        return left;
-    }
-    return [...new Set([...left, ...right])];
+    throw new Error(`Invalid selection policy "${value}". Expected "adaptive", "conservative", or "targeted".`);
 }
 
 function parseJsonConfig(raw: string, filePath: string): AppConfig {
@@ -130,33 +109,14 @@ function parseJsonConfig(raw: string, filePath: string): AppConfig {
     }
 }
 
-async function resolveRealPath(targetPath: string): Promise<string> {
-    let current = path.resolve(targetPath);
-    const suffix: string[] = [];
-
-    while (true) {
-        try {
-            const realPath = await fs.realpath(current);
-            return suffix.length ? path.resolve(realPath, ...suffix.reverse()) : realPath;
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-                throw error;
-            }
-
-            const parent = path.dirname(current);
-            if (parent === current) {
-                return current;
-            }
-
-            suffix.push(path.basename(current));
-            current = parent;
-        }
+// An auto-discovered config comes from the repo being tested, so it must not reach outside it.
+async function assertInsideWorkspace(paths: string[], workspace: string, setting: string): Promise<void> {
+    const contained = await Promise.all(
+        paths.map((configuredPath) => isWorkspaceContainedPath(path.resolve(workspace, configuredPath), workspace))
+    );
+    if (contained.includes(false)) {
+        throw new Error(`Auto-discovered repo config cannot set ${setting} outside the workspace.`);
     }
-}
-
-async function isWorkspaceContainedPath(targetPath: string, workspace: string): Promise<boolean> {
-    return isParentPath(workspace, targetPath) &&
-        isParentPath(workspace, await resolveRealPath(targetPath));
 }
 
 export interface LoadedConfig {
@@ -197,127 +157,64 @@ export async function resolveConfig(
     cwd: string = process.cwd()
 ): Promise<RuntimeConfig> {
     const { config: fileConfig, autoDiscovered, filePath: configFile } = await loadConfig(rootOptions.config);
-    const resolvedWorkspace = path.resolve(cwd);
-    const resolvedModel = commandOptions.model ??
-        rootOptions.model ??
-        process.env.RBT_MODEL ??
-        fileConfig.model ??
-        DEFAULT_CONFIG.model!;
-    const model = path.resolve(cwd, resolvedModel);
-    if (
-        autoDiscovered &&
-        commandOptions.model == null &&
-        rootOptions.model == null &&
-        process.env.RBT_MODEL == null &&
-        fileConfig.model &&
-        !await isWorkspaceContainedPath(model, resolvedWorkspace)
-    ) {
-        throw new Error('Auto-discovered repo config cannot set the model outside the workspace.');
-    }
+    const fileMatch = fileConfig.match ?? {};
+    const matchDefaults = DEFAULT_CONFIG.match;
+    const workspace = path.resolve(cwd);
+    const env = process.env;
 
-    const resolvedLogLevel = parseLogLevel(
-        rootOptions.logLevel ??
-            process.env.RBT_LOG_LEVEL ??
-            fileConfig.logLevel ??
-            DEFAULT_CONFIG.logLevel
+    // Every setting resolves as: CLI flag, then RBT_* environment variable, then config file, then default.
+    const ranker = parseRanker(commandOptions.ranker ?? readEnv('RBT_RANKER') ?? fileConfig.ranker ?? DEFAULT_CONFIG.ranker);
+    const jevModel = commandOptions.jevModel ?? readEnv('RBT_JEV_MODEL') ?? fileConfig.jevModel ?? DEFAULT_CONFIG.jevModel;
+    const logLevel = parseLogLevel(
+        rootOptions.logLevel ?? readEnv('RBT_LOG_LEVEL') ?? fileConfig.logLevel ?? DEFAULT_CONFIG.logLevel
     );
+    setDebugLogLevel(logLevel === 'debug');
+    const quiet = parseBoolean(rootOptions.quiet ?? readEnv('RBT_QUIET') ?? fileConfig.quiet);
+    const verbose = parseBoolean(rootOptions.verbose ?? readEnv('RBT_VERBOSE') ?? fileConfig.verbose);
 
-    const resolvedQuiet = parseBoolean(
-        rootOptions.quiet ??
-        process.env.RBT_QUIET ??
-        fileConfig.quiet ??
-        false,
-        false
+    // Numbers also accept RBT_MATCH_* aliases; firstFiniteNumber skips blank and unparsable values.
+    const configuredTopK = firstFiniteNumber(commandOptions.topK, env.RBT_TOP_K, env.RBT_MATCH_TOP_K, fileMatch.topK);
+    const configuredThreshold = firstFiniteNumber(
+        commandOptions.threshold, env.RBT_THRESHOLD, env.RBT_MATCH_THRESHOLD, fileMatch.threshold
     );
-    const resolvedVerbose = parseBoolean(
-        rootOptions.verbose ??
-        process.env.RBT_VERBOSE ??
-        fileConfig.verbose ??
-        false,
-        false
-    );
-
-    const resolvedTopK = firstFiniteNumber(
-        commandOptions.topK,
-        process.env.RBT_TOP_K,
-        process.env.RBT_MATCH_TOP_K,
-        fileConfig.match?.topK,
-        DEFAULT_CONFIG.match!.topK
-)!;
-
-    const resolvedThreshold = firstFiniteNumber(
-        commandOptions.threshold,
-        process.env.RBT_THRESHOLD,
-        process.env.RBT_MATCH_THRESHOLD,
-        fileConfig.match?.threshold,
-        DEFAULT_CONFIG.match!.threshold
-)!;
-
+    const threshold = clamp(configuredThreshold ?? matchDefaults.threshold, 0, 1);
     const configuredMinScore = firstFiniteNumber(
-        commandOptions.minScore,
-        process.env.RBT_MIN_SCORE,
-        process.env.RBT_MATCH_MIN_SCORE,
-        fileConfig.match?.minScore
+        commandOptions.minScore, env.RBT_MIN_SCORE, env.RBT_MATCH_MIN_SCORE, fileMatch.minScore
+    );
+    const selectionPolicy = parseSelectionPolicy(
+        commandOptions.selectionPolicy ?? readEnv('RBT_SELECTION_POLICY') ??
+            fileMatch.selectionPolicy ?? matchDefaults.selectionPolicy
     );
 
-    const minScore = clamp(configuredMinScore ?? resolvedThreshold, 0, 1);
-    const topK = Math.max(1, Math.floor(clamp(resolvedTopK, 1, 1000)));
-
-    const resolvedCacheDir = commandOptions.cacheDir ??
-        rootOptions.cacheDir ??
-        process.env.RBT_CACHE_DIR ??
-        fileConfig.cacheDir ??
-        DEFAULT_CONFIG.cacheDir!;
-    if (
-        autoDiscovered &&
-        commandOptions.cacheDir == null &&
-        rootOptions.cacheDir == null &&
-        process.env.RBT_CACHE_DIR == null &&
-        fileConfig.cacheDir &&
-        !await isWorkspaceContainedPath(path.resolve(resolvedWorkspace, fileConfig.cacheDir), resolvedWorkspace)
-    ) {
-        throw new Error('Auto-discovered repo config cannot set cacheDir outside the workspace.');
+    // The match command's --cache-dir outranks the global one.
+    const cacheDirOverride = commandOptions.cacheDir ?? rootOptions.cacheDir ?? readEnv('RBT_CACHE_DIR');
+    if (autoDiscovered && cacheDirOverride == null && fileConfig.cacheDir) {
+        await assertInsideWorkspace([fileConfig.cacheDir], workspace, 'cacheDir');
     }
 
-    const cacheDir = path.resolve(cwd, resolvedCacheDir);
-
-    const candidatePaths = commandOptions.candidates && commandOptions.candidates.length
-        ? commandOptions.candidates
-        : fileConfig.match?.candidatePaths ??
-        DEFAULT_CONFIG.match!.candidatePaths!;
-    if (
-        autoDiscovered &&
-        (!commandOptions.candidates || commandOptions.candidates.length === 0) &&
-        fileConfig.match?.candidatePaths &&
-        (await Promise.all(
-            fileConfig.match.candidatePaths.map((candidatePath) =>
-                isWorkspaceContainedPath(path.resolve(resolvedWorkspace, candidatePath), resolvedWorkspace)
-            )
-        )).some((isContained) => !isContained)
-    ) {
-        throw new Error('Auto-discovered repo config cannot set candidate paths outside the workspace.');
+    const cliCandidates = commandOptions.candidates?.length ? commandOptions.candidates : undefined;
+    if (autoDiscovered && !cliCandidates && fileMatch.candidatePaths) {
+        await assertInsideWorkspace(fileMatch.candidatePaths, workspace, 'candidate paths');
     }
-
-    let includePatterns = fileConfig.match?.includePatterns ?? DEFAULT_CONFIG.match!.includePatterns!;
-    if (commandOptions.includeFile?.length) {
-        includePatterns = commandOptions.includeFile;
-    }
-    const excludePatterns = mergeArrays(commandOptions.excludeFile, fileConfig.match?.excludePatterns ??
-        DEFAULT_CONFIG.match!.excludePatterns!);
 
     return {
-        model,
-        cacheDir,
-        logLevel: resolvedLogLevel,
-        quiet: resolvedQuiet,
-        verbose: resolvedVerbose,
+        ranker,
+        jevModel,
+        cacheDir: path.resolve(cwd, cacheDirOverride ?? fileConfig.cacheDir ?? DEFAULT_CONFIG.cacheDir),
+        logLevel,
+        quiet,
+        verbose,
         match: {
-            topK,
-            threshold: clamp(resolvedThreshold, 0, 1),
-            minScore,
-            candidatePaths,
-            includePatterns,
-            excludePatterns
+            topK: configuredTopK === undefined ? undefined : Math.floor(clamp(configuredTopK, 1, 1000)),
+            threshold,
+            minScore: clamp(configuredMinScore ?? threshold, 0, 1),
+            selectionPolicy,
+            candidatePaths: cliCandidates ?? fileMatch.candidatePaths ?? matchDefaults.candidatePaths,
+            // CLI includes replace the configured ones; CLI excludes add to them.
+            includePatterns: commandOptions.includeFile?.length
+                ? commandOptions.includeFile
+                : fileMatch.includePatterns ?? matchDefaults.includePatterns,
+            excludePatterns: mergeArrays(commandOptions.excludeFile, fileMatch.excludePatterns ?? matchDefaults.excludePatterns),
         },
         configFile,
     };

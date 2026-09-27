@@ -5,24 +5,25 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { registerBenchmarkCommand } from '../src/commands/benchmark.ts';
+import { getJevCacheEntryCount } from '../src/services/jev.ts';
 
 describe('benchmark command', () => {
     let cwd: string;
-    let testMode: string | undefined;
+    let savedKey: string | undefined;
 
     beforeEach(() => {
         cwd = process.cwd();
-        testMode = process.env.RBT_EMBEDDING_TEST_MODE;
-        process.env.RBT_EMBEDDING_TEST_MODE = 'stub';
+        savedKey = process.env.TYPESAFE_API_KEY;
+        delete process.env.TYPESAFE_API_KEY;
     });
 
     afterEach(() => {
         process.chdir(cwd);
-        if (testMode === undefined) delete process.env.RBT_EMBEDDING_TEST_MODE;
-        else process.env.RBT_EMBEDDING_TEST_MODE = testMode;
+        if (savedKey === undefined) delete process.env.TYPESAFE_API_KEY;
+        else process.env.TYPESAFE_API_KEY = savedKey;
     });
 
-    it('applies the same minimum score as match', async () => {
+    async function makeWorkspace(): Promise<void> {
         const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-benchmark-'));
         await fs.mkdir(path.join(root, 'src'));
         await fs.mkdir(path.join(root, 'tests'));
@@ -32,6 +33,10 @@ describe('benchmark command', () => {
             { source: 'src/price.ts', expectedTop3: ['tests/price.test.ts'] },
         ]));
         process.chdir(root);
+    }
+
+    it('applies the same minimum score as match', async () => {
+        await makeWorkspace();
 
         const output: string[] = [];
         const originalLog = console.log;
@@ -41,7 +46,7 @@ describe('benchmark command', () => {
             registerBenchmarkCommand(program);
             await program.parseAsync([
                 'benchmark', '--cases', 'cases.json', '--candidates', 'tests',
-                '--model', 'stub', '--threshold', '1', '--json',
+                '--ranker', 'heuristics', '--threshold', '1', '--json',
             ], { from: 'user' });
         } finally {
             console.log = originalLog;
@@ -64,5 +69,172 @@ describe('benchmark command', () => {
             },
             { top1Cases: 0, top3Cases: 1, top3Rate: 0, threshold: 1, minScore: 1 }
         );
+    });
+
+    it('fails instead of falling back when the jev ranker has no API key', async () => {
+        await makeWorkspace();
+        const program = new Command();
+        registerBenchmarkCommand(program);
+
+        await assert.rejects(
+            program.parseAsync(['benchmark', '--cases', 'cases.json', '--candidates', 'tests', '--json'], { from: 'user' }),
+            /TYPESAFE_API_KEY is required/
+        );
+    });
+
+    it('keeps Jev answers already received when a later case fails', async (t) => {
+        await makeWorkspace();
+        process.env.TYPESAFE_API_KEY = 'test-key';
+        t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+            // SAFETY: JevScorer always sends a JSON body with a questions map.
+            const { questions } = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> };
+            return Response.json({
+                model: 'jev-1.13.0',
+                answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.9 }])),
+            });
+        });
+        await fs.writeFile('cases.json', JSON.stringify([
+            { source: 'src/price.ts', expectedTop1: 'tests/price.test.ts' },
+            { source: 'src/missing.ts' },
+        ]));
+        const program = new Command();
+        registerBenchmarkCommand(program);
+
+        await assert.rejects(
+            program.parseAsync(['benchmark', '--cases', 'cases.json', '--candidates', 'tests', '--json'], { from: 'user' }),
+            /Benchmark source not found: src\/missing\.ts/
+        );
+        assert.equal(await getJevCacheEntryCount('.rbt/cache'), 1);
+    });
+
+    it('never asks Jev about another case\'s source module', async (t) => {
+        await makeWorkspace();
+        await fs.writeFile('src/tax.ts', 'export const tax = total => total * 0.2;');
+        await fs.writeFile('cases.json', JSON.stringify([
+            { source: 'src/price.ts', expectedTop3: ['tests/price.test.ts'] },
+            { source: 'src/tax.ts', expectedTop3: ['tests/price.test.ts'] },
+        ]));
+        process.env.TYPESAFE_API_KEY = 'test-key';
+        const askedAbout = new Set<string>();
+        t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+            // SAFETY: JevScorer always sends a JSON body with a questions map.
+            const { questions } = JSON.parse(String(init?.body)) as {
+                questions: Record<string, { instructions: { test_file: { path: string } } }>;
+            };
+            for (const question of Object.values(questions)) {
+                askedAbout.add(question.instructions.test_file.path);
+            }
+            return Response.json({
+                model: 'jev-1.13.0',
+                answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.9 }])),
+            });
+        });
+        const originalLog = console.log;
+        console.log = () => {};
+        try {
+            const program = new Command();
+            registerBenchmarkCommand(program);
+            await program.parseAsync(['benchmark', '--cases', 'cases.json', '--candidates', 'src', 'tests', '--json'], { from: 'user' });
+        } finally {
+            console.log = originalLog;
+        }
+
+        assert.deepEqual([...askedAbout], ['tests/price.test.ts']);
+    });
+
+    it('reports each model version that answered a moving alias', async (t) => {
+        await makeWorkspace();
+        await fs.writeFile('src/tax.ts', 'export const tax = total => total * 0.2;');
+        await fs.writeFile('cases.json', JSON.stringify([
+            { source: 'src/price.ts', expectedTop3: ['tests/price.test.ts'] },
+            { source: 'src/tax.ts', expectedTop3: ['tests/price.test.ts'] },
+        ]));
+        process.env.TYPESAFE_API_KEY = 'test-key';
+        let requests = 0;
+        t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+            requests += 1;
+            // SAFETY: JevScorer always sends a JSON body with a questions map.
+            const { questions } = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> };
+            return Response.json({
+                model: requests === 1 ? 'jev-1.14.0' : 'jev-1.15.0',
+                answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.9 }])),
+            });
+        });
+        const output: string[] = [];
+        const originalLog = console.log;
+        console.log = (value?: unknown) => output.push(String(value));
+        try {
+            const program = new Command();
+            registerBenchmarkCommand(program);
+            await program.parseAsync([
+                'benchmark', '--cases', 'cases.json', '--candidates', 'tests', '--jev-model', 'jev-latest', '--json',
+            ], { from: 'user' });
+        } finally {
+            console.log = originalLog;
+        }
+
+        // SAFETY: --json makes the benchmark's last log line its serialized summary.
+        const summary = JSON.parse(output[output.length - 1]) as { jev: { models: string[] } };
+        assert.deepEqual(summary.jev.models, ['jev-1.14.0', 'jev-1.15.0']);
+    });
+
+    it('rejects benchmark sources outside the workspace before reading them', async () => {
+        await makeWorkspace();
+        const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-outside-'));
+        await fs.writeFile(path.join(outside, 'secret.ts'), 'export const secret = 1;');
+        await fs.symlink(outside, 'linked');
+        const escaping = path.relative(process.cwd(), path.join(outside, 'secret.ts'));
+        for (const source of [escaping, path.join(outside, 'secret.ts'), 'linked/secret.ts']) {
+            await fs.writeFile('cases.json', JSON.stringify([{ source, expectedTop1: 'tests/price.test.ts' }]));
+            const program = new Command();
+            registerBenchmarkCommand(program);
+            await assert.rejects(
+                program.parseAsync(['benchmark', '--cases', 'cases.json', '--candidates', 'tests', '--ranker', 'heuristics'], { from: 'user' }),
+                /is outside the workspace/,
+                source
+            );
+        }
+        await fs.rm(outside, { recursive: true, force: true });
+    });
+
+    it('scores a deleted source from its diff and rejects one without a diff', async () => {
+        await makeWorkspace();
+        await fs.writeFile('tests/reconcile.test.ts', "test('reconciles the ledger balance', () => {});");
+        const diffText = [
+            'diff --git a/src/gone.ts b/src/gone.ts',
+            'deleted file mode 100644',
+            '--- a/src/gone.ts',
+            '+++ /dev/null',
+            '@@ -1,1 +0,0 @@',
+            '-export const reconcileLedgerBalance = entries => entries.length;',
+        ].join('\n');
+        const runBenchmark = async () => {
+            const program = new Command();
+            registerBenchmarkCommand(program);
+            await program.parseAsync([
+                'benchmark', '--cases', 'cases.json', '--candidates', 'tests', '--ranker', 'heuristics', '--json',
+            ], { from: 'user' });
+        };
+
+        await fs.writeFile('cases.json', JSON.stringify([
+            { source: 'src/gone.ts', diffText, expectedTop1: 'tests/reconcile.test.ts' },
+        ]));
+        const output: string[] = [];
+        const originalLog = console.log;
+        console.log = (value?: unknown) => output.push(String(value));
+        try {
+            await runBenchmark();
+        } finally {
+            console.log = originalLog;
+        }
+        // SAFETY: --json makes the benchmark's last log line its serialized summary.
+        assert.equal((JSON.parse(output[output.length - 1]) as { top1Rate: number }).top1Rate, 1);
+
+        for (const missing of [{}, { diffText: '' }, { diffText: diffText.replace(/src\/gone\.ts/g, 'src/other.ts') }]) {
+            await fs.writeFile('cases.json', JSON.stringify([{ source: 'src/gone.ts', ...missing }]));
+            await assert.rejects(runBenchmark(), {
+                message: 'Benchmark source not found: src/gone.ts (add a diffText that deletes it)',
+            });
+        }
     });
 });
