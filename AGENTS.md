@@ -13,7 +13,7 @@ This TypeScript CLI exposes `rbt`, which ranks test files for source changes usi
 
 ## Build, Test, and Development Commands
 
-Use a Node version supporting `--experimental-strip-types` for development and tests; the package declares Node >=20.
+Use a Node version supporting `--experimental-strip-types` for development and tests; the package declares Node >=22.12.
 
 - `npm install`: install dependencies.
 - `npm run dev -- status`: run the CLI from TypeScript in watch mode.
