@@ -13,7 +13,7 @@ const auditPath = path.join(directory, `${ranker}-api.ndjson`);
 const runs = [];
 async function run(id, args) {
     const started = performance.now();
-    const result = spawnSync(process.execPath, ['--import', path.join(repositoryRoot, 'benchmarks/playwright-mutations/audit-fetch.mjs'), path.join(repositoryRoot, 'src/cli.ts'), ...args, '--candidates', 'tests', '--ranker', ranker, '--cache-dir', cacheDirectory, '--json'], {
+    const result = spawnSync(process.execPath, ['--experimental-strip-types', '--import', path.join(repositoryRoot, 'benchmarks/playwright-mutations/audit-fetch.mjs'), path.join(repositoryRoot, 'src/cli.ts'), ...args, '--candidates', 'tests', '--ranker', ranker, '--cache-dir', cacheDirectory, '--json'], {
         cwd: manifest.rankingRoot, env: { ...process.env, RBT_BENCH_AUDIT_PATH: auditPath }, encoding: 'utf8', timeout: 180000,
     });
     const raw = { id, ranker, args, elapsedMs: performance.now() - started, status: result.status, stdout: result.stdout, stderr: result.stderr, error: result.error?.message };

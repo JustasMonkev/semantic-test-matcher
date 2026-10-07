@@ -12,7 +12,7 @@ for (const [id, omittedKeys, expectedRanker] of [
 ]) {
     const args = ['match', ...manifest.compound.sources, '--diff-file', 'compound.diff', '--selection-policy', 'adaptive', '--candidates', 'tests', '--ranker', 'jev', '--fallback-ranker', 'decisions', '--cache-dir', path.join(manifest.rankingRoot, 'cache-decisions'), '--json'];
     const started = performance.now();
-    const result = spawnSync(process.execPath, [path.join(repositoryRoot, 'src/cli.ts'), ...args], {
+    const result = spawnSync(process.execPath, ['--experimental-strip-types', path.join(repositoryRoot, 'src/cli.ts'), ...args], {
         cwd: manifest.rankingRoot, encoding: 'utf8', timeout: 120000,
         env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !omittedKeys.includes(key.toUpperCase()))),
     });
@@ -20,5 +20,8 @@ for (const [id, omittedKeys, expectedRanker] of [
     if (result.status !== 0) throw new Error(`Fallback check failed: ${id}`);
     const report = JSON.parse(result.stdout);
     if (report.effectiveRanker !== expectedRanker || report.changes.some(change => change.effectiveRanker !== expectedRanker)) throw new Error(`Whole-run fallback attribution failed: ${id}`);
+    const selected = new Set(report.results.map(result => result.file));
+    const missing = manifest.compound.relevantTests.filter(file => !selected.has(file));
+    if (missing.length) throw new Error(`Fallback missed known failing tests (${id}): ${missing.join(', ')}`);
     console.log(JSON.stringify({ id, effectiveRanker: report.effectiveRanker, selectedCount: report.results.length, changes: report.changes.map(change => ({ effectiveRanker: change.effectiveRanker, attempts: change.rankerAttempts, modelScorer: change.modelScorer })) }));
 }

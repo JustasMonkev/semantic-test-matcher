@@ -7,6 +7,36 @@ import { spawnSync } from 'node:child_process';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mutations = [
     {
+        name: 'omit TypeScript stripping from benchmark children', file: 'benchmarks/playwright-mutations/run.mjs',
+        from: "['--experimental-strip-types', '--import',", to: "['--import',",
+        testFile: 'tests/playwright-benchmark.test.ts', test: 'benchmark children enable TypeScript stripping when disabled by default',
+    },
+    {
+        name: 'omit TypeScript stripping from fallback children', file: 'benchmarks/playwright-mutations/verify-fallback.mjs',
+        from: "['--experimental-strip-types', path.join(repositoryRoot, 'src/cli.ts'),", to: "[path.join(repositoryRoot, 'src/cli.ts'),",
+        testFile: 'tests/playwright-benchmark.test.ts', test: 'fallback verification requires both compound labels: 2 selected',
+    },
+    {
+        name: 'count unrelated Jev cache after Decisions fallback', file: 'src/commands/match.ts',
+        from: "cacheRanker === 'decisions'", to: "reports[0]?.ranker === 'decisions'",
+        testFile: 'tests/match-command.test.ts', test: 'reports persisted Decisions cache after decisions falls back to heuristics',
+    },
+    {
+        name: 'hide the missing ripgrep prerequisite', file: 'benchmarks/playwright-mutations/prepare.mjs',
+        from: "discovery.error?.code === 'ENOENT'", to: 'false',
+        testFile: 'tests/playwright-benchmark.test.ts', test: 'reports the ripgrep prerequisite when the executable is missing',
+    },
+    {
+        name: 'allow duplicate benchmark distractors', file: 'benchmarks/playwright-mutations/prepare.mjs',
+        from: 'if (distractors.length < 96)', to: 'if (false)',
+        testFile: 'tests/playwright-benchmark.test.ts', test: 'rejects a Playwright corpus with fewer than 96 distinct distractors',
+    },
+    {
+        name: 'accept fallback that misses a compound label', file: 'benchmarks/playwright-mutations/verify-fallback.mjs',
+        from: 'if (missing.length)', to: 'if (false)',
+        testFile: 'tests/playwright-benchmark.test.ts', test: 'fallback verification requires both compound labels: 1 selected',
+    },
+    {
         name: 'map all answers to the first candidate', file: 'src/services/decisions.ts',
         from: 'response.probabilities.get(questions[index].name)!', to: 'response.probabilities.get(questions[indices[0]].name)!',
         testFile: 'tests/decisions.test.ts', test: 'uses independent named predicates and maps reordered answers by name, including valid zero',
@@ -105,6 +135,7 @@ const escaped = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 try {
     await fs.cp(path.join(root, 'src'), path.join(temporary, 'src'), { recursive: true });
     await fs.cp(path.join(root, 'tests'), path.join(temporary, 'tests'), { recursive: true });
+    await fs.cp(path.join(root, 'benchmarks/playwright-mutations'), path.join(temporary, 'benchmarks/playwright-mutations'), { recursive: true });
     await fs.copyFile(path.join(root, 'package.json'), path.join(temporary, 'package.json'));
     await fs.symlink(path.join(root, 'node_modules'), path.join(temporary, 'node_modules'), 'dir');
     report.baseline = executeTests(undefined, testFiles);

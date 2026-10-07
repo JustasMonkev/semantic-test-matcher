@@ -191,6 +191,8 @@ An explicit `--ranker heuristics` stays local even if a Decisions fallback is in
 
 JSON retains `ranker` as the effective provider and adds `requestedRanker`, `effectiveRanker`, `rankerAttempts` (sanitized reasons), and `modelScorer` (provider, model identities, request/cache counts, and reported usage). Candidate results carry `modelScore`; `jevScore` and the `jev` metadata object remain available only for Jev results. Missing token usage is omitted rather than estimated. `modelIdentity: "requested"` means the API omitted its answering-model identity; it does not prove an immutable version answered.
 
+`cacheEntries` counts stored entries for the last attempted remote provider, including completed answers saved before a fallback to heuristics. A local-only run retains the existing Jev cache-count behavior.
+
 For example, an explicitly configured fallback that succeeds with Decisions reports:
 
 ```json

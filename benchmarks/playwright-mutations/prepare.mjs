@@ -49,8 +49,12 @@ for (const relative of specPaths) {
     }
     await fs.writeFile(path.join(executionRoot, 'specs', path.basename(relative)), text);
 }
-const allSpecs = spawnSync('rg', ['--files', 'tests', '-g', '*.spec.ts'], { cwd: checkout, encoding: 'utf8' }).stdout.trim().split('\n').sort();
+const discovery = spawnSync('rg', ['--files', 'tests', '-g', '*.spec.ts'], { cwd: checkout, encoding: 'utf8' });
+if (discovery.error?.code === 'ENOENT') throw new Error('Benchmark preparation requires ripgrep (rg); install it and add it to PATH');
+if (discovery.status !== 0) throw new Error('Could not discover Playwright candidate specs');
+const allSpecs = [...new Set(discovery.stdout.trim().split('\n').filter(Boolean))].sort();
 const distractors = allSpecs.filter(relative => !specPaths.includes(relative));
+if (distractors.length < 96) throw new Error(`Benchmark requires at least 96 distinct distractor specs; found ${distractors.length}`);
 const candidates = [...specPaths, ...Array.from({ length: 96 }, (_, index) => distractors[Math.floor(index * distractors.length / 96)])].sort();
 for (const relative of candidates) {
     await fs.mkdir(path.dirname(path.join(rankingRoot, relative)), { recursive: true });

@@ -102,8 +102,8 @@ export function registerMatchCommand(program: Command): void {
             );
             const candidates = await loadCandidates(candidateScan.files, cwd);
             const reports = await matchChangedFiles(changes, candidates, config, candidateScan.truncated, cwd);
-            const effectiveRanker = reports[0]?.ranker;
-            const cacheEntries = effectiveRanker === 'decisions'
+            const cacheRanker = reports[0]?.rankerAttempts.filter(attempt => attempt.ranker !== 'heuristics').pop()?.ranker ?? config.ranker;
+            const cacheEntries = cacheRanker === 'decisions'
                 ? await getDecisionsCacheEntryCount(config.cacheDir)
                 : await getJevCacheEntryCount(config.cacheDir);
             const selected = mergeSelections(reports);

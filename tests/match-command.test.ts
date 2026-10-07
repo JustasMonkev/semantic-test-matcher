@@ -10,6 +10,7 @@ import { registerMatchCommand } from '../src/commands/match.ts';
 
 interface MatchOutput {
     ranker: string;
+    cacheEntries?: number;
     requestedRanker?: string;
     effectiveRanker?: string;
     rankerAttempts?: Array<{ ranker: string; status: string; reason?: string }>;
@@ -167,6 +168,25 @@ describe('match command rankers', () => {
         assert.equal(warnings.length, 1);
         assert.ok(output.results.every(result => result.modelScore === undefined && result.score === result.structuralScore));
     });
+
+    for (const primary of ['decisions', 'jev']) {
+        it(`reports persisted Decisions cache after ${primary} falls back to heuristics`, async () => {
+            process.env.OPEN_AI = 'fixture-key';
+            await fs.writeFile('src/socket.ts', 'export function reconnect() {}');
+            await fs.mkdir('.cache');
+            await fs.writeFile('.cache/jev.json', JSON.stringify({ unrelated: 0.5 }));
+            let requests = 0;
+            globalThis.fetch = async (_url, init) => ++requests === 1
+                ? decisionsResponse(init)
+                : new Response('unavailable', { status: 400 });
+            const flags = primary === 'jev' ? ['--fallback-ranker', 'decisions'] : [];
+            const { output } = await runMatch('src/socket.ts', '--ranker', primary, ...flags);
+            assert.equal(requests, 2);
+            assert.equal(output.effectiveRanker, 'heuristics');
+            assert.equal(Object.keys(JSON.parse(await fs.readFile('.cache/decisions.json', 'utf8'))).length, 2);
+            assert.equal(output.cacheEntries, 2);
+        });
+    }
 
     it('falls back from unavailable Jev to Decisions only when explicitly configured', async () => {
         process.env.OPENAI_API_KEY = 'fixture-key';

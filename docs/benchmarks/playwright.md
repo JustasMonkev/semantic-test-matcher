@@ -18,11 +18,13 @@ The other 96 candidates were not mutation-tested, so extra selections have unkno
 
 ## Matcher verification
 
-- `npm run lint`, `npm test`, and `npm run build` passed: 320 tests across 44 suites, no failures or skips.
-- The mutation harness killed 15/15 targeted mutants with passing baseline and restored controls.
+- After PR review fixes, `npm run lint`, `npm test`, and `npm run build` passed: 328 tests across 44 suites, no failures or skips.
+- The mutation harness killed 21/21 targeted mutants with passing baseline and restored controls.
 - Review fixes reject oversized Jev requests before sending, reject non-`noul` answers carrying probabilities, and let an explicit local-only ranker override an inherited remote fallback.
 - Three independent final review threads found no additional actionable matcher defects. This is not a guarantee of defect absence.
 - The lazy-clean checker retained two reviewed findings: cache-entry counting is best-effort display metadata, and a test casts its own scorer's serialized request. Production response validation is unaffected.
+
+PR review added checks for distinct candidate counts, recovery of every compound label during fallback, TypeScript child-process startup when stripping is disabled by default, an actionable missing-ripgrep error, and cache counts from the last attempted remote provider after fallback. A fresh preparation rerun still produced 100 distinct candidates, 55 passing baseline tests, and five killed mutants. Cached real-CLI fallback checks recovered both labels with network access disabled. No new paid ranking calls or native browser-suite reruns were needed for these fixes.
 
 ## Native Playwright regressions
 
@@ -47,6 +49,8 @@ Two invocation mistakes were corrected before canonical reruns: conflicting colo
 ## Reproduction
 
 Raw JSON, compressed reports, and API audit logs are retained locally, not committed. Use a new output directory so the cold run starts with an empty cache:
+
+Preparation requires `rg` (ripgrep), Git, and a `diff` executable supporting `-u` and `--label` on `PATH`, plus at least 96 distinct distractor spec files alongside the four executed unit specs. The script rejects an undersized corpus rather than duplicating candidate paths. Both benchmark and fallback child processes explicitly enable TypeScript stripping for supported Node 22 releases.
 
 ```sh
 node benchmarks/playwright-mutations/prepare.mjs /path/to/playwright /path/to/node_modules/@playwright/test /tmp/rbt-playwright-new-run
