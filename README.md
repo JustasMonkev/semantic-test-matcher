@@ -7,7 +7,8 @@ The matching flow combines:
 - document profiling from file paths, code structure, and diffs
 - TypeSafe's [Jev](https://docs.typesafe.ai/) System One model, which judges whether each candidate test file should re-run for the change
 - a local answer cache
-- score blending for Jev and structural signals
+- optional OpenAI Decisions ranking, selected with `--ranker decisions`
+- score blending for model and structural signals
 
 ## Features
 
@@ -15,9 +16,9 @@ The matching flow combines:
 - `rbt benchmark` scores the matcher against a file of expected rankings
 - `rbt status` shows the resolved runtime configuration
 - `rbt completion [bash|zsh]` prints a shell completion script
-- scores all candidates for a change in one Jev request, typically 150–500 ms
+- scores candidates together in provider requests, batching larger suites
 - falls back to local structural heuristics when no API key is available
-- caches Jev answers in `.rbt/cache` by default
+- caches provider answers separately in `.rbt/cache` by default
 - accepts candidate file lists from CLI flags, config, or stdin
 
 ## Architecture
@@ -37,17 +38,18 @@ flowchart TD
     E1 --> F["Document profiling<br/>src/services/document-profile.ts"]
     E2 --> F2["Candidate profiles"]
 
-    F --> G["Jev scorer<br/>src/services/jev.ts"]
+    F --> G["Provider scorer<br/>jev.ts / decisions.ts"]
     F2 --> G
     G --> H["Answer cache<br/>src/services/cache.ts"]
     G --> I["TypeSafe API<br/>POST /v1/systemone"]
+    G --> J["OpenAI API (opt-in)<br/>POST /v1/decisions"]
 
     G --> K["Ranking engine<br/>src/services/match.ts"]
     F --> K
     F2 --> K
 
     K --> L["Scoring blend"]
-    L --> L1["Jev probability (60%)"]
+    L --> L1["Model probability (60%)"]
     L --> L2["Change, phrase, and anchor overlap"]
     L --> L3["Semantic token and interface overlap"]
     L --> L4["Path family and basename overlap"]
@@ -141,42 +143,82 @@ Useful flags:
 - `--include-file <glob>` (repeatable)
 - `--exclude-file <glob>` (repeatable)
 - `--candidates-from-stdin`
-- `--ranker <jev|heuristics>`
+- `--ranker <jev|decisions|heuristics>` (`openai` is an alias for `decisions`)
 - `--jev-model <id>`
+- `--decisions-model <id>`
+- `--fallback-ranker <heuristics|decisions>` (Decisions fallback requires Jev as primary)
 - `--cache-dir <path>`
 - `--diff-file <path>`
 - `--diff-root <path>` (set the base for relative diff paths, such as `.` for `git diff --relative`)
 - `--json`
 - `--paths-only` (print only the selected test paths, one per line)
 
-A deleted file can still be matched: pass a `--diff-file` that contains its deletion. Every path a `--diff-file` changes must stay inside its diff root (`--diff-root`, else the Git root); a diff that names a file outside it is rejected. Candidate files larger than 1 MB are skipped with a warning. In text output, a `Why:` line explains fallback selections, such as widening coverage when neither Jev nor the structural score is confident.
+A deleted file can still be matched: pass a `--diff-file` that contains its deletion. Every path a `--diff-file` changes must stay inside its diff root (`--diff-root`, else the Git root); a diff that names a file outside it is rejected. Candidate files larger than 1 MB are skipped with a warning. In text output, a `Why:` line explains fallback selections, such as widening coverage when neither the model nor the structural score is confident.
 
 How matching works:
 
 1. The changed file (and its hunks from `--diff-file`) is read and converted into a `DocumentProfile`.
 2. Candidate files are collected from configured paths or stdin.
-3. Jev asks one yes/no question per candidate, "should the tests in this file be re-run to check this change?", and returns a probability. All candidates go in one request; larger suites are batched.
-4. `rankMatches` blends the Jev probability (60%) with structural overlap (40%). With `--ranker heuristics`, or when Jev is unavailable, the structural score is used alone.
-5. Results are filtered by the configured minimum score. The default `adaptive` policy selects every Jev-affirmative candidate (probability at least 0.5) plus structurally strong neighbors: candidates in the top structural decile with structural score at least 0.2. When no Jev score reaches 0.7, it widens the structural band to the top quartile; if structural evidence is also weak, it retains all candidates. Without Jev, the wider structural rule applies. These are selection heuristics, not inferred test dependencies or calibrated probabilities. A shared-code change can therefore select more files than a localized change.
+3. The chosen model asks one yes/no question per candidate, "should the tests in this file be re-run to check this change?", and returns a probability. All candidates go in one request; larger suites are batched.
+4. `rankMatches` blends the Model probability (60%) with structural overlap (40%). With `--ranker heuristics`, or when configured providers are unavailable, the structural score is used alone.
+5. Results are filtered by the configured minimum score. The default `adaptive` policy selects every model-affirmative candidate (probability at least 0.5) plus structurally strong neighbors: candidates in the top structural decile with structural score at least 0.2. When no model score reaches 0.7, it widens the structural band to the top quartile; if structural evidence is also weak, it retains all candidates. Without model evidence, the wider structural rule applies. These are selection heuristics, not inferred test dependencies or calibrated probabilities. A shared-code change can therefore select more files than a localized change.
 
-There is no default count cap for `adaptive`. `--top-k` (or its config/environment equivalent) limits output after eligibility is computed and may exclude useful tests; JSON reports `eligibleCount`, `selectionLimit`, `selectionTruncated`, and `selectionEvidence`. Explicit `conservative` retains the blended top five by default. Explicit `targeted` retains up to five Jev-affirmative candidates by default and falls back to conservative selection when Jev is unavailable or has no affirmative answers. Both legacy policies also honor an explicit `--top-k`. The fixed bands above are uncalibrated.
+There is no default count cap for `adaptive`. `--top-k` (or its config/environment equivalent) limits output after eligibility is computed and may exclude useful tests; JSON reports `eligibleCount`, `selectionLimit`, `selectionTruncated`, and `selectionEvidence`. Explicit `conservative` retains the blended top five by default. Explicit `targeted` retains up to five model-affirmative candidates by default and falls back to conservative selection when the model is unavailable or has no affirmative answers. Both legacy policies also honor an explicit `--top-k`. The fixed bands above are uncalibrated. Decisions uses the same provisional blend and boundaries; these numbers do not establish equivalent calibration or ranking quality.
 
 ### How Jev is used
 
 - **Data leaves your machine.** Each request sends the changed file's path, exported symbol names, and its diff hunks (or, without `--diff-file`, the first 6,000 characters of the file; with `--diff-file`, source text is never sent, even for a file the diff has no text hunks for), plus each candidate test file's path and test titles, to `api.typesafe.ai`. Candidate file bodies are not sent. Review TypeSafe's [data handling](https://docs.typesafe.ai/legal) before using it on private code. Use `--ranker heuristics` to keep everything local.
 - **Pass a diff.** Jev is most useful with `--diff-file`, because it can then judge the actual change rather than the whole file.
-- **Fallback.** If `TYPESAFE_API_KEY` is missing or the API fails after retries, `match` prints a warning to stderr and ranks with heuristics only. JSON output reports the effective `ranker` and a `rankerFallback` reason, so CI can detect the downgrade. When Jev answers, JSON also lists every model version whose answers were used in `jev.models`. `benchmark` fails instead of falling back.
+- **Fallback.** If `TYPESAFE_API_KEY` (or `JEF`) is missing or the API fails after retries, `match` prints a warning to stderr and ranks with heuristics only. JSON output reports the effective `ranker` and a `rankerFallback` reason, so CI can detect the downgrade. When Jev answers, JSON also lists every model version whose answers were used in `jev.models`. `benchmark` fails instead of falling back.
 - **Caching and model pinning.** Answers are cached per change and candidate in `<cacheDir>/jev.json`, so repeat runs make no requests. The default model is pinned to `jev-1.13.0`. `jev-latest` also works, but its answers can change when TypeSafe ships a new version, so they are never cached: only answers from the exact model requested are reused.
 - **Cost.** Jev bills input tokens only, at $0.042 per million. A change with ~30 candidates is roughly 2,000–7,000 tokens.
 
+### OpenAI Decisions and explicit fallback
+
+Jev remains the default. Setting an OpenAI key does not enable OpenAI requests; select Decisions or configure the fallback explicitly:
+
+```sh
+rbt match src/example.ts --ranker decisions
+rbt match src/example.ts --ranker jev --fallback-ranker decisions
+rbt match src/example.ts --ranker heuristics
+```
+
+Decisions sends the same bounded change evidence and candidate paths/test titles described above to `https://api.openai.com/v1/decisions`. It does not send candidate file bodies. The default model is `gpt-6-luna`, configurable with `--decisions-model`. Source text is omitted when a diff is supplied. Source/diff excerpts and test titles are untrusted evidence, not instructions to execute.
+
+Direct Decisions runs fall back to local heuristics after an unavailable provider. The opt-in Jev fallback tries Jev, then Decisions, then heuristics. If any source fails, every source is rescored with the next provider before selection; one output never mixes providers. Valid low probabilities do not trigger provider fallback. Refusals and invalid or incomplete answers do.
+
+An explicit `--ranker heuristics` stays local even if a Decisions fallback is inherited from the environment or config file. An explicit `--fallback-ranker decisions` with a non-Jev primary is still rejected.
+
+JSON retains `ranker` as the effective provider and adds `requestedRanker`, `effectiveRanker`, `rankerAttempts` (sanitized reasons), and `modelScorer` (provider, model identities, request/cache counts, and reported usage). Candidate results carry `modelScore`; `jevScore` and the `jev` metadata object remain available only for Jev results. Missing token usage is omitted rather than estimated. `modelIdentity: "requested"` means the API omitted its answering-model identity; it does not prove an immutable version answered.
+
+For example, an explicitly configured fallback that succeeds with Decisions reports:
+
+```json
+{
+  "requestedRanker": "jev",
+  "effectiveRanker": "decisions",
+  "ranker": "decisions",
+  "rankerAttempts": [
+    { "ranker": "jev", "status": "failed", "reason": "Jev request failed (HTTP 401)" },
+    { "ranker": "decisions", "status": "succeeded" }
+  ],
+  "modelScorer": { "provider": "decisions", "requests": 1, "cacheHits": 0, "models": ["gpt-6-luna"] }
+}
+```
+
+Provider requests have bounded batches, timeouts, and retry counts; a multi-file run can still require several requests. Decisions answers use a separate `decisions.json` cache with a 24-hour lifetime, keyed by model, evidence, question, and prompt version. Answers whose reported model differs from the requested id, or has no reported model id, are not cached. No Decisions latency or ranking-quality advantage over Jev is assumed.
+
 ### `benchmark`
 
-Runs the matcher over a JSON file of cases (`source`, optional `diffText`, and `expectedTop1`, `expectedTop3`, or `expectedTop10Includes`) and reports hit rates. It takes the same `--ranker`, `--jev-model`, candidate, and threshold flags as `match`. Benchmark reports ranking hit rates; it does not apply `match` selection policies. With Jev, it also reports request counts, cache hits, input tokens, and every model version that answered, so runs against a moving alias such as `jev-latest` stay comparable.
+Runs the matcher over a JSON file of cases (`source`, optional `diffText`, and `expectedTop1`, `expectedTop3`, or `expectedTop10Includes`) and reports hit rates. It takes the same `--ranker`, `--jev-model`, `--decisions-model`, candidate, and threshold flags as `match`. Benchmark reports ranking hit rates; it does not apply `match` selection policies. With a remote provider, it also reports request counts, cache hits, input tokens, and every model version that answered, so runs against moving aliases stay attributable. JSON also includes each case's full `observedRanking`. Benchmarking is strict: missing credentials, invalid answers, refusals, or API failures fail the command; `--fallback-ranker decisions` is rejected. Run each provider separately for a comparison. Benchmarks report rankings, not adaptive selection recall.
 
 ```bash
 rbt benchmark --cases cases.json --candidates tests --json
 rbt benchmark --cases cases.json --candidates tests --ranker heuristics
+rbt benchmark --cases cases.json --candidates tests --ranker decisions
 ```
+
+See the [Playwright benchmark summary](docs/benchmarks/playwright.md) for measured results, regression scope, and reproduction commands.
 
 ### `status`
 
@@ -217,6 +259,8 @@ Example config:
 {
   "ranker": "jev",
   "jevModel": "jev-1.13.0",
+  "decisionsModel": "gpt-6-luna",
+  "fallbackRanker": "heuristics",
   "cacheDir": ".rbt/cache",
   "logLevel": "info",
   "match": {
@@ -238,6 +282,8 @@ Environment variables used by the resolver include:
 
 - `RBT_RANKER`
 - `RBT_JEV_MODEL`
+- `RBT_DECISIONS_MODEL`
+- `RBT_FALLBACK_RANKER`
 - `RBT_CACHE_DIR`
 - `RBT_LOG_LEVEL`
 - `RBT_VERBOSE`
@@ -252,13 +298,22 @@ Environment variables used by the resolver include:
 
 A variable set to an empty string counts as unset, so config and defaults still apply.
 
-`TYPESAFE_API_KEY` supplies the Jev API key. It is only read from the environment, never from config files.
+`TYPESAFE_API_KEY` supplies the Jev key, with `JEF` accepted as an alias. `OPENAI_API_KEY` supplies the OpenAI key, with `OPEN_AI` accepted as an alias. Canonical names take precedence. Keys are read only from the environment, never from config files, and status prints only `set` or `missing`. All four names, including case variants, are removed from subprocess environments when running selected tests.
+
+The CLI does not automatically load `.env`. Load an ignored local file explicitly with Node when running from source:
+
+```sh
+node --env-file=.env --experimental-strip-types src/cli.ts match src/example.ts --ranker decisions
+```
+
+Keep credentials out of tracked files. `--ranker heuristics` uses neither API regardless of credentials.
 
 ### Cache
 
 - Jev answers are cached in `.rbt/cache/jev.json` by default, keyed by model, change, and candidate
+- Decisions answers use `.rbt/cache/decisions.json`; cache entries are never shared between providers
 - cache writes are best-effort and do not fail the command if they break
-- `status` reports the current cache entry count
+- `status` reports both provider cache counts
 
 ## Repo Layout
 
@@ -266,7 +321,7 @@ A variable set to an empty string counts as unset, so config and defaults still 
 src/
   cli.ts                CLI entrypoint
   commands/             Commander subcommands
-  services/             Jev scoring, ranking, document profiling, cache
+  services/             Provider scoring, ranking, document profiling, cache
   utils/                candidate collection, stdin helpers, glob matching
 prompts-idea/
   src/                  synthetic source files for matching experiments

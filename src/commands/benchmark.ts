@@ -4,7 +4,9 @@ import path from 'node:path';
 import { findPathsOutside, normalizePathSeparators } from '../utils/paths.ts';
 import { resolveConfig } from '../config.ts';
 import { buildDocumentProfile, isTestLike } from '../services/document-profile.ts';
-import { JEV_API_KEY_ENV, JevScorer } from '../services/jev.ts';
+import { JEV_API_KEY_ENV, getJevKey } from '../services/jev.ts';
+import { getOpenAIKey } from '../services/decisions.ts';
+import { createModelScorer } from '../services/model-scorer-factory.ts';
 import { filterMatches, rankMatches, type RankedMatchCandidate } from '../services/match.ts';
 import { collectCandidateFilesDetailed, readCandidateText } from '../utils/files.ts';
 import { mapWithConcurrency } from '../utils/async.ts';
@@ -84,9 +86,11 @@ export function registerBenchmarkCommand(program: Command): void {
         .option('-c, --candidates <patterns...>', 'Candidate file paths, directories, or file globs')
         .option('--include-file <patterns...>', 'Include only matching files (glob pattern)')
         .option('--exclude-file <patterns...>', 'Exclude matching files (glob pattern)')
-        .option('--ranker <name>', `jev (TypeSafe API, default; key from ${JEV_API_KEY_ENV}) or heuristics (local only)`)
+        .option('--ranker <name>', `jev (TypeSafe API, default; key from ${JEV_API_KEY_ENV} or JEF) decisions (OpenAI API; key from OPENAI_API_KEY or OPEN_AI), or heuristics (local only)`)
         .option('--jev-model <id>', 'TypeSafe Jev model id')
-        .option('--cache-dir <path>', 'Directory used to cache Jev answers')
+        .option('--decisions-model <id>', 'OpenAI Decisions model id')
+        .option('--fallback-ranker <name>', 'Only heuristics allowed; benchmark never falls back')
+        .option('--cache-dir <path>', 'Directory used to cache provider answers')
         .option('--diff-root <path>', 'Base directory for relative paths in case diffs')
         .option('-t, --threshold <number>', 'Minimum similarity threshold')
         .option('--min-score <number>', 'Minimum similarity score override')
@@ -98,6 +102,8 @@ export function registerBenchmarkCommand(program: Command): void {
             excludeFile?: string[];
             ranker?: string;
             jevModel?: string;
+            decisionsModel?: string;
+            fallbackRanker?: string;
             cacheDir?: string;
             diffRoot?: string;
             threshold?: string;
@@ -120,6 +126,8 @@ export function registerBenchmarkCommand(program: Command): void {
                     excludeFile: options.excludeFile,
                     ranker: options.ranker,
                     jevModel: options.jevModel,
+                    decisionsModel: options.decisionsModel,
+                    fallbackRanker: options.fallbackRanker,
                     cacheDir: options.cacheDir,
                     threshold: options.threshold,
                     minScore: options.minScore,
@@ -128,6 +136,9 @@ export function registerBenchmarkCommand(program: Command): void {
                 cwd
             );
 
+            if (config.fallbackRanker !== 'heuristics') {
+                throw new Error('Benchmark does not allow a remote fallback ranker; run each provider separately.');
+            }
             const casesPath = path.resolve(cwd, options.cases);
             const cases = await loadBenchmarkCases(casesPath);
             const candidateResult = await collectCandidateFilesDetailed(
@@ -136,16 +147,16 @@ export function registerBenchmarkCommand(program: Command): void {
                 config.match.excludePatterns,
                 cwd
             );
-            // Unlike match, a benchmark never falls back: a missing key or API failure is an error.
-            const jevScorer = config.ranker === 'jev'
-                ? new JevScorer({
-                    apiKey: process.env[JEV_API_KEY_ENV] ?? '',
-                    model: config.jevModel,
+            const scorer = config.ranker === 'heuristics' ? undefined
+                : createModelScorer(config.ranker, {
+                    apiKey: config.ranker === 'jev' ? getJevKey() ?? '' : getOpenAIKey() ?? '',
+                    model: config.ranker === 'jev' ? config.jevModel : config.decisionsModel,
                     cacheDir: config.cacheDir,
-                })
-                : undefined;
-            // A moving alias such as jev-latest can answer with several versions, so all are reported.
-            const jevStats = { requests: 0, cacheHits: 0, inputTokens: 0, models: new Set<string>() };
+                });
+            const modelStats: { requests: number; cacheHits: number; inputTokens: number | undefined; outputTokens: number | undefined; modelIdentity: 'reported' | 'requested'; models: Set<string> } = {
+                requests: 0, cacheHits: 0, inputTokens: 0, outputTokens: 0, modelIdentity: 'reported', models: new Set(),
+            };
+            const observedRanking: Array<{ source: string; results: Array<{ file: string; score: number; modelScore?: number; structuralScore: number }> }> = [];
             const sourcePaths = new Set(cases.map((entry) => path.resolve(cwd, entry.source)));
             // As in match, no case's source module is a candidate test; a test-like source stays one.
             const preparedCandidates = (await prepareCandidates(candidateResult.files, cwd)).filter((candidate) =>
@@ -185,18 +196,23 @@ export function registerBenchmarkCommand(program: Command): void {
                     let caseCandidates = preparedCandidates.filter(
                         (candidate) => path.resolve(cwd, candidate.file) !== sourcePath
                     );
-                    if (jevScorer) {
-                        const result = await jevScorer.score(
+                    if (scorer) {
+                        const result = await scorer.score(
                             { profile: sourceProfile, text: sourceText, diffOnly: entry.diffText !== undefined },
                             caseCandidates
                         );
-                        jevStats.requests += result.requests;
-                        jevStats.cacheHits += result.cacheHits;
-                        jevStats.inputTokens += result.inputTokens;
-                        result.models.forEach((model) => jevStats.models.add(model));
+                        modelStats.requests += result.requests;
+                        modelStats.cacheHits += result.cacheHits;
+                        modelStats.inputTokens = modelStats.inputTokens === undefined || result.inputTokens === undefined
+                            ? undefined : modelStats.inputTokens + result.inputTokens;
+                        modelStats.outputTokens = modelStats.outputTokens === undefined || result.outputTokens === undefined
+                            ? undefined : modelStats.outputTokens + result.outputTokens;
+                        if (result.modelIdentity === 'requested') modelStats.modelIdentity = 'requested';
+                        result.models.forEach((model) => modelStats.models.add(model));
                         caseCandidates = caseCandidates.map((candidate) => ({
                             ...candidate,
-                            jevScore: result.scores.get(candidate.file),
+                            modelScore: result.scores.get(candidate.file),
+                            jevScore: config.ranker === 'jev' ? result.scores.get(candidate.file) : undefined,
                         }));
                     }
 
@@ -204,6 +220,7 @@ export function registerBenchmarkCommand(program: Command): void {
                         rankMatches({ profile: sourceProfile }, caseCandidates),
                         config.match.minScore
                     );
+                    observedRanking.push({ source: entry.source, results: matches.map(({ file, score, modelScore, structuralScore }) => ({ file, score, modelScore, structuralScore })) });
                     const topThree = matches.slice(0, 3);
                     const topTen = matches.slice(0, 10);
                     const failedChecks: string[] = [];
@@ -252,11 +269,15 @@ export function registerBenchmarkCommand(program: Command): void {
                     }
                 }
             } finally {
-                await jevScorer?.flush();
+                await scorer?.flush();
             }
 
             const summary = {
                 ranker: config.ranker,
+                requestedRanker: config.ranker,
+                effectiveRanker: config.ranker,
+                observedRanking,
+                modelScorer: scorer ? { provider: config.ranker, ...modelStats, models: [...modelStats.models].sort() } : undefined,
                 cases: cases.length,
                 threshold: config.match.threshold,
                 minScore: config.match.minScore,
@@ -268,7 +289,8 @@ export function registerBenchmarkCommand(program: Command): void {
                 top10IncludeRate: top10IncludeTotal ? top10IncludeHits / top10IncludeTotal : 0,
                 misses,
                 candidateLimitReached: candidateResult.truncated,
-                jev: jevScorer ? { ...jevStats, models: [...jevStats.models].sort() } : undefined,
+                jev: config.ranker === 'jev' && scorer ? { requests: modelStats.requests, cacheHits: modelStats.cacheHits,
+                    inputTokens: modelStats.inputTokens, models: [...modelStats.models].sort() } : undefined,
             };
 
             if (options.json) {
@@ -285,11 +307,12 @@ export function registerBenchmarkCommand(program: Command): void {
             console.log(`top10IncludeCases: ${summary.top10IncludeCases}`);
             console.log(`top10IncludeRate: ${summary.top10IncludeRate.toFixed(4)}`);
             console.log(`candidateLimitReached: ${summary.candidateLimitReached}`);
-            if (summary.jev) {
-                console.log(`jevRequests: ${summary.jev.requests}`);
-                console.log(`jevCacheHits: ${summary.jev.cacheHits}`);
-                console.log(`jevInputTokens: ${summary.jev.inputTokens}`);
-                console.log(`jevModels: ${summary.jev.models.join(', ') || 'none'}`);
+            if (summary.modelScorer) {
+                const label = summary.modelScorer.provider;
+                console.log(`${label}Requests: ${summary.modelScorer.requests}`);
+                console.log(`${label}CacheHits: ${summary.modelScorer.cacheHits}`);
+                console.log(`${label}InputTokens: ${summary.modelScorer.inputTokens ?? 'unknown'}`);
+                console.log(`${label}Models: ${summary.modelScorer.models.join(', ') || 'none'}`);
             }
             if (!summary.misses.length) {
                 console.log('misses: none');

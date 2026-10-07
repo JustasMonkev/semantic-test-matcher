@@ -78,8 +78,70 @@ describe('benchmark command', () => {
 
         await assert.rejects(
             program.parseAsync(['benchmark', '--cases', 'cases.json', '--candidates', 'tests', '--json'], { from: 'user' }),
-            /TYPESAFE_API_KEY is required/
+            /TYPESAFE_API_KEY.*is required/
         );
+    });
+
+    it('fails instead of substituting another provider when Decisions has no credentials', async () => {
+        await makeWorkspace();
+        const saved = { key: process.env.OPENAI_API_KEY, alias: process.env.OPEN_AI };
+        delete process.env.OPENAI_API_KEY;
+        delete process.env.OPEN_AI;
+        try {
+            const program = new Command();
+            registerBenchmarkCommand(program);
+            await assert.rejects(program.parseAsync([
+                'benchmark', '--cases', 'cases.json', '--ranker', 'decisions', '--json',
+            ], { from: 'user' }), /OPENAI_API_KEY.*required/);
+        } finally {
+            if (saved.key === undefined) delete process.env.OPENAI_API_KEY;
+            else process.env.OPENAI_API_KEY = saved.key;
+            if (saved.alias === undefined) delete process.env.OPEN_AI;
+            else process.env.OPEN_AI = saved.alias;
+        }
+    });
+
+    it('rejects remote fallback configuration before benchmarking', async () => {
+        await makeWorkspace();
+        const program = new Command();
+        registerBenchmarkCommand(program);
+        await assert.rejects(program.parseAsync([
+            'benchmark', '--cases', 'cases.json', '--fallback-ranker', 'decisions', '--json',
+        ], { from: 'user' }), /Benchmark does not allow a remote fallback/);
+    });
+
+    it('reports Decisions ranking and usage without Jev metadata', async (t) => {
+        await makeWorkspace();
+        const saved = process.env.OPENAI_API_KEY;
+        process.env.OPENAI_API_KEY = 'fixture-openai';
+        t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+            const body: { model: string; questions: Array<{ name: string }> } = JSON.parse(String(init?.body));
+            return Response.json({ model: body.model, answers: body.questions.map(({ name }) => ({
+                name, type: 'predicate', probability: 0.9,
+            })), usage: { input_tokens: 25, output_tokens: 2 } });
+        });
+        const output: string[] = [];
+        const originalLog = console.log;
+        console.log = value => output.push(String(value));
+        try {
+            const program = new Command();
+            registerBenchmarkCommand(program);
+            await program.parseAsync([
+                'benchmark', '--cases', 'cases.json', '--ranker', 'decisions', '--json',
+            ], { from: 'user' });
+        } finally {
+            console.log = originalLog;
+            if (saved === undefined) delete process.env.OPENAI_API_KEY;
+            else process.env.OPENAI_API_KEY = saved;
+        }
+        const summary = JSON.parse(output[output.length - 1]);
+        assert.equal(summary.ranker, 'decisions');
+        assert.equal(summary.effectiveRanker, 'decisions');
+        assert.equal(summary.jev, undefined);
+        assert.equal(summary.modelScorer.provider, 'decisions');
+        assert.equal(summary.modelScorer.inputTokens, 25);
+        assert.equal(summary.modelScorer.outputTokens, 2);
+        assert.equal(summary.observedRanking[0].results[0].modelScore, 0.9);
     });
 
     it('keeps Jev answers already received when a later case fails', async (t) => {

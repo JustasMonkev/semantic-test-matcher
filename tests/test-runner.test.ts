@@ -63,6 +63,27 @@ describe('selected test execution', () => {
         assert.equal(process.env.TYPESAFE_API_KEY, savedKey);
     });
 
+    it('removes canonical and alias provider keys case-insensitively without changing parent credentials', async () => {
+        const names = ['OPENAI_API_KEY', 'openai_api_key', 'OPEN_AI', 'open_ai', 'JEF', 'jef'];
+        const saved = Object.fromEntries(names.map(name => [name, process.env[name]]));
+        await fs.writeFile(path.join(root, 'provider-env.mjs'), [
+            "import fs from 'node:fs';",
+            `const names = ${JSON.stringify(names)};`,
+            "fs.writeFileSync('provider-env.json', JSON.stringify(names.map(name => process.env[name] ?? null)));",
+        ].join('\n'));
+        for (const name of names) process.env[name] = 'fixture-secret';
+        try {
+            assert.equal(await runSelectedTests(`"${process.execPath}" provider-env.mjs`, ['tests/price.test.ts'], root), 0);
+            assert.deepEqual(JSON.parse(await fs.readFile(path.join(root, 'provider-env.json'), 'utf8')), names.map(() => null));
+            assert.ok(names.every(name => process.env[name] === 'fixture-secret'));
+        } finally {
+            for (const name of names) {
+                if (saved[name] === undefined) delete process.env[name];
+                else process.env[name] = saved[name];
+            }
+        }
+    });
+
     it('never launches a command with an empty selection', async () => {
         assert.equal(await runSelectedTests(command, [], root), 0);
         await assert.rejects(fs.stat(path.join(root, 'args.json')), { code: 'ENOENT' });

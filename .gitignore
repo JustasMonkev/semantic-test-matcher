@@ -26,3 +26,7 @@ dist-ssr
 
 # Local secrets
 .env
+
+# Local benchmark and verification artifacts; committed summaries live separately
+/docs/benchmark-results/
+/docs/verification/
