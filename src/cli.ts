@@ -14,7 +14,7 @@ program
 
 program
     .option('-c, --config <path>', 'Path to config file')
-    .option('--cache-dir <path>', 'Directory used to store the Jev answer cache')
+    .option('--cache-dir <path>', 'Directory used to store provider answer caches')
     .option('--log-level <level>', 'debug | info | warn | error')
     .option('-v, --verbose', 'Enable verbose output')
     .option('-q, --quiet', 'Suppress non-essential output')

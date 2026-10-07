@@ -108,6 +108,24 @@ describe('test selection policy', () => {
         assert.match(broadFallback.reason ?? '', /all candidates retained/);
     });
 
+    it('uses Decisions model evidence for adaptive and targeted selection at the same boundaries', () => {
+        const matches = [
+            { ...candidate('neighbor.spec.ts', 0.95, undefined, 0.4), modelScore: 0.499 },
+            { ...candidate('boundary.spec.ts', 0.8, undefined, 0.1), modelScore: 0.5 },
+            { ...candidate('strong.spec.ts', 0.7, undefined, 0.1), modelScore: 0.7 },
+            { ...candidate('unrelated.spec.ts', 0.1, undefined, 0.01), modelScore: 0.01 },
+        ];
+        assert.deepEqual(selectMatches(matches, undefined, 'adaptive', 'decisions').results.map(x => x.file), [
+            'neighbor.spec.ts', 'boundary.spec.ts', 'strong.spec.ts',
+        ]);
+        assert.deepEqual(selectMatches(matches, undefined, 'targeted', 'decisions').results.map(x => x.file), [
+            'boundary.spec.ts', 'strong.spec.ts',
+        ]);
+        assert.equal(selectMatches(matches, undefined, 'adaptive', 'decisions').reason, undefined);
+        const marginal = matches.map(x => ({ ...x, modelScore: 0.699 }));
+        assert.match(selectMatches(marginal, undefined, 'adaptive', 'decisions').reason ?? '', /coverage widened/);
+    });
+
     it('expands selection as relevant evidence spreads across candidate files', () => {
         const narrow = Array.from({ length: 20 }, (_, index) =>
             candidate(`test-${index}.spec.ts`, 1 - index / 20, index === 0 ? 0.9 : 0.1, index === 0 ? 0.4 : 0.1)

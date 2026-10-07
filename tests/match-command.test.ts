@@ -10,6 +10,11 @@ import { registerMatchCommand } from '../src/commands/match.ts';
 
 interface MatchOutput {
     ranker: string;
+    cacheEntries?: number;
+    requestedRanker?: string;
+    effectiveRanker?: string;
+    rankerAttempts?: Array<{ ranker: string; status: string; reason?: string }>;
+    modelScorer?: { provider: string; requests: number; cacheHits: number };
     rankerFallback?: string;
     selectionPolicy?: string;
     selectionFallback?: string;
@@ -18,18 +23,24 @@ interface MatchOutput {
     selectionTruncated?: boolean;
     model?: string;
     jev?: { requests: number; cacheHits: number; models: string[] };
-    results: Array<{ file: string; score: number; structuralScore: number; jevScore?: number }>;
+    results: Array<{ file: string; score: number; structuralScore: number; modelScore?: number; jevScore?: number }>;
 }
 
 describe('match command rankers', () => {
     let cwd: string;
     let savedKey: string | undefined;
+    let savedProviderEnv: Record<string, string | undefined>;
     const originalFetch = globalThis.fetch;
 
     beforeEach(async () => {
         cwd = process.cwd();
         savedKey = process.env.TYPESAFE_API_KEY;
         delete process.env.TYPESAFE_API_KEY;
+        savedProviderEnv = {};
+        for (const name of ['OPENAI_API_KEY', 'OPEN_AI', 'JEF', 'RBT_RANKER', 'RBT_FALLBACK_RANKER']) {
+            savedProviderEnv[name] = process.env[name];
+            delete process.env[name];
+        }
 
         const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-match-'));
         await fs.mkdir(path.join(root, 'src'));
@@ -48,6 +59,10 @@ describe('match command rankers', () => {
         globalThis.fetch = originalFetch;
         if (savedKey === undefined) delete process.env.TYPESAFE_API_KEY;
         else process.env.TYPESAFE_API_KEY = savedKey;
+        for (const [name, value] of Object.entries(savedProviderEnv)) {
+            if (value === undefined) delete process.env[name];
+            else process.env[name] = value;
+        }
     });
 
     const runMatch = (...args: string[]) => runMatchOn('src/price.ts', ...args);
@@ -93,6 +108,163 @@ describe('match command rankers', () => {
         assert.equal(output.results[0].file, 'tests/price.test.ts');
         assert.equal(warnings.length, 1);
         assert.match(warnings[0], /jev ranker unavailable/);
+    });
+
+    function decisionsResponse(init?: RequestInit, probability = 0.95): Response {
+        const body: { model: string; questions: Array<{ name: string }> } = JSON.parse(String(init?.body));
+        return Response.json({ model: body.model,
+            answers: body.questions.map(question => ({ name: question.name, type: 'predicate', probability })),
+            usage: { input_tokens: 20, output_tokens: 0 },
+        });
+    }
+
+    it('uses Decisions explicitly, with neutral metadata and no Jev-labeled evidence', async () => {
+        process.env.OPEN_AI = 'fixture-key';
+        globalThis.fetch = async (url, init) => {
+            assert.equal(String(url), 'https://api.openai.com/v1/decisions');
+            return decisionsResponse(init);
+        };
+        const { output, warnings } = await runMatch('--ranker', 'openai');
+        assert.equal(output.ranker, 'decisions');
+        assert.equal(output.requestedRanker, 'decisions');
+        assert.equal(output.effectiveRanker, 'decisions');
+        assert.equal(output.modelScorer?.provider, 'decisions');
+        assert.equal(output.jev, undefined);
+        assert.equal(warnings.length, 0);
+        assert.ok(output.results.every(result => result.jevScore === undefined && result.modelScore === 0.95));
+        for (const result of output.results) {
+            assert.ok(Math.abs(result.score - (0.95 * 0.6 + result.structuralScore * 0.4)) < 1e-12);
+        }
+        const repeated = await runMatch('--ranker', 'decisions');
+        assert.equal(repeated.output.modelScorer?.requests, 0);
+        assert.equal(repeated.output.modelScorer?.cacheHits, 2);
+    });
+
+    it('does not enable OpenAI implicitly or call a remote scorer for heuristics', async () => {
+        process.env.OPENAI_API_KEY = 'fixture-key';
+        globalThis.fetch = async () => { throw new Error('unexpected remote request'); };
+        const defaultRun = await runMatch();
+        assert.equal(defaultRun.output.ranker, 'heuristics');
+        assert.deepEqual(defaultRun.output.rankerAttempts?.map(attempt => attempt.ranker), ['jev', 'heuristics']);
+        const localRun = await runMatch('--ranker', 'heuristics');
+        assert.deepEqual(localRun.output.rankerAttempts, [{ ranker: 'heuristics', status: 'succeeded' }]);
+    });
+
+    it('keeps explicit heuristics local when a remote fallback is inherited', async () => {
+        process.env.OPENAI_API_KEY = 'fixture-key';
+        process.env.RBT_FALLBACK_RANKER = 'decisions';
+        globalThis.fetch = async () => { throw new Error('unexpected remote request'); };
+        const { output, warnings } = await runMatch('--ranker', 'heuristics');
+        assert.equal(output.ranker, 'heuristics');
+        assert.deepEqual(output.rankerAttempts, [{ ranker: 'heuristics', status: 'succeeded' }]);
+        assert.equal(warnings.length, 0);
+    });
+
+    it('reports missing Decisions credentials and uses local fallback', async () => {
+        const { output, warnings } = await runMatch('--ranker', 'decisions');
+        assert.equal(output.ranker, 'heuristics');
+        assert.equal(output.requestedRanker, 'decisions');
+        assert.match(output.rankerFallback ?? '', /OPENAI_API_KEY/);
+        assert.equal(warnings.length, 1);
+        assert.ok(output.results.every(result => result.modelScore === undefined && result.score === result.structuralScore));
+    });
+
+    for (const primary of ['decisions', 'jev']) {
+        it(`reports persisted Decisions cache after ${primary} falls back to heuristics`, async () => {
+            process.env.OPEN_AI = 'fixture-key';
+            await fs.writeFile('src/socket.ts', 'export function reconnect() {}');
+            await fs.mkdir('.cache');
+            await fs.writeFile('.cache/jev.json', JSON.stringify({ unrelated: 0.5 }));
+            let requests = 0;
+            globalThis.fetch = async (_url, init) => ++requests === 1
+                ? decisionsResponse(init)
+                : new Response('unavailable', { status: 400 });
+            const flags = primary === 'jev' ? ['--fallback-ranker', 'decisions'] : [];
+            const { output } = await runMatch('src/socket.ts', '--ranker', primary, ...flags);
+            assert.equal(requests, 2);
+            assert.equal(output.effectiveRanker, 'heuristics');
+            assert.equal(Object.keys(JSON.parse(await fs.readFile('.cache/decisions.json', 'utf8'))).length, 2);
+            assert.equal(output.cacheEntries, 2);
+        });
+    }
+
+    it('falls back from unavailable Jev to Decisions only when explicitly configured', async () => {
+        process.env.OPENAI_API_KEY = 'fixture-key';
+        globalThis.fetch = async (_url, init) => decisionsResponse(init);
+        const { output } = await runMatch('--fallback-ranker', 'decisions');
+        assert.equal(output.ranker, 'decisions');
+        assert.equal(output.requestedRanker, 'jev');
+        assert.match(output.rankerFallback ?? '', /TYPESAFE_API_KEY/);
+        assert.deepEqual(output.rankerAttempts?.map(attempt => [attempt.ranker, attempt.status]), [
+            ['jev', 'failed'], ['decisions', 'succeeded'],
+        ]);
+    });
+
+    it('reports both failed providers before the final local fallback', async () => {
+        const { output, warnings } = await runMatch('--fallback-ranker', 'decisions');
+        assert.equal(output.ranker, 'heuristics');
+        assert.equal(warnings.length, 2);
+        assert.deepEqual(output.rankerAttempts?.map(attempt => attempt.ranker), ['jev', 'decisions', 'heuristics']);
+        assert.match(output.rankerFallback ?? '', /TYPESAFE_API_KEY.*OPENAI_API_KEY/);
+    });
+
+    it('does not fall back on valid low model probabilities', async () => {
+        process.env.OPENAI_API_KEY = 'fixture-key';
+        globalThis.fetch = async (_url, init) => decisionsResponse(init, 0);
+        const { output } = await runMatch('--ranker', 'decisions');
+        assert.equal(output.ranker, 'decisions');
+        assert.equal(output.rankerFallback, undefined);
+        assert.ok(output.results.every(result => result.modelScore === 0));
+    });
+
+    it('propagates unrelated programming errors instead of disguising them as fallback', async () => {
+        process.env.OPENAI_API_KEY = 'fixture-key';
+        globalThis.fetch = async () => { throw new Error('fixture programming error'); };
+        await assert.rejects(runMatch('--ranker', 'decisions'), /fixture programming error/);
+    });
+
+    it('rescores every source with Decisions when Jev fails after partial success', async () => {
+        process.env.TYPESAFE_API_KEY = 'fixture-jev';
+        process.env.OPENAI_API_KEY = 'fixture-openai';
+        await fs.writeFile('src/socket.ts', 'export function reconnect() { return true; }');
+        let jevRequests = 0;
+        let decisionsRequests = 0;
+        globalThis.fetch = async (url, init) => {
+            if (String(url).includes('openai.com')) {
+                decisionsRequests += 1;
+                return decisionsResponse(init, 0.8);
+            }
+            jevRequests += 1;
+            if (jevRequests === 2) return new Response('', { status: 400 });
+            const body: { questions: Record<string, unknown> } = JSON.parse(String(init?.body));
+            return Response.json({ model: 'jev-1.13.0', answers: Object.fromEntries(
+                Object.keys(body.questions).map(name => [name, { type: 'noul', noul: 0.99 }])
+            ) });
+        };
+        const { lines } = await runCli('src/price.ts', 'src/socket.ts', '--fallback-ranker', 'decisions', '--json');
+        const output: { ranker: string; changes: MatchOutput[]; results: MatchOutput['results'] } = JSON.parse(lines[lines.length - 1]);
+        assert.equal(jevRequests, 2);
+        assert.equal(decisionsRequests, 2);
+        assert.equal(output.ranker, 'decisions');
+        assert.ok(output.changes.every(change => change.ranker === 'decisions'));
+        assert.ok(output.results.every(result => result.jevScore === undefined && result.modelScore === 0.8));
+    });
+
+    it('discards partial Decisions evidence when a later source fails', async () => {
+        process.env.OPENAI_API_KEY = 'fixture-openai';
+        await fs.writeFile('src/socket.ts', 'export function reconnect() { return true; }');
+        let requests = 0;
+        globalThis.fetch = async (_url, init) => {
+            requests += 1;
+            return requests === 1 ? decisionsResponse(init, 0.99) : new Response('', { status: 401 });
+        };
+        const { lines, warnings } = await runCli('src/price.ts', 'src/socket.ts', '--ranker', 'decisions', '--json');
+        const output: { ranker: string; changes: MatchOutput[]; results: MatchOutput['results'] } = JSON.parse(lines[lines.length - 1]);
+        assert.equal(requests, 2);
+        assert.equal(output.ranker, 'heuristics');
+        assert.equal(warnings.length, 1);
+        assert.ok(output.changes.every(change => change.ranker === 'heuristics' && change.modelScorer === undefined));
+        assert.ok(output.results.every(result => result.modelScore === undefined && result.score === result.structuralScore));
     });
 
     it('blends Jev scores into the ranking when the API answers', async () => {

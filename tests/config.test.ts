@@ -19,6 +19,8 @@ const MANAGED_ENV_VARS = [
     'RBT_MATCH_MIN_SCORE',
     'RBT_RANKER',
     'RBT_JEV_MODEL',
+    'RBT_DECISIONS_MODEL',
+    'RBT_FALLBACK_RANKER',
     'RBT_SELECTION_POLICY',
     'RBT_DEBUG',
 ];
@@ -90,6 +92,49 @@ describe('resolveConfig', () => {
                 .then(({ ranker, jevModel }) => ({ ranker, jevModel })),
             { ranker: 'heuristics', jevModel: 'jev-cli' }
         );
+    });
+
+    it('resolves Decisions model and fallback with flag, environment, file, default precedence', async () => {
+        const file = await writeTempConfig({ ranker: 'jev', decisionsModel: 'file-model', fallbackRanker: 'decisions' });
+        const fromFile = await resolveConfig({ config: file }, {});
+        assert.equal(fromFile.decisionsModel, 'file-model');
+        assert.equal(fromFile.fallbackRanker, 'decisions');
+        process.env.RBT_DECISIONS_MODEL = 'env-model';
+        process.env.RBT_FALLBACK_RANKER = 'heuristics';
+        const fromEnv = await resolveConfig({ config: file }, {});
+        assert.equal(fromEnv.decisionsModel, 'env-model');
+        assert.equal(fromEnv.fallbackRanker, 'heuristics');
+        const fromFlags = await resolveConfig({ config: file }, { ranker: 'openai', decisionsModel: 'flag-model', fallbackRanker: 'heuristics' });
+        assert.equal(fromFlags.ranker, 'decisions');
+        assert.equal(fromFlags.decisionsModel, 'flag-model');
+        assert.equal(fromFlags.fallbackRanker, 'heuristics');
+        delete process.env.RBT_FALLBACK_RANKER;
+        assert.equal((await resolveConfig({}, {})).fallbackRanker, 'heuristics');
+    });
+
+    it('rejects unsupported fallback chains instead of ignoring configuration', async () => {
+        for (const ranker of ['decisions', 'heuristics']) {
+            await assert.rejects(resolveConfig({}, { ranker, fallbackRanker: 'decisions' }), /only supported with --ranker jev/);
+        }
+        const file = await writeTempConfig({ ranker: 'decisions', fallbackRanker: 'decisions' });
+        await assert.rejects(resolveConfig({ config: file }, {}), /only supported with --ranker jev/);
+        await assert.rejects(resolveConfig({}, { fallbackRanker: 'jev' }), /Invalid fallback ranker/);
+    });
+
+    it('lets an explicit local ranker override an inherited remote fallback', async () => {
+        const file = await writeTempConfig({ ranker: 'jev', fallbackRanker: 'decisions' });
+        const fromFile = await resolveConfig({ config: file }, { ranker: 'heuristics' });
+        assert.equal(fromFile.ranker, 'heuristics');
+        assert.equal(fromFile.fallbackRanker, 'heuristics');
+
+        process.env.RBT_FALLBACK_RANKER = 'decisions';
+        const fromEnv = await resolveConfig({}, { ranker: 'heuristics' });
+        assert.equal(fromEnv.ranker, 'heuristics');
+        assert.equal(fromEnv.fallbackRanker, 'heuristics');
+
+        delete process.env.RBT_FALLBACK_RANKER;
+        process.env.RBT_RANKER = 'heuristics';
+        assert.equal((await resolveConfig({ config: file }, {})).fallbackRanker, 'heuristics');
     });
 
     it('rejects unknown rankers', async () => {

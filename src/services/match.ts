@@ -15,6 +15,7 @@ export interface MatchCandidate {
     phraseScore: number;
     pathFamilyScore: number;
     changeScore: number;
+    modelScore?: number;
     jevScore?: number;
 }
 
@@ -24,19 +25,17 @@ export interface RankedMatchSource {
 
 export interface RankedMatchCandidate {
     file: string;
-    /** Jev's probability that this test should run for the change. */
+    modelScore?: number;
     jevScore?: number;
     preview: string;
     profile: DocumentProfile;
 }
 
-// Share of the final score given to Jev; the structural heuristics carry the rest.
-const JEV_WEIGHT = 0.6;
+const MODEL_WEIGHT = 0.6;
 
-// Jev's Noul yes/no decision boundary. Targeted selection is opt-in; when
-// Jev has no affirmative answers, we retain conservative top-K selection.
-export const TARGETED_JEV_THRESHOLD = 0.5;
-const STRONG_JEV_SCORE = 0.7;
+export const TARGETED_MODEL_THRESHOLD = 0.5;
+export const TARGETED_JEV_THRESHOLD = TARGETED_MODEL_THRESHOLD;
+const STRONG_MODEL_SCORE = 0.7;
 const MIN_STRUCTURAL_NEIGHBOR_SCORE = 0.2;
 // Share of candidates, by structural rank, that adaptive selection keeps as neighbors.
 const CONFIDENT_NEIGHBOR_SHARE = 0.1;
@@ -229,7 +228,7 @@ function changeOverlap(source: DocumentProfile, candidate: DocumentProfile): num
 }
 
 // Each structural signal plus their weighted blend (`score`).
-type StructuralScore = Omit<MatchCandidate, 'file' | 'score' | 'preview' | 'structuralScore' | 'jevScore'> & {
+type StructuralScore = Omit<MatchCandidate, 'file' | 'score' | 'preview' | 'structuralScore' | 'jevScore' | 'modelScore'> & {
     score: number;
 };
 
@@ -282,10 +281,10 @@ export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCa
     return candidates
         .map((item) => {
             const { score: structural, ...componentScores } = structuralScore(source.profile, item.profile);
-            // Without a Jev score (heuristics-only ranking) the structural score stands alone.
-            const blendedScore = item.jevScore === undefined
+            const modelScore = item.modelScore ?? item.jevScore;
+            const blendedScore = modelScore === undefined
                 ? structural
-                : (item.jevScore * JEV_WEIGHT) + (structural * (1 - JEV_WEIGHT));
+                : (modelScore * MODEL_WEIGHT) + (structural * (1 - MODEL_WEIGHT));
 
             return {
                 file: item.file,
@@ -293,6 +292,7 @@ export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCa
                 preview: item.preview,
                 structuralScore: structural,
                 ...componentScores,
+                modelScore,
                 jevScore: item.jevScore,
             };
         })
@@ -310,14 +310,13 @@ interface SelectionEvidence {
     uncertaintyRetainedCount?: number;
 }
 
-// Non-finite or out-of-range Jev scores count as missing.
-function usableJevScore(match: MatchCandidate): number | undefined {
-    const { jevScore } = match;
-    return jevScore !== undefined && Number.isFinite(jevScore) && jevScore <= 1 ? jevScore : undefined;
+function usableModelScore(match: MatchCandidate): number | undefined {
+    const score = match.modelScore ?? match.jevScore;
+    return score !== undefined && Number.isFinite(score) && score >= 0 && score <= 1 ? score : undefined;
 }
 
-function isJevAffirmative(match: MatchCandidate): boolean {
-    return (usableJevScore(match) ?? 0) >= TARGETED_JEV_THRESHOLD;
+function isModelAffirmative(match: MatchCandidate): boolean {
+    return (usableModelScore(match) ?? 0) >= TARGETED_MODEL_THRESHOLD;
 }
 
 interface SelectionResult {
@@ -345,15 +344,14 @@ function capSelection(
     };
 }
 
-/** Every affirmative Jev answer plus the strongest structural neighbors; wider when evidence is weak. */
 function selectAdaptive(matches: MatchCandidate[], topK: number | undefined, ranker: Ranker): SelectionResult {
     const structuralScores = matches.map((match) => match.structuralScore).sort((a, b) => b - a);
     const strongestStructural = structuralScores[0] ?? 0;
-    const affirmative = ranker === 'jev' ? matches.filter(isJevAffirmative) : [];
-    const strongestJev = matches.reduce((best, match) => Math.max(best, usableJevScore(match) ?? 0), 0);
-    const uncertain = ranker !== 'jev' || strongestJev < STRONG_JEV_SCORE;
+    const affirmative = ranker !== 'heuristics' ? matches.filter(isModelAffirmative) : [];
+    const strongestModel = matches.reduce((best, match) => Math.max(best, usableModelScore(match) ?? 0), 0);
+    const uncertain = ranker === 'heuristics' || strongestModel < STRONG_MODEL_SCORE;
     if (uncertain && strongestStructural < MIN_STRUCTURAL_NEIGHBOR_SCORE) {
-        return capSelection(matches, topK, 'No strong Jev or structural evidence; all candidates retained', {
+        return capSelection(matches, topK, `No strong ${ranker === 'decisions' ? 'Decisions' : 'Jev'} or structural evidence; all candidates retained`, {
             affirmativeCount: affirmative.length,
             structuralNeighborCount: 0,
             structuralCutoff: 0,
@@ -368,7 +366,7 @@ function selectAdaptive(matches: MatchCandidate[], topK: number | undefined, ran
     const eligible = matches.filter((match) =>
         affirmativeFiles.has(match.file) || match.structuralScore >= structuralCutoff
     );
-    return capSelection(eligible, topK, uncertain ? 'No strong Jev answer; structural coverage widened' : undefined, {
+    return capSelection(eligible, topK, uncertain ? `No strong ${ranker === 'decisions' ? 'Decisions' : 'Jev'} answer; structural coverage widened` : undefined, {
         affirmativeCount: affirmative.length,
         structuralNeighborCount: eligible.length - affirmative.length,
         structuralCutoff,
@@ -390,12 +388,11 @@ export function selectMatches(
         return capSelection(matches, limit);
     }
 
-    // Targeted: only Jev's affirmative answers, falling back to conservative top-K.
-    if (ranker !== 'jev') {
+    if (ranker === 'heuristics') {
         return capSelection(matches, limit, 'Jev is unavailable; conservative selection retained');
     }
-    const affirmative = matches.filter(isJevAffirmative);
+    const affirmative = matches.filter(isModelAffirmative);
     return affirmative.length
         ? capSelection(affirmative, limit)
-        : capSelection(matches, limit, 'No affirmative Jev answer; conservative selection retained');
+        : capSelection(matches, limit, `No affirmative ${ranker === 'decisions' ? 'Decisions' : 'Jev'} answer; conservative selection retained`);
 }

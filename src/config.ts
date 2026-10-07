@@ -3,6 +3,7 @@ import path from 'node:path';
 import { isWorkspaceContainedPath } from './utils/paths.ts';
 import { mergeArrays } from './utils/arrays.ts';
 import { clamp, firstFiniteNumber, parseBoolean, parseLogLevel, readEnv, type LogLevel } from './utils/values.ts';
+import { DECISIONS_MODEL } from './services/decisions.ts';
 import { setDebugLogLevel } from './utils/io.ts';
 
 export { clamp, type LogLevel } from './utils/values.ts';
@@ -11,7 +12,8 @@ export { clamp, type LogLevel } from './utils/values.ts';
  * jev: TypeSafe Jev scores + structural heuristics (default; sends diffs and test titles to the TypeSafe API).
  * heuristics: structural heuristics only (fully local).
  */
-export type Ranker = 'jev' | 'heuristics';
+export type Ranker = 'jev' | 'decisions' | 'heuristics';
+export type FallbackRanker = 'decisions' | 'heuristics';
 export type SelectionPolicy = 'adaptive' | 'conservative' | 'targeted';
 
 export interface MatchDefaults {
@@ -27,6 +29,8 @@ export interface MatchDefaults {
 export interface AppConfig {
     ranker?: Ranker;
     jevModel?: string;
+    decisionsModel?: string;
+    fallbackRanker?: FallbackRanker;
     cacheDir?: string;
     logLevel?: LogLevel;
     quiet?: boolean;
@@ -37,6 +41,8 @@ export interface AppConfig {
 export interface RuntimeConfig {
     ranker: Ranker;
     jevModel: string;
+    decisionsModel: string;
+    fallbackRanker: FallbackRanker;
     cacheDir: string;
     logLevel: LogLevel;
     quiet: boolean;
@@ -63,6 +69,8 @@ export interface MatchCommandOptions {
     excludeFile?: string[];
     ranker?: string;
     jevModel?: string;
+    decisionsModel?: string;
+    fallbackRanker?: string;
     cacheDir?: string;
     json?: boolean;
 }
@@ -71,6 +79,8 @@ const DEFAULT_CONFIG = {
     ranker: 'jev',
     // Pinned so cached answers and tuned thresholds survive `jev-latest` moving.
     jevModel: 'jev-1.13.0',
+    decisionsModel: DECISIONS_MODEL,
+    fallbackRanker: 'heuristics',
     cacheDir: '.rbt/cache',
     logLevel: 'info',
     match: {
@@ -85,11 +95,19 @@ const DEFAULT_CONFIG = {
 
 function parseRanker(value: unknown): Ranker {
     const normalized = String(value ?? '').trim().toLowerCase();
-    if (normalized === 'jev' || normalized === 'heuristics') {
+    if (normalized === 'openai') return 'decisions';
+    if (normalized === 'jev' || normalized === 'decisions' || normalized === 'heuristics') {
         return normalized;
     }
 
-    throw new Error(`Invalid ranker "${value}". Expected "jev" or "heuristics".`);
+    throw new Error(`Invalid ranker "${value}". Expected "jev", "decisions" (alias "openai"), or "heuristics".`);
+}
+
+function parseFallbackRanker(value: unknown): FallbackRanker {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (normalized === 'openai') return 'decisions';
+    if (normalized === 'decisions' || normalized === 'heuristics') return normalized;
+    throw new Error(`Invalid fallback ranker "${value}". Expected "decisions" or "heuristics".`);
 }
 
 function parseSelectionPolicy(value: unknown): SelectionPolicy {
@@ -163,8 +181,20 @@ export async function resolveConfig(
     const env = process.env;
 
     // Every setting resolves as: CLI flag, then RBT_* environment variable, then config file, then default.
-    const ranker = parseRanker(commandOptions.ranker ?? readEnv('RBT_RANKER') ?? fileConfig.ranker ?? DEFAULT_CONFIG.ranker);
+    const envRanker = readEnv('RBT_RANKER');
+    const envFallbackRanker = readEnv('RBT_FALLBACK_RANKER');
+    const ranker = parseRanker(commandOptions.ranker ?? envRanker ?? fileConfig.ranker ?? DEFAULT_CONFIG.ranker);
     const jevModel = commandOptions.jevModel ?? readEnv('RBT_JEV_MODEL') ?? fileConfig.jevModel ?? DEFAULT_CONFIG.jevModel;
+    const decisionsModel = commandOptions.decisionsModel ?? readEnv('RBT_DECISIONS_MODEL') ?? fileConfig.decisionsModel ?? DEFAULT_CONFIG.decisionsModel;
+    let fallbackRanker = parseFallbackRanker(commandOptions.fallbackRanker ?? envFallbackRanker ?? fileConfig.fallbackRanker ?? DEFAULT_CONFIG.fallbackRanker);
+    if (fallbackRanker === 'decisions' && ranker !== 'jev') {
+        if ((commandOptions.ranker !== undefined && commandOptions.fallbackRanker === undefined) ||
+            (envRanker !== undefined && commandOptions.fallbackRanker === undefined && envFallbackRanker === undefined)) {
+            fallbackRanker = 'heuristics';
+        } else {
+            throw new Error('The decisions fallback ranker is only supported with --ranker jev.');
+        }
+    }
     const logLevel = parseLogLevel(
         rootOptions.logLevel ?? readEnv('RBT_LOG_LEVEL') ?? fileConfig.logLevel ?? DEFAULT_CONFIG.logLevel
     );
@@ -200,6 +230,8 @@ export async function resolveConfig(
     return {
         ranker,
         jevModel,
+        decisionsModel,
+        fallbackRanker,
         cacheDir: path.resolve(cwd, cacheDirOverride ?? fileConfig.cacheDir ?? DEFAULT_CONFIG.cacheDir),
         logLevel,
         quiet,

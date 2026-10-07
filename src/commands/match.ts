@@ -5,18 +5,15 @@ import { collectCandidateFilesDetailed, isAllowedFile, MAX_CANDIDATE_FILES, read
 import { parseStdinList, readFileIfExists, readStdinText } from '../utils/io.ts';
 import { mapWithConcurrency } from '../utils/async.ts';
 import { resolveConfig, type Ranker, type RootOptions, type RuntimeConfig } from '../config.ts';
-import {
-    getJevCacheEntryCount,
-    JEV_API_KEY_ENV,
-    JevError,
-    JevScorer,
-    type JevScoreResult,
-} from '../services/jev.ts';
+import { getJevCacheEntryCount, JEV_API_KEY_ENV, getJevKey } from '../services/jev.ts';
+import { getDecisionsCacheEntryCount, getOpenAIKey } from '../services/decisions.ts';
+import { ModelScorerError, type ModelScoreResult, type ModelScorer } from '../services/model-scorer.ts';
+import { createModelScorer } from '../services/model-scorer-factory.ts';
 import {
     filterMatches,
     rankMatches,
     selectMatches,
-    TARGETED_JEV_THRESHOLD,
+    TARGETED_MODEL_THRESHOLD,
     type MatchCandidate,
     type RankedMatchCandidate,
 } from '../services/match.ts';
@@ -38,6 +35,8 @@ interface MatchOptions {
     excludeFile?: string[];
     ranker?: string;
     jevModel?: string;
+    decisionsModel?: string;
+    fallbackRanker?: string;
     cacheDir?: string;
     diffFile?: string;
     diffRoot?: string;
@@ -69,15 +68,17 @@ export function registerMatchCommand(program: Command): void {
         .option('-t, --threshold <number>', 'Minimum similarity threshold')
         .option('--min-score <number>', 'Minimum similarity score override')
         .option('--top-k <number>', 'Optional maximum number of selected tests')
-        .option('--selection-policy <name>', 'adaptive (default), conservative (fixed top five), or targeted (affirmative Jev top five)')
+        .option('--selection-policy <name>', 'adaptive (default), conservative (fixed top five), or targeted (affirmative model top five)')
         // Repeatable rather than variadic: a variadic option would swallow changed files that follow it.
         .option('-c, --candidates <pattern>', 'Candidate file path, directory, or file glob (repeat for several)', collect)
         .option('--include-file <pattern>', 'Include only matching files (glob pattern; repeat for several)', collect)
         .option('--exclude-file <pattern>', 'Exclude matching files (glob pattern; repeat for several)', collect)
         .option('--candidates-from-stdin', 'Read candidate file list (JSON array or newline list) from stdin')
-        .option('--ranker <name>', `jev (TypeSafe API, default; key from ${JEV_API_KEY_ENV}) or heuristics (local only)`)
+        .option('--ranker <name>', `jev (TypeSafe API, default; key from ${JEV_API_KEY_ENV} or JEF) decisions (OpenAI API; key from OPENAI_API_KEY or OPEN_AI), or heuristics (local only)`)
         .option('--jev-model <id>', 'TypeSafe Jev model id')
-        .option('--cache-dir <path>', 'Directory used to cache Jev answers')
+        .option('--decisions-model <id>', 'OpenAI Decisions model id')
+        .option('--fallback-ranker <name>', 'heuristics (default), or decisions (only with jev)')
+        .option('--cache-dir <path>', 'Directory used to cache provider answers')
         .option('--diff-file <path>', 'Unified diff file used to enrich change-aware matching')
         .option('--diff-root <path>', 'Base directory for relative paths in --diff-file')
         .option('--json', 'Print machine-readable output')
@@ -101,7 +102,10 @@ export function registerMatchCommand(program: Command): void {
             );
             const candidates = await loadCandidates(candidateScan.files, cwd);
             const reports = await matchChangedFiles(changes, candidates, config, candidateScan.truncated, cwd);
-            const cacheEntries = await getJevCacheEntryCount(config.cacheDir);
+            const cacheRanker = reports[0]?.rankerAttempts.filter(attempt => attempt.ranker !== 'heuristics').pop()?.ranker ?? config.ranker;
+            const cacheEntries = cacheRanker === 'decisions'
+                ? await getDecisionsCacheEntryCount(config.cacheDir)
+                : await getJevCacheEntryCount(config.cacheDir);
             const selected = mergeSelections(reports);
 
             if (options.json) {
@@ -151,6 +155,8 @@ async function resolveMatchConfig(rootOptions: RootOptions, options: MatchOption
             excludeFile: options.excludeFile,
             ranker: options.ranker,
             jevModel: options.jevModel,
+            decisionsModel: options.decisionsModel,
+            fallbackRanker: options.fallbackRanker,
             cacheDir: options.cacheDir,
             json: options.json,
         },
@@ -250,37 +256,43 @@ async function matchChangedFiles(
 
     let ranker = config.ranker;
     let rankerFallback: string | undefined;
-    const jevResults: JevScoreResult[] = [];
-    if (ranker === 'jev') {
-        let scorer: JevScorer | undefined;
+    let modelResults: ModelScoreResult[] = [];
+    const attempts: Array<{ ranker: Ranker; status: 'succeeded' | 'failed'; reason?: string }> = [];
+    const providers: Array<Exclude<Ranker, 'heuristics'>> = ranker === 'heuristics' ? []
+        : ranker === 'jev' && config.fallbackRanker === 'decisions' ? ['jev', 'decisions'] : [ranker];
+    for (const provider of providers) {
+        let scorer: ModelScorer | undefined;
         try {
-            scorer = new JevScorer({
-                apiKey: process.env[JEV_API_KEY_ENV] ?? '',
-                model: config.jevModel,
+            scorer = createModelScorer(provider, {
+                apiKey: provider === 'jev' ? getJevKey() ?? '' : getOpenAIKey() ?? '',
+                model: provider === 'jev' ? config.jevModel : config.decisionsModel,
                 cacheDir: config.cacheDir,
             });
+            const results: ModelScoreResult[] = [];
             for (const { source, fileCandidates } of changed) {
-                // A supplied --diff-file limits what is sent to its hunks; automatic mode may send a new file's text.
                 const diffOnly = !changes.automatic && changes.diffText !== undefined;
-                jevResults.push(await scorer.score({ profile: source.profile, text: source.text, diffOnly }, fileCandidates));
+                results.push(await scorer.score({ profile: source.profile, text: source.text, diffOnly }, fileCandidates));
             }
+            modelResults = results;
+            ranker = provider;
+            attempts.push({ ranker: provider, status: 'succeeded' });
+            break;
         } catch (error) {
-            if (!(error instanceof JevError)) {
-                throw error;
-            }
-            // Keep test selection working (e.g. CI without the secret); report the downgrade.
-            // The whole run falls back, so merged scores never mix Jev-blended and heuristic-only files.
-            rankerFallback = error.message;
+            if (!(error instanceof ModelScorerError)) throw error;
+            rankerFallback = rankerFallback ? `${rankerFallback}; ${error.message}` : error.message;
+            attempts.push({ ranker: provider, status: 'failed', reason: error.message });
             ranker = 'heuristics';
-            console.warn(`Warning: jev ranker unavailable (${error.message}); ranking with heuristics only`);
+            const next = provider === 'jev' && config.fallbackRanker === 'decisions' ? 'decisions' : 'heuristics';
+            console.warn(`Warning: ${provider} ranker unavailable (${error.message}); ranking with ${next}${next === 'heuristics' ? ' only' : ''}`);
         } finally {
             await scorer?.flush();
         }
     }
+    if (ranker === 'heuristics') attempts.push({ ranker: 'heuristics', status: 'succeeded' });
     return changed.map(({ source, fileCandidates }, index) => rankChangedFile(
         source,
         fileCandidates,
-        { ranker, rankerFallback, jevResult: ranker === 'jev' ? jevResults[index] : undefined },
+        { ranker, rankerFallback, attempts, modelResult: modelResults[index] },
         config,
         candidateLimitReached
     ));
@@ -301,12 +313,18 @@ async function readChangedFile(changedPath: string, changes: ChangedFiles, cwd: 
 function rankChangedFile(
     source: ChangedSource,
     candidates: RankedMatchCandidate[],
-    { ranker, rankerFallback, jevResult }: { ranker: Ranker; rankerFallback?: string; jevResult?: JevScoreResult },
+    { ranker, rankerFallback, attempts, modelResult }: {
+        ranker: Ranker;
+        rankerFallback?: string;
+        attempts: Array<{ ranker: Ranker; status: 'succeeded' | 'failed'; reason?: string }>;
+        modelResult?: ModelScoreResult;
+    },
     config: RuntimeConfig,
     candidateLimitReached: boolean
 ) {
-    const ranked = jevResult
-        ? candidates.map((candidate) => ({ ...candidate, jevScore: jevResult.scores.get(candidate.file) }))
+    const ranked = modelResult
+        ? candidates.map((candidate) => ({ ...candidate, modelScore: modelResult.scores.get(candidate.file),
+            jevScore: ranker === 'jev' ? modelResult.scores.get(candidate.file) : undefined }))
         : candidates;
     const matches = rankMatches({ profile: source.profile }, ranked);
     const filtered = filterMatches(matches, config.match.minScore);
@@ -314,9 +332,11 @@ function rankChangedFile(
     return {
         file: source.file,
         ranker,
+        requestedRanker: config.ranker,
+        effectiveRanker: ranker,
+        rankerAttempts: attempts,
         rankerFallback,
-        // One version names the model that answered; otherwise the requested id, with every version in jev.models.
-        model: ranker === 'jev' ? (jevResult?.models.length === 1 ? jevResult.models[0] : config.jevModel) : undefined,
+        model: modelResult ? (modelResult.models.length === 1 ? modelResult.models[0] : ranker === 'jev' ? config.jevModel : config.decisionsModel) : undefined,
         matched: selection.results.length,
         candidateCount: matches.length,
         threshold: config.match.threshold,
@@ -328,14 +348,17 @@ function rankChangedFile(
         eligibleCount: selection.eligibleCount,
         selectionTruncated: selection.truncated,
         selectionEvidence: selection.evidence,
-        targetedJevThreshold: config.match.selectionPolicy === 'targeted' ? TARGETED_JEV_THRESHOLD : undefined,
+        targetedModelThreshold: config.match.selectionPolicy === 'targeted' ? TARGETED_MODEL_THRESHOLD : undefined,
+        targetedJevThreshold: config.match.selectionPolicy === 'targeted' && ranker !== 'decisions' ? TARGETED_MODEL_THRESHOLD : undefined,
         source: source.profile.preview,
-        jev: jevResult && {
-            requests: jevResult.requests,
-            cacheHits: jevResult.cacheHits,
-            inputTokens: jevResult.inputTokens,
-            models: jevResult.models,
+        modelScorer: modelResult && {
+            provider: ranker, modelIdentity: modelResult.modelIdentity, requests: modelResult.requests, cacheHits: modelResult.cacheHits,
+            inputTokens: modelResult.inputTokens, outputTokens: modelResult.outputTokens, models: modelResult.models,
         },
+        jev: ranker === 'jev' && modelResult ? {
+            requests: modelResult.requests, cacheHits: modelResult.cacheHits,
+            inputTokens: modelResult.inputTokens, models: modelResult.models,
+        } : undefined,
         candidateLimitReached,
         results: selection.results,
     };
@@ -360,6 +383,11 @@ function printJson(reports: ChangeReport[], selected: MatchCandidate[], cacheEnt
         ? { ...reports[0], cacheEntries }
         : {
             files: reports.map((report) => report.file),
+            ranker: reports[0]?.ranker,
+            requestedRanker: reports[0]?.requestedRanker,
+            effectiveRanker: reports[0]?.effectiveRanker,
+            rankerFallback: reports[0]?.rankerFallback,
+            rankerAttempts: reports[0]?.rankerAttempts,
             matched: selected.length,
             cacheEntries,
             results: selected,

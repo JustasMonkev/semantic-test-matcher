@@ -207,6 +207,23 @@ describe('JevScorer', () => {
         assert.equal(result.requests, calls.length);
     });
 
+    it('rejects a single candidate that exceeds the remaining request budget before sending it', async () => {
+        const { impl, calls } = fakeFetch((body) => answer(body, () => 0.3));
+        const oversized = makeCandidate(`tests/${'x'.repeat(61_000)}.spec.ts`, "test('large candidate', () => {});");
+
+        await assert.rejects(makeScorer(impl, { skipCache: true }).score(makeSource(TABS_DIFF), [oversized]), JevError);
+        assert.equal(calls.length, 0);
+    });
+
+    it('rejects source evidence that alone exceeds the request budget before sending it', async () => {
+        const { impl, calls } = fakeFetch((body) => answer(body, () => 0.3));
+        const oversized = makeSource(TABS_DIFF);
+        oversized.profile.relativePath = `src/${'x'.repeat(61_000)}.ts`;
+
+        await assert.rejects(makeScorer(impl, { skipCache: true }).score(oversized, [TABS_TEST]), JevError);
+        assert.equal(calls.length, 0);
+    });
+
     it('sizes batches by estimated tokens, so non-ASCII test titles split sooner', async () => {
         assert.equal(estimateTokens('abcdef'), 6);
         assert.equal(estimateTokens('日本'), 6);
@@ -334,6 +351,27 @@ describe('JevScorer', () => {
         assert.equal(calls.length, 1);
     });
 
+    it('never exposes an upstream error body in fallback reasons', async () => {
+        const { impl } = fakeFetch(() => new Response('sk-key-like-sentinel repository evidence', { status: 401 }));
+        await assert.rejects(makeScorer(impl).score(makeSource(TABS_DIFF), [TABS_TEST]), error => {
+            assert.ok(error instanceof JevError);
+            assert.match(error.message, /HTTP 401; check TYPESAFE_API_KEY or JEF/);
+            assert.doesNotMatch(error.message, /sk-key-like-sentinel|repository evidence/);
+            return true;
+        });
+    });
+
+    it('never exposes transport error details after retry exhaustion', async () => {
+        const { impl, calls } = fakeFetch(() => { throw new TypeError('sk-key-like-sentinel'); });
+        await assert.rejects(makeScorer(impl).score(makeSource(TABS_DIFF), [TABS_TEST]), error => {
+            assert.ok(error instanceof JevError);
+            assert.match(error.message, /after 5 attempts \(network, timeout, or body-read error\)/);
+            assert.doesNotMatch(error.message, /sk-key-like-sentinel/);
+            return true;
+        });
+        assert.equal(calls.length, 5);
+    });
+
     it('gives up after repeated transient failures', async () => {
         const { impl, calls } = fakeFetch(() => new Response('unavailable', { status: 503 }));
         await assert.rejects(makeScorer(impl).score(makeSource(TABS_DIFF), [TABS_TEST]), JevError);
@@ -371,6 +409,14 @@ describe('JevScorer', () => {
                 /no answer for tests\/tabs\.spec\.ts/
             );
         }
+    });
+
+    it('rejects a non-noul answer even when it carries a probability', async () => {
+        const { impl } = fakeFetch(() => Response.json({
+            model: 'jev-1.13.0', answers: { t0: { type: 'refusal', noul: 0.9 } },
+        }));
+        await assert.rejects(makeScorer(impl).score(makeSource(TABS_DIFF), [TABS_TEST]), JevError);
+        assert.equal(await getJevCacheEntryCount(cacheDir), 0);
     });
 
     it('requires an API key', () => {
