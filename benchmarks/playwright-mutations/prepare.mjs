@@ -100,7 +100,11 @@ for (const mutation of mutations) {
     const afterPath = path.join(executionRoot, 'after.ts');
     await fs.writeFile(beforePath, original);
     await fs.writeFile(afterPath, changed);
-    const patch = spawnSync('diff', ['-u', '--label', `a/${mutation.source}`, '--label', `b/${mutation.source}`, beforePath, afterPath], { encoding: 'utf8' }).stdout;
+    const generatedDiff = spawnSync('diff', ['-u', '--label', `a/${mutation.source}`, '--label', `b/${mutation.source}`, beforePath, afterPath], { encoding: 'utf8' });
+    if (generatedDiff.error || generatedDiff.status !== 1 || !generatedDiff.stdout?.trim()) {
+        throw new Error(`Could not generate a nonempty mutation diff: ${mutation.id}`);
+    }
+    const patch = generatedDiff.stdout;
     const diffText = `diff --git a/${mutation.source} b/${mutation.source}\n${patch}`;
     await fs.writeFile(path.join(rankingRoot, `${mutation.id}.diff`), diffText);
     cases.push({ ...mutation, diffText, relevantTests: [...new Set(failedTests.map(test => test.file))], failedTests });

@@ -250,6 +250,9 @@ export class DecisionsScorer implements ModelScorer {
             if (attempt === MAX_ATTEMPTS) {
                 throw new DecisionsError(`Decisions request failed after ${attempt} attempts (${failure})`);
             }
+            if (retryAfterMs > MAX_RETRY_DELAY_MS) {
+                throw new DecisionsError(`Decisions request failed (${failure}); Retry-After exceeds the local retry delay limit`);
+            }
             await sleep(Math.min(MAX_RETRY_DELAY_MS, Math.max(
                 Number.isFinite(retryAfterMs) ? retryAfterMs : 0, (this.options.retryBaseMs ?? 250) * 2 ** (attempt - 1)
             )));

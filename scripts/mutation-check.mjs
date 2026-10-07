@@ -7,6 +7,21 @@ import { spawnSync } from 'node:child_process';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mutations = [
     {
+        name: 'accept failed mutation diff generation', file: 'benchmarks/playwright-mutations/prepare.mjs',
+        from: 'generatedDiff.error || generatedDiff.status !== 1 || !generatedDiff.stdout?.trim()', to: 'false',
+        testFile: 'tests/playwright-benchmark.test.ts', test: 'rejects invalid mutation diffs: missing executable',
+    },
+    {
+        name: 'retry before a long Retry-After expires', file: 'src/services/decisions.ts',
+        from: 'retryAfterMs > MAX_RETRY_DELAY_MS', to: 'false',
+        testFile: 'tests/decisions.test.ts', test: 'does not retry earlier than an excessive Retry-After: 5',
+    },
+    {
+        name: 'inherit a real Jev key in benchmark tests', file: 'tests/benchmark.test.ts',
+        from: 'delete process.env.TYPESAFE_API_KEY;\n        delete process.env.JEF;', to: 'delete process.env.TYPESAFE_API_KEY;',
+        testFile: 'tests/playwright-benchmark.test.ts', test: 'benchmark command tests ignore inherited Jev credentials without network access',
+    },
+    {
         name: 'omit TypeScript stripping from benchmark children', file: 'benchmarks/playwright-mutations/run.mjs',
         from: "['--experimental-strip-types', '--import',", to: "['--import',",
         testFile: 'tests/playwright-benchmark.test.ts', test: 'benchmark children enable TypeScript stripping when disabled by default',

@@ -151,6 +151,17 @@ describe('DecisionsScorer', () => {
         assert.equal(calls.length, 3);
     });
 
+    for (const retryAfter of ['5', 'Wed, 07 Oct 2026 12:00:05 GMT']) {
+        it(`does not retry earlier than an excessive Retry-After: ${retryAfter}`, async () => {
+            const { impl, calls } = fakeFetch((body, count) => count === 1
+                ? new Response('busy', { status: 429, headers: { 'Retry-After': retryAfter } })
+                : answer(body));
+            await assert.rejects(scorer(impl, { now: () => Date.parse('2026-10-07T12:00:00Z') }).score(source(), candidates),
+                /Retry-After exceeds the local retry delay limit/);
+            assert.equal(calls.length, 1);
+        });
+    }
+
     it('does not retry credential errors or expose upstream text', async () => {
         const { impl, calls } = fakeFetch(() => new Response('secret test-key repository content', { status: 401 }));
         await assert.rejects(scorer(impl).score(source(), candidates), error => {

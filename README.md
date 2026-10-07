@@ -210,6 +210,8 @@ For example, an explicitly configured fallback that succeeds with Decisions repo
 
 Provider requests have bounded batches, timeouts, and retry counts; a multi-file run can still require several requests. Decisions answers use a separate `decisions.json` cache with a 24-hour lifetime, keyed by model, evidence, question, and prompt version. Answers whose reported model differs from the requested id, or has no reported model id, are not cached. No Decisions latency or ranking-quality advantage over Jev is assumed.
 
+Decisions honors `Retry-After` within its two-second local retry-delay limit. Longer server-requested delays stop the attempt rather than trigger an early retry; `match` then follows its configured fallback, while `benchmark` fails.
+
 ### `benchmark`
 
 Runs the matcher over a JSON file of cases (`source`, optional `diffText`, and `expectedTop1`, `expectedTop3`, or `expectedTop10Includes`) and reports hit rates. It takes the same `--ranker`, `--jev-model`, `--decisions-model`, candidate, and threshold flags as `match`. Benchmark reports ranking hit rates; it does not apply `match` selection policies. With a remote provider, it also reports request counts, cache hits, input tokens, and every model version that answered, so runs against moving aliases stay attributable. JSON also includes each case's full `observedRanking`. Benchmarking is strict: missing credentials, invalid answers, refusals, or API failures fail the command; `--fallback-ranker decisions` is rejected. Run each provider separately for a comparison. Benchmarks report rankings, not adaptive selection recall.

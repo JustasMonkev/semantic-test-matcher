@@ -10,17 +10,22 @@ import { getJevCacheEntryCount } from '../src/services/jev.ts';
 describe('benchmark command', () => {
     let cwd: string;
     let savedKey: string | undefined;
+    let savedAlias: string | undefined;
 
     beforeEach(() => {
         cwd = process.cwd();
         savedKey = process.env.TYPESAFE_API_KEY;
+        savedAlias = process.env.JEF;
         delete process.env.TYPESAFE_API_KEY;
+        delete process.env.JEF;
     });
 
     afterEach(() => {
         process.chdir(cwd);
         if (savedKey === undefined) delete process.env.TYPESAFE_API_KEY;
         else process.env.TYPESAFE_API_KEY = savedKey;
+        if (savedAlias === undefined) delete process.env.JEF;
+        else process.env.JEF = savedAlias;
     });
 
     async function makeWorkspace(): Promise<void> {
