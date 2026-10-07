@@ -1,7 +1,7 @@
 {
   "name": "semantic-test-matcher",
   "private": false,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Rank likely test files for source changes using TypeSafe's Jev model and structural heuristics.",
   "type": "module",
   "license": "MIT",
