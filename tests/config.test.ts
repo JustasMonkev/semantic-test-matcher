@@ -150,6 +150,37 @@ describe('resolveConfig', () => {
         await assert.rejects(resolveConfig({}, { selectionPolicy: 'unsafe' }), /Invalid selection policy/);
     });
 
+    it('resolves an explicit representative budget with normal config/environment/flag precedence', async () => {
+        const configFile = await writeTempConfig({ match: { selectionPolicy: 'representative', topK: 7 } });
+        assert.equal((await resolveConfig({ config: configFile }, {})).match.topK, 7);
+        process.env.RBT_MATCH_TOP_K = '5';
+        process.env.RBT_TOP_K = ' ';
+        assert.equal((await resolveConfig({ config: configFile }, {})).match.topK, 5);
+        process.env.RBT_TOP_K = '4';
+        assert.equal((await resolveConfig({ config: configFile }, {})).match.topK, 4);
+        const cli = await resolveConfig({ config: configFile }, { topK: '2' });
+        assert.equal(cli.match.topK, 2);
+        assert.equal(cli.match.selectionPolicy, 'representative');
+        process.env.RBT_SELECTION_POLICY = 'adaptive';
+        assert.equal((await resolveConfig({ config: configFile }, {})).match.selectionPolicy, 'adaptive');
+        assert.equal((await resolveConfig({ config: configFile }, { selectionPolicy: 'representative' })).match.selectionPolicy, 'representative');
+        assert.equal((await resolveConfig({}, { selectionPolicy: 'representative', topK: '1001' })).match.topK, 1001);
+    });
+
+    it('rejects a missing or invalid representative budget without silently falling through', async () => {
+        await assert.rejects(resolveConfig({}, { selectionPolicy: 'representative' }), /explicit positive integer --top-k/);
+        process.env.RBT_TOP_K = '4';
+        for (const topK of ['0', '-1', '1.5', 'Infinity', 'NaN', 'invalid', '', ' 2', '2 ', '2e1', '9007199254740992']) {
+            await assert.rejects(resolveConfig({}, { selectionPolicy: 'representative', topK }), /explicit positive integer --top-k/, topK);
+        }
+        process.env.RBT_TOP_K = 'invalid';
+        const configFile = await writeTempConfig({ match: { selectionPolicy: 'representative', topK: 7 } });
+        await assert.rejects(resolveConfig({ config: configFile }, {}), /explicit positive integer --top-k/);
+        delete process.env.RBT_TOP_K;
+        const invalidFile = await writeTempConfig({ match: { selectionPolicy: 'representative', topK: 1.5 } });
+        await assert.rejects(resolveConfig({ config: invalidFile }, {}), /explicit positive integer --top-k/);
+    });
+
     it('prefers command options over root options and env vars', async () => {
         process.env.RBT_TOP_K = '9';
         const config = await resolveConfig(
