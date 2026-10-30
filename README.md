@@ -138,7 +138,7 @@ Useful flags:
 - `--threshold <number>`
 - `--min-score <number>`
 - `--top-k <number>` (optional cap on selected files)
-- `--selection-policy <adaptive|conservative|targeted>`
+- `--selection-policy <adaptive|conservative|targeted|representative>`
 - `--candidates <path>` (repeat for several, e.g. `--candidates tests --candidates e2e`)
 - `--include-file <glob>` (repeatable)
 - `--exclude-file <glob>` (repeatable)
@@ -164,6 +164,25 @@ How matching works:
 5. Results are filtered by the configured minimum score. The default `adaptive` policy selects every model-affirmative candidate (probability at least 0.5) plus structurally strong neighbors: candidates in the top structural decile with structural score at least 0.2. When no model score reaches 0.7, it widens the structural band to the top quartile; if structural evidence is also weak, it retains all candidates. Without model evidence, the wider structural rule applies. These are selection heuristics, not inferred test dependencies or calibrated probabilities. A shared-code change can therefore select more files than a localized change.
 
 There is no default count cap for `adaptive`. `--top-k` (or its config/environment equivalent) limits output after eligibility is computed and may exclude useful tests; JSON reports `eligibleCount`, `selectionLimit`, `selectionTruncated`, and `selectionEvidence`. Explicit `conservative` retains the blended top five by default. Explicit `targeted` retains up to five model-affirmative candidates by default and falls back to conservative selection when the model is unavailable or has no affirmative answers. Both legacy policies also honor an explicit `--top-k`. The fixed bands above are uncalibrated. Decisions uses the same provisional blend and boundaries; these numbers do not establish equivalent calibration or ranking quality.
+
+### Representative selection (opt-in prototype)
+
+```sh
+rbt match src/price.ts src/socket.ts --candidates tests --ranker heuristics \
+  --selection-policy representative --top-k 3 --json
+```
+
+`representative` requires an explicit positive integer budget from `--top-k`, `RBT_TOP_K` / `RBT_MATCH_TOP_K`, or `match.topK`. Flags override environment variables, which override config; blank environment variables remain unset. Invalid budgets are rejected rather than rounded or clamped. A budget at least as large as the eligible set returns every eligible file; unlike the legacy policies, representative budgets above 1,000 are kept as supplied, while candidate discovery still stops at 1,000 files.
+
+Each changed file first uses minimum-score filtering and **uncapped adaptive eligibility**. The eligible sets are then united, keeping each test's best relevance score. One global greedy medoid selection chooses up to the budget from that union: at each step, choose the test that minimizes the sum of each eligible test's distance to its nearest selected test. Relevance score and then path break equal-objective ties. There is no per-file budget or final relevance slice.
+
+Distance is ordinary Jaccard distance between sets of behaviour tokens already extracted by `DocumentProfile`: test names, imported symbols, commands, options, late calls, and content tokens, interleaved and capped at 256 unique tokens per file. Two empty sets have distance zero; one empty and one nonempty set have distance one. This is a metric on the token sets; distinct files with identical token sets are indistinguishable. Paths and relevance scores are not part of the distance.
+
+This is a deterministic greedy heuristic, **not an implementation of a published approximation algorithm and not an approximation guarantee**. It uses a pairwise distance matrix and O(k n²) greedy work, bounded by the existing candidate scan cap. The objective describes token coverage, not fault detection. Representative selection can miss relevant or failing tests; run the full suite before merging.
+
+JSON adds `eligibilityPolicy`, `selectionMethod`, `selectionObjective` (Jaccard sum, token cap, and empty/truncated profile counts), `eligibleCount`, `selectionLimit`, `selectionTruncated`, and `selectionWarning`. For several changed files these describe the global selection, with per-source adaptive eligibility evidence and final selected intersections in `changes`. `eligibilityReason` describes adaptive eligibility, not a promise that all eligible tests were run. Candidate scan truncation remains separate in `candidateLimitReached`. Text output includes an omission warning; `--paths-only` remains paths only.
+
+The [lazy-clean experiment](docs/lazy-clean-representative-benchmark.md) measures runtime and missed faults against ranked selection. It does not establish better fault coverage for representative selection.
 
 ### How Jev is used
 
