@@ -182,8 +182,6 @@ This is a deterministic greedy heuristic, **not an implementation of a published
 
 JSON adds `eligibilityPolicy`, `selectionMethod`, `selectionObjective` (Jaccard sum, token cap, and empty/truncated profile counts), `eligibleCount`, `selectionLimit`, `selectionTruncated`, and `selectionWarning`. For several changed files these describe the global selection, with per-source adaptive eligibility evidence and final selected intersections in `changes`. `eligibilityReason` describes adaptive eligibility, not a promise that all eligible tests were run. Candidate scan truncation remains separate in `candidateLimitReached`. Text output includes an omission warning; `--paths-only` remains paths only.
 
-The [lazy-clean experiment](docs/lazy-clean-representative-benchmark.md) measures runtime and missed faults against ranked selection. It does not establish better fault coverage for representative selection.
-
 ### How Jev is used
 
 - **Data leaves your machine.** Each request sends the changed file's path, exported symbol names, and its diff hunks (or, without `--diff-file`, the first 6,000 characters of the file; with `--diff-file`, source text is never sent, even for a file the diff has no text hunks for), plus each candidate test file's path and test titles, to `api.typesafe.ai`. Candidate file bodies are not sent. Review TypeSafe's [data handling](https://docs.typesafe.ai/legal) before using it on private code. Use `--ranker heuristics` to keep everything local.
