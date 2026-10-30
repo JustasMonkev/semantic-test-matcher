@@ -14,7 +14,7 @@ export { clamp, type LogLevel } from './utils/values.ts';
  */
 export type Ranker = 'jev' | 'decisions' | 'heuristics';
 export type FallbackRanker = 'decisions' | 'heuristics';
-export type SelectionPolicy = 'adaptive' | 'conservative' | 'targeted';
+export type SelectionPolicy = 'adaptive' | 'conservative' | 'targeted' | 'representative';
 
 export interface MatchDefaults {
     topK?: number;
@@ -112,10 +112,10 @@ function parseFallbackRanker(value: unknown): FallbackRanker {
 
 function parseSelectionPolicy(value: unknown): SelectionPolicy {
     const normalized = String(value ?? '').trim().toLowerCase();
-    if (normalized === 'adaptive' || normalized === 'conservative' || normalized === 'targeted') {
+    if (normalized === 'adaptive' || normalized === 'conservative' || normalized === 'targeted' || normalized === 'representative') {
         return normalized;
     }
-    throw new Error(`Invalid selection policy "${value}". Expected "adaptive", "conservative", or "targeted".`);
+    throw new Error(`Invalid selection policy "${value}". Expected "adaptive", "conservative", "targeted", or "representative".`);
 }
 
 function parseJsonConfig(raw: string, filePath: string): AppConfig {
@@ -216,6 +216,16 @@ export async function resolveConfig(
             fileMatch.selectionPolicy ?? matchDefaults.selectionPolicy
     );
 
+    let topK = configuredTopK === undefined ? undefined : Math.floor(clamp(configuredTopK, 1, 1000));
+    if (selectionPolicy === 'representative') {
+        const value = commandOptions.topK ?? readEnv('RBT_TOP_K') ?? readEnv('RBT_MATCH_TOP_K') ?? fileMatch.topK;
+        const number = typeof value === 'number' ? value : typeof value === 'string' && /^[1-9]\d*$/.test(value) ? Number(value) : NaN;
+        if (!Number.isSafeInteger(number) || number < 1) {
+            throw new Error('Representative selection requires an explicit positive integer --top-k (or its config/environment equivalent).');
+        }
+        topK = number;
+    }
+
     // The match command's --cache-dir outranks the global one.
     const cacheDirOverride = commandOptions.cacheDir ?? rootOptions.cacheDir ?? readEnv('RBT_CACHE_DIR');
     if (autoDiscovered && cacheDirOverride == null && fileConfig.cacheDir) {
@@ -237,7 +247,7 @@ export async function resolveConfig(
         quiet,
         verbose,
         match: {
-            topK: configuredTopK === undefined ? undefined : Math.floor(clamp(configuredTopK, 1, 1000)),
+            topK,
             threshold,
             minScore: clamp(configuredMinScore ?? threshold, 0, 1),
             selectionPolicy,
