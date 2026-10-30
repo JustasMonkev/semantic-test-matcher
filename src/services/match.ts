@@ -376,7 +376,7 @@ function selectAdaptive(matches: MatchCandidate[], topK: number | undefined, ran
 export function selectMatches(
     matches: MatchCandidate[],
     topK: number | undefined,
-    policy: SelectionPolicy,
+    policy: Exclude<SelectionPolicy, 'representative'>,
     ranker: Ranker
 ): SelectionResult {
     if (policy === 'adaptive') {
