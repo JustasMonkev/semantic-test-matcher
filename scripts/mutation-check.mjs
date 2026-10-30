@@ -7,6 +7,16 @@ import { spawnSync } from 'node:child_process';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mutations = [
     {
+        name: 'replace representative Jaccard distance with similarity', file: 'src/services/representative-selection.ts',
+        from: '1 - shared / union', to: 'shared / union',
+        testFile: 'tests/representative-selection.test.ts', test: 'chooses the medoid by summed nearest Jaccard distances, ahead of relevance',
+    },
+    {
+        name: 'cap adaptive eligibility before global representative selection', file: 'src/commands/match.ts',
+        from: 'representative ? undefined : config.match.topK', to: 'config.match.topK',
+        testFile: 'tests/match-command.test.ts', test: 'selects a global representative before any per-file relevance cap',
+    },
+    {
         name: 'accept failed mutation diff generation', file: 'benchmarks/playwright-mutations/prepare.mjs',
         from: 'generatedDiff.error || generatedDiff.status !== 1 || !generatedDiff.stdout?.trim()', to: 'false',
         testFile: 'tests/playwright-benchmark.test.ts', test: 'rejects invalid mutation diffs: missing executable',
