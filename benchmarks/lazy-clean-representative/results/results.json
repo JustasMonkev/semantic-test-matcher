@@ -1,0 +1,2055 @@
+{
+  "matcherSourceSha256": "8e39ef84df30e5c3c0e3a7cc8b869612e51988356527a1342c801125c0ab3558",
+  "targetSha": "71c2d8c2923c28db41bb38899d4773ac3ca5d110",
+  "matcherSha": "f945ceb1c37d6594b5602b5d6119dd877bb31c25",
+  "node": "v24.22.1",
+  "platform": "linux",
+  "architecture": "x64",
+  "cpu": "INTEL(R) XEON(R) PLATINUM 8573C",
+  "logicalCpus": 9,
+  "selectorRepetitions": 3,
+  "cleanSelectionRepetitions": 3,
+  "fullSuiteRepetitions": 1,
+  "ranker": "heuristics",
+  "scheduling": "package.json sequential entrypoints, fail fast, original node flags",
+  "baseline": [
+    {
+      "status": 0,
+      "signal": null,
+      "ms": 116324.952467,
+      "failures": [
+        "ok   edit partial input on stream error: callback count before timeout or EOF",
+        "ok   edit partial input on stream error: parsed payload",
+        "ok   edit partial input on stream error: clears timer and destroys stdin",
+        "ok   edit partial input on stream error: removes input listeners",
+        "ok   edit partial input on stream error: completes only once",
+        "explicit-values 1 off: FAIL (72ms)",
+        "explicit-values 1 off: FAIL (83ms)",
+        "explicit-values 1 off: FAIL (64ms)",
+        "explicit-values 1 off: FAIL (63ms)",
+        "shared-cause 1 on: FAIL (61ms)",
+        "shared-cause 1 off: FAIL (62ms)",
+        "shared-cause 2 off: FAIL (61ms)"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "array-method-order",
+      "description": "Treat consecutive identical array passes as filter/map candidates.",
+      "files": [
+        "skills/slop-check/scripts/check.mjs"
+      ],
+      "witnesses": [
+        "skills/slop-check/scripts/check.test.mjs"
+      ],
+      "policies": {
+        "adaptive": {
+          "selected": [
+            "skills/slop-check/scripts/check.test.mjs",
+            "tests/cli.test.mjs"
+          ],
+          "selectorMs": [
+            324.636563,
+            310.886309,
+            349.83202000000006
+          ],
+          "eligibleCount": 2,
+          "selectionTruncated": false,
+          "mutantExecution": {
+            "ms": 772.3355240000001,
+            "status": 1,
+            "tests": [
+              {
+                "file": "skills/slop-check/scripts/check.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 771.250313,
+                "failures": [
+                  "FAIL preserves separate, lazy, or unproven passes: const users = []; users.map(email).map(normalize);: did not expect no-array-filter-map",
+                  "FAIL preserves separate, lazy, or unproven passes: const users = []; users.filter(active).filter(verified);: did not expect no-array-filter-map",
+                  "2 test(s) failed"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "skills/slop-check/scripts/check.test.mjs"
+          ]
+        },
+        "ranked-k3": {
+          "selected": [
+            "skills/slop-check/scripts/check.test.mjs",
+            "tests/cli.test.mjs"
+          ],
+          "selectorMs": [
+            298.66494999999986,
+            334.63664900000003,
+            352.4971109999999
+          ],
+          "eligibleCount": 2,
+          "selectionTruncated": false,
+          "mutantExecution": {
+            "ms": 772.3355240000001,
+            "status": 1,
+            "tests": [
+              {
+                "file": "skills/slop-check/scripts/check.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 771.250313,
+                "failures": [
+                  "FAIL preserves separate, lazy, or unproven passes: const users = []; users.map(email).map(normalize);: did not expect no-array-filter-map",
+                  "FAIL preserves separate, lazy, or unproven passes: const users = []; users.filter(active).filter(verified);: did not expect no-array-filter-map",
+                  "2 test(s) failed"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "skills/slop-check/scripts/check.test.mjs"
+          ]
+        },
+        "representative-k3": {
+          "selected": [
+            "skills/slop-check/scripts/check.test.mjs",
+            "tests/cli.test.mjs"
+          ],
+          "selectorMs": [
+            352.63893499999995,
+            314.54600500000015,
+            310.2532250000004
+          ],
+          "eligibleCount": 2,
+          "selectionMethod": "greedy-medoid",
+          "selectionTruncated": false,
+          "selectionObjective": {
+            "metric": "jaccard",
+            "value": 0,
+            "tokenLimit": 256,
+            "truncatedProfileCount": 0,
+            "emptyProfileCount": 0
+          },
+          "mutantExecution": {
+            "ms": 772.3355240000001,
+            "status": 1,
+            "tests": [
+              {
+                "file": "skills/slop-check/scripts/check.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 771.250313,
+                "failures": [
+                  "FAIL preserves separate, lazy, or unproven passes: const users = []; users.map(email).map(normalize);: did not expect no-array-filter-map",
+                  "FAIL preserves separate, lazy, or unproven passes: const users = []; users.filter(active).filter(verified);: did not expect no-array-filter-map",
+                  "2 test(s) failed"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "skills/slop-check/scripts/check.test.mjs"
+          ]
+        }
+      },
+      "witnessRuns": [
+        {
+          "file": "skills/slop-check/scripts/check.test.mjs",
+          "ms": 808.0100990000001,
+          "status": 1,
+          "tests": [
+            {
+              "file": "skills/slop-check/scripts/check.test.mjs",
+              "status": 1,
+              "signal": null,
+              "ms": 807.4189809999998,
+              "failures": [
+                "FAIL preserves separate, lazy, or unproven passes: const users = []; users.map(email).map(normalize);: did not expect no-array-filter-map",
+                "FAIL preserves separate, lazy, or unproven passes: const users = []; users.filter(active).filter(verified);: did not expect no-array-filter-map",
+                "2 test(s) failed"
+              ]
+            }
+          ]
+        }
+      ],
+      "restoredWitnessRuns": [
+        {
+          "file": "skills/slop-check/scripts/check.test.mjs",
+          "ms": 810.9407339999998,
+          "status": 0,
+          "tests": [
+            {
+              "file": "skills/slop-check/scripts/check.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 810.6662420000002,
+              "failures": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "verify-failed-gate",
+      "description": "Report a completed blocked verification gate as exit success.",
+      "files": [
+        "skills/lazy-verify/scripts/protocol.mjs"
+      ],
+      "witnesses": [
+        "tests/verify.test.mjs"
+      ],
+      "policies": {
+        "adaptive": {
+          "selected": [
+            "tests/verify.test.mjs"
+          ],
+          "selectorMs": [
+            308.5269790000002,
+            300.7772960000002,
+            357.9716780000008
+          ],
+          "eligibleCount": 1,
+          "selectionTruncated": false,
+          "mutantExecution": {
+            "ms": 11500.690861,
+            "status": 1,
+            "tests": [
+              {
+                "file": "tests/verify.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 11500.565954000002,
+                "failures": [
+                  "FAIL zero exit cannot override a blocked gate: AssertionError [ERR_ASSERTION]: {\"schemaVersion\":1,\"protocol\":\"lazy-clean.verify/1\",\"requestId\":\"cb237043-5b92-409b-8832-5412284ce704\",\"engine\":{\"version\":\"fixture-1\",\"digest\":\"6341bdc515d84d1471d39cc8fc675a68f536855031f885a8b4f5b1fbbf809d6a\"},\"mode\":\"f",
+                  "FAIL supporting suite blocks without erasing fix observation: AssertionError [ERR_ASSERTION]: {\"protocol\":\"lazy-clean.verify/1\",\"execution\":\"incomplete\",\"gate\":\"not_evaluated\",\"reasonCodes\":[\"ENGINE_PROTOCOL_ERROR\"],\"message\":\"Engine exit contradicts result\"}",
+                  "FAIL mode/outcome gate boundary covers every allowed classification: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "tests/verify.test.mjs"
+          ]
+        },
+        "ranked-k3": {
+          "selected": [
+            "tests/verify.test.mjs"
+          ],
+          "selectorMs": [
+            355.18131300000005,
+            591.9647319999995,
+            549.0993669999998
+          ],
+          "eligibleCount": 1,
+          "selectionTruncated": false,
+          "mutantExecution": {
+            "ms": 11500.690861,
+            "status": 1,
+            "tests": [
+              {
+                "file": "tests/verify.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 11500.565954000002,
+                "failures": [
+                  "FAIL zero exit cannot override a blocked gate: AssertionError [ERR_ASSERTION]: {\"schemaVersion\":1,\"protocol\":\"lazy-clean.verify/1\",\"requestId\":\"cb237043-5b92-409b-8832-5412284ce704\",\"engine\":{\"version\":\"fixture-1\",\"digest\":\"6341bdc515d84d1471d39cc8fc675a68f536855031f885a8b4f5b1fbbf809d6a\"},\"mode\":\"f",
+                  "FAIL supporting suite blocks without erasing fix observation: AssertionError [ERR_ASSERTION]: {\"protocol\":\"lazy-clean.verify/1\",\"execution\":\"incomplete\",\"gate\":\"not_evaluated\",\"reasonCodes\":[\"ENGINE_PROTOCOL_ERROR\"],\"message\":\"Engine exit contradicts result\"}",
+                  "FAIL mode/outcome gate boundary covers every allowed classification: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "tests/verify.test.mjs"
+          ]
+        },
+        "representative-k3": {
+          "selected": [
+            "tests/verify.test.mjs"
+          ],
+          "selectorMs": [
+            473.5293640000009,
+            289.19828899999993,
+            292.41206599999896
+          ],
+          "eligibleCount": 1,
+          "selectionMethod": "greedy-medoid",
+          "selectionTruncated": false,
+          "selectionObjective": {
+            "metric": "jaccard",
+            "value": 0,
+            "tokenLimit": 256,
+            "truncatedProfileCount": 0,
+            "emptyProfileCount": 0
+          },
+          "mutantExecution": {
+            "ms": 11500.690861,
+            "status": 1,
+            "tests": [
+              {
+                "file": "tests/verify.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 11500.565954000002,
+                "failures": [
+                  "FAIL zero exit cannot override a blocked gate: AssertionError [ERR_ASSERTION]: {\"schemaVersion\":1,\"protocol\":\"lazy-clean.verify/1\",\"requestId\":\"cb237043-5b92-409b-8832-5412284ce704\",\"engine\":{\"version\":\"fixture-1\",\"digest\":\"6341bdc515d84d1471d39cc8fc675a68f536855031f885a8b4f5b1fbbf809d6a\"},\"mode\":\"f",
+                  "FAIL supporting suite blocks without erasing fix observation: AssertionError [ERR_ASSERTION]: {\"protocol\":\"lazy-clean.verify/1\",\"execution\":\"incomplete\",\"gate\":\"not_evaluated\",\"reasonCodes\":[\"ENGINE_PROTOCOL_ERROR\"],\"message\":\"Engine exit contradicts result\"}",
+                  "FAIL mode/outcome gate boundary covers every allowed classification: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "tests/verify.test.mjs"
+          ]
+        }
+      },
+      "witnessRuns": [
+        {
+          "file": "tests/verify.test.mjs",
+          "ms": 11666.215129,
+          "status": 1,
+          "tests": [
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 1,
+              "signal": null,
+              "ms": 11665.872047,
+              "failures": [
+                "FAIL zero exit cannot override a blocked gate: AssertionError [ERR_ASSERTION]: {\"schemaVersion\":1,\"protocol\":\"lazy-clean.verify/1\",\"requestId\":\"7e326cf8-b342-4924-9bcb-09390a8738d1\",\"engine\":{\"version\":\"fixture-1\",\"digest\":\"6341bdc515d84d1471d39cc8fc675a68f536855031f885a8b4f5b1fbbf809d6a\"},\"mode\":\"f",
+                "FAIL supporting suite blocks without erasing fix observation: AssertionError [ERR_ASSERTION]: {\"protocol\":\"lazy-clean.verify/1\",\"execution\":\"incomplete\",\"gate\":\"not_evaluated\",\"reasonCodes\":[\"ENGINE_PROTOCOL_ERROR\"],\"message\":\"Engine exit contradicts result\"}",
+                "FAIL mode/outcome gate boundary covers every allowed classification: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+              ]
+            }
+          ]
+        }
+      ],
+      "restoredWitnessRuns": [
+        {
+          "file": "tests/verify.test.mjs",
+          "ms": 11019.843864999995,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 11019.776476,
+              "failures": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "private-windows-path",
+      "description": "Make Windows account redaction case-sensitive, leaking lowercase drive/home paths.",
+      "files": [
+        "benchmarks/results/skill-tokens-20261006/publication-paths.mjs"
+      ],
+      "witnesses": [
+        "tests/skill-token-paths.test.mjs"
+      ],
+      "policies": {
+        "adaptive": {
+          "selected": [
+            "tests/skill-token-paths.test.mjs"
+          ],
+          "selectorMs": [
+            325.5240649999978,
+            297.99594799999613,
+            281.15297799999826
+          ],
+          "eligibleCount": 1,
+          "selectionTruncated": false,
+          "mutantExecution": {
+            "ms": 239.76274299999932,
+            "status": 1,
+            "tests": [
+              {
+                "file": "tests/skill-token-paths.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 239.6702679999944,
+                "failures": [
+                  "  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "tests/skill-token-paths.test.mjs"
+          ]
+        },
+        "ranked-k3": {
+          "selected": [
+            "tests/skill-token-paths.test.mjs"
+          ],
+          "selectorMs": [
+            282.47198699999717,
+            280.90004000000044,
+            282.106749999999
+          ],
+          "eligibleCount": 1,
+          "selectionTruncated": false,
+          "mutantExecution": {
+            "ms": 239.76274299999932,
+            "status": 1,
+            "tests": [
+              {
+                "file": "tests/skill-token-paths.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 239.6702679999944,
+                "failures": [
+                  "  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "tests/skill-token-paths.test.mjs"
+          ]
+        },
+        "representative-k3": {
+          "selected": [
+            "tests/skill-token-paths.test.mjs"
+          ],
+          "selectorMs": [
+            318.45121199999994,
+            311.85019000000466,
+            316.20938300000125
+          ],
+          "eligibleCount": 1,
+          "selectionMethod": "greedy-medoid",
+          "selectionTruncated": false,
+          "selectionObjective": {
+            "metric": "jaccard",
+            "value": 0,
+            "tokenLimit": 256,
+            "truncatedProfileCount": 1,
+            "emptyProfileCount": 0
+          },
+          "mutantExecution": {
+            "ms": 239.76274299999932,
+            "status": 1,
+            "tests": [
+              {
+                "file": "tests/skill-token-paths.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 239.6702679999944,
+                "failures": [
+                  "  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "tests/skill-token-paths.test.mjs"
+          ]
+        }
+      },
+      "witnessRuns": [
+        {
+          "file": "tests/skill-token-paths.test.mjs",
+          "ms": 248.25378199999977,
+          "status": 1,
+          "tests": [
+            {
+              "file": "tests/skill-token-paths.test.mjs",
+              "status": 1,
+              "signal": null,
+              "ms": 248.09078800000134,
+              "failures": [
+                "  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+              ]
+            }
+          ]
+        }
+      ],
+      "restoredWitnessRuns": [
+        {
+          "file": "tests/skill-token-paths.test.mjs",
+          "ms": 235.2810709999976,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/skill-token-paths.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 235.21354799999972,
+              "failures": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "generated-case-replay",
+      "description": "Drop the instruction to preserve a generated case seed for replay.",
+      "files": [
+        "skills/layz-test/SKILL.md"
+      ],
+      "witnesses": [
+        "tests/language-guidance.test.mjs"
+      ],
+      "policies": {
+        "adaptive": {
+          "selected": [
+            "tests/verify.test.mjs",
+            "skills/slop-check/scripts/check.test.mjs",
+            "tests/cli.test.mjs",
+            "tests/hooks.test.mjs",
+            "tests/benchmarks.test.mjs",
+            "tests/implementation-benchmarks.test.mjs",
+            "tests/skill-token-paths.test.mjs",
+            "tests/language-guidance.test.mjs",
+            "tests/solid-benchmarks.test.mjs",
+            "tests/benchmark-controls.test.mjs",
+            "tests/feedback.test.mjs"
+          ],
+          "selectorMs": [
+            378.37799000000086,
+            337.1652660000036,
+            287.2546779999975
+          ],
+          "eligibleCount": 11,
+          "selectionTruncated": false,
+          "mutantExecution": {
+            "ms": 78833.74974199999,
+            "status": 1,
+            "tests": [
+              {
+                "file": "tests/benchmark-controls.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 60.73179199999868,
+                "failures": []
+              },
+              {
+                "file": "skills/slop-check/scripts/check.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 752.4796009999991,
+                "failures": []
+              },
+              {
+                "file": "tests/cli.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 16873.383254000008,
+                "failures": []
+              },
+              {
+                "file": "tests/hooks.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 60984.775880999994,
+                "failures": [
+                  "ok   edit partial input on stream error: callback count before timeout or EOF",
+                  "ok   edit partial input on stream error: parsed payload",
+                  "ok   edit partial input on stream error: clears timer and destroys stdin",
+                  "ok   edit partial input on stream error: removes input listeners",
+                  "ok   edit partial input on stream error: completes only once"
+                ]
+              },
+              {
+                "file": "tests/language-guidance.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 161.2747459999955,
+                "failures": [
+                  "FAIL layz-test keeps generated cases on existing tools, replayable, and pinned"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "tests/language-guidance.test.mjs"
+          ]
+        },
+        "ranked-k3": {
+          "selected": [
+            "tests/verify.test.mjs",
+            "skills/slop-check/scripts/check.test.mjs",
+            "tests/cli.test.mjs"
+          ],
+          "selectorMs": [
+            276.951721999998,
+            337.7214230000027,
+            293.1715359999944
+          ],
+          "eligibleCount": 11,
+          "selectionTruncated": true,
+          "mutantExecution": {
+            "ms": 28060.953137000004,
+            "status": 0,
+            "tests": [
+              {
+                "file": "skills/slop-check/scripts/check.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 734.2454940000025,
+                "failures": []
+              },
+              {
+                "file": "tests/cli.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 14431.894296000013,
+                "failures": []
+              },
+              {
+                "file": "tests/verify.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 12894.339095000003,
+                "failures": []
+              }
+            ]
+          },
+          "detected": false,
+          "witnessesSelected": []
+        },
+        "representative-k3": {
+          "selected": [
+            "tests/benchmarks.test.mjs",
+            "tests/solid-benchmarks.test.mjs",
+            "tests/skill-token-paths.test.mjs"
+          ],
+          "selectorMs": [
+            593.6622829999978,
+            368.57057599999825,
+            315.1849369999982
+          ],
+          "eligibleCount": 11,
+          "selectionMethod": "greedy-medoid",
+          "selectionTruncated": true,
+          "selectionObjective": {
+            "metric": "jaccard",
+            "value": 5.744719034628428,
+            "tokenLimit": 256,
+            "truncatedProfileCount": 1,
+            "emptyProfileCount": 0
+          },
+          "mutantExecution": {
+            "ms": 21972.795578999998,
+            "status": 0,
+            "tests": [
+              {
+                "file": "tests/benchmarks.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 19934.518742000015,
+                "failures": [
+                  "explicit-values 1 off: FAIL (73ms)",
+                  "explicit-values 1 off: FAIL (82ms)",
+                  "explicit-values 1 off: FAIL (59ms)",
+                  "explicit-values 1 off: FAIL (61ms)",
+                  "shared-cause 1 on: FAIL (167ms)",
+                  "shared-cause 1 off: FAIL (106ms)",
+                  "shared-cause 2 off: FAIL (87ms)",
+                  "shared-cause 2 on: FAIL (71ms)",
+                  "shared-cause 3 on: FAIL (65ms)",
+                  "shared-cause 3 off: FAIL (69ms)",
+                  "user-edits 1 off: FAIL (70ms)",
+                  "user-edits 1 on: FAIL (61ms)"
+                ]
+              },
+              {
+                "file": "tests/solid-benchmarks.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 1808.233533999999,
+                "failures": [
+                  "readonly-consumer 1 off: FAIL (62ms)",
+                  "readonly-consumer 1 on: FAIL (60ms)"
+                ]
+              },
+              {
+                "file": "tests/skill-token-paths.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 229.89259999999194,
+                "failures": []
+              }
+            ]
+          },
+          "detected": false,
+          "witnessesSelected": []
+        }
+      },
+      "witnessRuns": [
+        {
+          "file": "tests/language-guidance.test.mjs",
+          "ms": 123.37579800000094,
+          "status": 1,
+          "tests": [
+            {
+              "file": "tests/language-guidance.test.mjs",
+              "status": 1,
+              "signal": null,
+              "ms": 123.32761300000129,
+              "failures": [
+                "FAIL layz-test keeps generated cases on existing tools, replayable, and pinned"
+              ]
+            }
+          ]
+        }
+      ],
+      "restoredWitnessRuns": [
+        {
+          "file": "tests/language-guidance.test.mjs",
+          "ms": 116.16076299999258,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/language-guidance.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 116.13396700000158,
+              "failures": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "grader-early-exit",
+      "description": "Trust exit zero even when a task exits before held-out grading completes.",
+      "files": [
+        "benchmarks/run.mjs"
+      ],
+      "witnesses": [
+        "tests/benchmarks.test.mjs"
+      ],
+      "policies": {
+        "adaptive": {
+          "selected": [
+            "tests/benchmarks.test.mjs",
+            "tests/verify.test.mjs",
+            "tests/cli.test.mjs"
+          ],
+          "selectorMs": [
+            320.80707099998835,
+            328.04542499998934,
+            316.5729569999967
+          ],
+          "eligibleCount": 3,
+          "selectionTruncated": false,
+          "mutantExecution": {
+            "ms": 15997.724996999983,
+            "status": 1,
+            "tests": [
+              {
+                "file": "tests/cli.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 14880.496340999991,
+                "failures": []
+              },
+              {
+                "file": "tests/benchmarks.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 1117.091975999996,
+                "failures": [
+                  "AssertionError [ERR_ASSERTION]: early exit must not bypass the held-out checks"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "tests/benchmarks.test.mjs"
+          ]
+        },
+        "ranked-k3": {
+          "selected": [
+            "tests/benchmarks.test.mjs",
+            "tests/verify.test.mjs",
+            "tests/cli.test.mjs"
+          ],
+          "selectorMs": [
+            313.2113379999937,
+            300.4297620000143,
+            323.1052889999992
+          ],
+          "eligibleCount": 3,
+          "selectionTruncated": false,
+          "mutantExecution": {
+            "ms": 15997.724996999983,
+            "status": 1,
+            "tests": [
+              {
+                "file": "tests/cli.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 14880.496340999991,
+                "failures": []
+              },
+              {
+                "file": "tests/benchmarks.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 1117.091975999996,
+                "failures": [
+                  "AssertionError [ERR_ASSERTION]: early exit must not bypass the held-out checks"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "tests/benchmarks.test.mjs"
+          ]
+        },
+        "representative-k3": {
+          "selected": [
+            "tests/benchmarks.test.mjs",
+            "tests/verify.test.mjs",
+            "tests/cli.test.mjs"
+          ],
+          "selectorMs": [
+            292.11539699998684,
+            307.33236900001066,
+            288.893968999997
+          ],
+          "eligibleCount": 3,
+          "selectionMethod": "greedy-medoid",
+          "selectionTruncated": false,
+          "selectionObjective": {
+            "metric": "jaccard",
+            "value": 0,
+            "tokenLimit": 256,
+            "truncatedProfileCount": 0,
+            "emptyProfileCount": 0
+          },
+          "mutantExecution": {
+            "ms": 15997.724996999983,
+            "status": 1,
+            "tests": [
+              {
+                "file": "tests/cli.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 14880.496340999991,
+                "failures": []
+              },
+              {
+                "file": "tests/benchmarks.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 1117.091975999996,
+                "failures": [
+                  "AssertionError [ERR_ASSERTION]: early exit must not bypass the held-out checks"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "tests/benchmarks.test.mjs"
+          ]
+        }
+      },
+      "witnessRuns": [
+        {
+          "file": "tests/benchmarks.test.mjs",
+          "ms": 1096.3611410000012,
+          "status": 1,
+          "tests": [
+            {
+              "file": "tests/benchmarks.test.mjs",
+              "status": 1,
+              "signal": null,
+              "ms": 1096.3107270000037,
+              "failures": [
+                "AssertionError [ERR_ASSERTION]: early exit must not bypass the held-out checks"
+              ]
+            }
+          ]
+        }
+      ],
+      "restoredWitnessRuns": [
+        {
+          "file": "tests/benchmarks.test.mjs",
+          "ms": 18499.41481799999,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/benchmarks.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 18499.368883999996,
+              "failures": [
+                "explicit-values 1 off: FAIL (72ms)",
+                "explicit-values 1 off: FAIL (74ms)",
+                "explicit-values 1 off: FAIL (62ms)",
+                "explicit-values 1 off: FAIL (61ms)",
+                "shared-cause 1 on: FAIL (55ms)",
+                "shared-cause 1 off: FAIL (60ms)",
+                "shared-cause 2 off: FAIL (59ms)",
+                "shared-cause 2 on: FAIL (58ms)",
+                "shared-cause 3 on: FAIL (63ms)",
+                "shared-cause 3 off: FAIL (66ms)",
+                "user-edits 1 off: FAIL (62ms)",
+                "user-edits 1 on: FAIL (56ms)"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "compound-four-families",
+      "description": "One change batch breaks verification status, private path redaction, generated-case replay guidance, and grader completion.",
+      "files": [
+        "skills/lazy-verify/scripts/protocol.mjs",
+        "benchmarks/results/skill-tokens-20261006/publication-paths.mjs",
+        "skills/layz-test/SKILL.md",
+        "benchmarks/run.mjs"
+      ],
+      "witnesses": [
+        "tests/verify.test.mjs",
+        "tests/skill-token-paths.test.mjs",
+        "tests/language-guidance.test.mjs",
+        "tests/benchmarks.test.mjs"
+      ],
+      "policies": {
+        "adaptive": {
+          "selected": [
+            "tests/benchmarks.test.mjs",
+            "tests/skill-token-paths.test.mjs",
+            "tests/verify.test.mjs",
+            "tests/cli.test.mjs",
+            "skills/slop-check/scripts/check.test.mjs",
+            "tests/hooks.test.mjs",
+            "tests/implementation-benchmarks.test.mjs",
+            "tests/language-guidance.test.mjs",
+            "tests/solid-benchmarks.test.mjs",
+            "tests/benchmark-controls.test.mjs",
+            "tests/feedback.test.mjs"
+          ],
+          "selectorMs": [
+            287.2758909999975,
+            331.1080040000088,
+            317.9078679999802
+          ],
+          "mutantExecution": {
+            "ms": 74642.34446,
+            "status": 1,
+            "tests": [
+              {
+                "file": "tests/benchmark-controls.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 64.91804200000479,
+                "failures": []
+              },
+              {
+                "file": "skills/slop-check/scripts/check.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 744.939910999994,
+                "failures": []
+              },
+              {
+                "file": "tests/cli.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 15671.35957900001,
+                "failures": []
+              },
+              {
+                "file": "tests/hooks.test.mjs",
+                "status": 0,
+                "signal": null,
+                "ms": 57997.33214500002,
+                "failures": [
+                  "ok   edit partial input on stream error: callback count before timeout or EOF",
+                  "ok   edit partial input on stream error: parsed payload",
+                  "ok   edit partial input on stream error: clears timer and destroys stdin",
+                  "ok   edit partial input on stream error: removes input listeners",
+                  "ok   edit partial input on stream error: completes only once"
+                ]
+              },
+              {
+                "file": "tests/language-guidance.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 162.14308700000402,
+                "failures": [
+                  "FAIL layz-test keeps generated cases on existing tools, replayable, and pinned"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "tests/verify.test.mjs",
+            "tests/skill-token-paths.test.mjs",
+            "tests/language-guidance.test.mjs",
+            "tests/benchmarks.test.mjs"
+          ]
+        },
+        "ranked-k3": {
+          "selected": [
+            "tests/benchmarks.test.mjs",
+            "tests/skill-token-paths.test.mjs",
+            "tests/verify.test.mjs"
+          ],
+          "selectorMs": [
+            309.59101999999257,
+            306.40237600001274,
+            302.6711280000163
+          ],
+          "mutantExecution": {
+            "ms": 1151.7017329999944,
+            "status": 1,
+            "tests": [
+              {
+                "file": "tests/benchmarks.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 1151.6153230000054,
+                "failures": [
+                  "AssertionError [ERR_ASSERTION]: early exit must not bypass the held-out checks"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "tests/verify.test.mjs",
+            "tests/skill-token-paths.test.mjs",
+            "tests/benchmarks.test.mjs"
+          ]
+        },
+        "representative-k3": {
+          "selected": [
+            "tests/benchmarks.test.mjs",
+            "tests/solid-benchmarks.test.mjs",
+            "tests/skill-token-paths.test.mjs"
+          ],
+          "selectorMs": [
+            332.0481270000164,
+            290.85302700000466,
+            308.81529099997715
+          ],
+          "eligibleCount": 11,
+          "selectionMethod": "greedy-medoid",
+          "selectionTruncated": true,
+          "selectionObjective": {
+            "metric": "jaccard",
+            "value": 5.74471903462843,
+            "tokenLimit": 256,
+            "truncatedProfileCount": 1,
+            "emptyProfileCount": 0
+          },
+          "mutantExecution": {
+            "ms": 1159.1138669999782,
+            "status": 1,
+            "tests": [
+              {
+                "file": "tests/benchmarks.test.mjs",
+                "status": 1,
+                "signal": null,
+                "ms": 1159.0770849999972,
+                "failures": [
+                  "AssertionError [ERR_ASSERTION]: early exit must not bypass the held-out checks"
+                ]
+              }
+            ]
+          },
+          "detected": true,
+          "witnessesSelected": [
+            "tests/skill-token-paths.test.mjs",
+            "tests/benchmarks.test.mjs"
+          ]
+        }
+      },
+      "witnessRuns": [
+        {
+          "file": "tests/verify.test.mjs",
+          "ms": 11873.139127000002,
+          "status": 1,
+          "tests": [
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 1,
+              "signal": null,
+              "ms": 11873.080950000003,
+              "failures": [
+                "FAIL zero exit cannot override a blocked gate: AssertionError [ERR_ASSERTION]: {\"schemaVersion\":1,\"protocol\":\"lazy-clean.verify/1\",\"requestId\":\"823eb8c5-0573-45ae-98ea-ac6435a28455\",\"engine\":{\"version\":\"fixture-1\",\"digest\":\"6341bdc515d84d1471d39cc8fc675a68f536855031f885a8b4f5b1fbbf809d6a\"},\"mode\":\"f",
+                "FAIL supporting suite blocks without erasing fix observation: AssertionError [ERR_ASSERTION]: {\"protocol\":\"lazy-clean.verify/1\",\"execution\":\"incomplete\",\"gate\":\"not_evaluated\",\"reasonCodes\":[\"ENGINE_PROTOCOL_ERROR\"],\"message\":\"Engine exit contradicts result\"}",
+                "FAIL mode/outcome gate boundary covers every allowed classification: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:",
+                "FAIL concurrent runs have independent evidence directories: AssertionError [ERR_ASSERTION]: {\"protocol\":\"lazy-clean.verify/1\",\"execution\":\"incomplete\",\"gate\":\"not_evaluated\",\"reasonCodes\":[\"ENGINE_PROTOCOL_ERROR\"],\"message\":\"Engine did not consume its request\"}"
+              ]
+            }
+          ]
+        },
+        {
+          "file": "tests/skill-token-paths.test.mjs",
+          "ms": 269.821007999999,
+          "status": 1,
+          "tests": [
+            {
+              "file": "tests/skill-token-paths.test.mjs",
+              "status": 1,
+              "signal": null,
+              "ms": 269.75602999998955,
+              "failures": [
+                "  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+              ]
+            }
+          ]
+        },
+        {
+          "file": "tests/language-guidance.test.mjs",
+          "ms": 123.12563199998112,
+          "status": 1,
+          "tests": [
+            {
+              "file": "tests/language-guidance.test.mjs",
+              "status": 1,
+              "signal": null,
+              "ms": 123.09026799999992,
+              "failures": [
+                "FAIL layz-test keeps generated cases on existing tools, replayable, and pinned"
+              ]
+            }
+          ]
+        },
+        {
+          "file": "tests/benchmarks.test.mjs",
+          "ms": 1364.5885760000092,
+          "status": 1,
+          "tests": [
+            {
+              "file": "tests/benchmarks.test.mjs",
+              "status": 1,
+              "signal": null,
+              "ms": 1364.549869999988,
+              "failures": [
+                "AssertionError [ERR_ASSERTION]: early exit must not bypass the held-out checks"
+              ]
+            }
+          ]
+        }
+      ],
+      "restoredWitnessRuns": [
+        {
+          "file": "tests/verify.test.mjs",
+          "ms": 11137.096864000021,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 11137.038754999987,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "file": "tests/skill-token-paths.test.mjs",
+          "ms": 233.89976199995726,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/skill-token-paths.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 232.54304000001866,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "file": "tests/language-guidance.test.mjs",
+          "ms": 137.66168800002197,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/language-guidance.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 137.57585099997232,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "file": "tests/benchmarks.test.mjs",
+          "ms": 19363.49031600001,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/benchmarks.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 19363.393845000013,
+              "failures": [
+                "explicit-values 1 off: FAIL (73ms)",
+                "explicit-values 1 off: FAIL (73ms)",
+                "explicit-values 1 off: FAIL (63ms)",
+                "explicit-values 1 off: FAIL (65ms)",
+                "shared-cause 1 on: FAIL (64ms)",
+                "shared-cause 1 off: FAIL (56ms)",
+                "shared-cause 2 off: FAIL (62ms)",
+                "shared-cause 2 on: FAIL (117ms)",
+                "shared-cause 3 on: FAIL (84ms)",
+                "shared-cause 3 off: FAIL (64ms)",
+                "user-edits 1 off: FAIL (57ms)",
+                "user-edits 1 on: FAIL (61ms)"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "cleanSelections": [
+    {
+      "selected": [
+        "skills/slop-check/scripts/check.test.mjs",
+        "tests/cli.test.mjs"
+      ],
+      "uses": [
+        "array-method-order/adaptive",
+        "array-method-order/ranked-k3",
+        "array-method-order/representative-k3"
+      ],
+      "runs": [
+        {
+          "ms": 15795.496331000017,
+          "status": 0,
+          "tests": [
+            {
+              "file": "skills/slop-check/scripts/check.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 811.4097289999918,
+              "failures": []
+            },
+            {
+              "file": "tests/cli.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 14983.662865999999,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "ms": 15261.155847000016,
+          "status": 0,
+          "tests": [
+            {
+              "file": "skills/slop-check/scripts/check.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 786.6158009999781,
+              "failures": []
+            },
+            {
+              "file": "tests/cli.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 14474.206036999996,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "ms": 16037.764521000005,
+          "status": 0,
+          "tests": [
+            {
+              "file": "skills/slop-check/scripts/check.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 794.616428999987,
+              "failures": []
+            },
+            {
+              "file": "tests/cli.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 15242.845644999994,
+              "failures": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "selected": [
+        "tests/verify.test.mjs"
+      ],
+      "uses": [
+        "verify-failed-gate/adaptive",
+        "verify-failed-gate/ranked-k3",
+        "verify-failed-gate/representative-k3"
+      ],
+      "runs": [
+        {
+          "ms": 11492.70834100002,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 11492.588947000011,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "ms": 11305.601696999976,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 11305.517502000002,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "ms": 11215.122460000013,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 11215.03953899999,
+              "failures": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "selected": [
+        "tests/skill-token-paths.test.mjs"
+      ],
+      "uses": [
+        "private-windows-path/adaptive",
+        "private-windows-path/ranked-k3",
+        "private-windows-path/representative-k3"
+      ],
+      "runs": [
+        {
+          "ms": 239.42215499997837,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/skill-token-paths.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 239.36128599999938,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "ms": 262.1885219999822,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/skill-token-paths.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 262.1472829999984,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "ms": 230.2109000000055,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/skill-token-paths.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 230.16946299999836,
+              "failures": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "selected": [
+        "tests/benchmark-controls.test.mjs",
+        "skills/slop-check/scripts/check.test.mjs",
+        "tests/cli.test.mjs",
+        "tests/hooks.test.mjs",
+        "tests/language-guidance.test.mjs",
+        "tests/feedback.test.mjs",
+        "tests/benchmarks.test.mjs",
+        "tests/solid-benchmarks.test.mjs",
+        "tests/implementation-benchmarks.test.mjs",
+        "tests/verify.test.mjs",
+        "tests/skill-token-paths.test.mjs"
+      ],
+      "uses": [
+        "generated-case-replay/adaptive",
+        "compound-four-families/adaptive"
+      ],
+      "runs": [
+        {
+          "status": 0,
+          "signal": null,
+          "ms": 116324.952467,
+          "failures": [
+            "ok   edit partial input on stream error: callback count before timeout or EOF",
+            "ok   edit partial input on stream error: parsed payload",
+            "ok   edit partial input on stream error: clears timer and destroys stdin",
+            "ok   edit partial input on stream error: removes input listeners",
+            "ok   edit partial input on stream error: completes only once",
+            "explicit-values 1 off: FAIL (72ms)",
+            "explicit-values 1 off: FAIL (83ms)",
+            "explicit-values 1 off: FAIL (64ms)",
+            "explicit-values 1 off: FAIL (63ms)",
+            "shared-cause 1 on: FAIL (61ms)",
+            "shared-cause 1 off: FAIL (62ms)",
+            "shared-cause 2 off: FAIL (61ms)"
+          ]
+        }
+      ],
+      "reusedFullBaseline": true
+    },
+    {
+      "selected": [
+        "skills/slop-check/scripts/check.test.mjs",
+        "tests/cli.test.mjs",
+        "tests/verify.test.mjs"
+      ],
+      "uses": [
+        "generated-case-replay/ranked-k3"
+      ],
+      "runs": [
+        {
+          "ms": 26655.304042000003,
+          "status": 0,
+          "tests": [
+            {
+              "file": "skills/slop-check/scripts/check.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 726.915685999993,
+              "failures": []
+            },
+            {
+              "file": "tests/cli.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 14660.807528000005,
+              "failures": []
+            },
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 11267.305784000026,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "ms": 26792.958752000006,
+          "status": 0,
+          "tests": [
+            {
+              "file": "skills/slop-check/scripts/check.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 688.2307460000156,
+              "failures": []
+            },
+            {
+              "file": "tests/cli.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 14816.071058000001,
+              "failures": []
+            },
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 11288.315685000009,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "ms": 26546.411001,
+          "status": 0,
+          "tests": [
+            {
+              "file": "skills/slop-check/scripts/check.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 701.5695180000039,
+              "failures": []
+            },
+            {
+              "file": "tests/cli.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 14704.256381000014,
+              "failures": []
+            },
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 11140.319832000008,
+              "failures": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "selected": [
+        "tests/benchmarks.test.mjs",
+        "tests/solid-benchmarks.test.mjs",
+        "tests/skill-token-paths.test.mjs"
+      ],
+      "uses": [
+        "generated-case-replay/representative-k3",
+        "compound-four-families/representative-k3"
+      ],
+      "runs": [
+        {
+          "ms": 20007.346068000013,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/benchmarks.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 18045.47894100001,
+              "failures": [
+                "explicit-values 1 off: FAIL (73ms)",
+                "explicit-values 1 off: FAIL (62ms)",
+                "explicit-values 1 off: FAIL (58ms)",
+                "explicit-values 1 off: FAIL (60ms)",
+                "shared-cause 1 on: FAIL (55ms)",
+                "shared-cause 1 off: FAIL (61ms)",
+                "shared-cause 2 off: FAIL (65ms)",
+                "shared-cause 2 on: FAIL (61ms)",
+                "shared-cause 3 on: FAIL (58ms)",
+                "shared-cause 3 off: FAIL (58ms)",
+                "user-edits 1 off: FAIL (62ms)",
+                "user-edits 1 on: FAIL (62ms)"
+              ]
+            },
+            {
+              "file": "tests/solid-benchmarks.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 1746.7724840000155,
+              "failures": [
+                "readonly-consumer 1 off: FAIL (62ms)",
+                "readonly-consumer 1 on: FAIL (65ms)"
+              ]
+            },
+            {
+              "file": "tests/skill-token-paths.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 214.9647700000205,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "ms": 20463.96024600003,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/benchmarks.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 18485.37430799997,
+              "failures": [
+                "explicit-values 1 off: FAIL (93ms)",
+                "explicit-values 1 off: FAIL (73ms)",
+                "explicit-values 1 off: FAIL (57ms)",
+                "explicit-values 1 off: FAIL (58ms)",
+                "shared-cause 1 on: FAIL (53ms)",
+                "shared-cause 1 off: FAIL (65ms)",
+                "shared-cause 2 off: FAIL (64ms)",
+                "shared-cause 2 on: FAIL (52ms)",
+                "shared-cause 3 on: FAIL (67ms)",
+                "shared-cause 3 off: FAIL (53ms)",
+                "user-edits 1 off: FAIL (57ms)",
+                "user-edits 1 on: FAIL (63ms)"
+              ]
+            },
+            {
+              "file": "tests/solid-benchmarks.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 1745.4634960000403,
+              "failures": [
+                "readonly-consumer 1 off: FAIL (65ms)",
+                "readonly-consumer 1 on: FAIL (64ms)"
+              ]
+            },
+            {
+              "file": "tests/skill-token-paths.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 233.0124000000069,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "ms": 21889.302395000006,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/benchmarks.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 19909.780417,
+              "failures": [
+                "explicit-values 1 off: FAIL (83ms)",
+                "explicit-values 1 off: FAIL (75ms)",
+                "explicit-values 1 off: FAIL (61ms)",
+                "explicit-values 1 off: FAIL (80ms)",
+                "shared-cause 1 on: FAIL (66ms)",
+                "shared-cause 1 off: FAIL (60ms)",
+                "shared-cause 2 off: FAIL (59ms)",
+                "shared-cause 2 on: FAIL (119ms)",
+                "shared-cause 3 on: FAIL (61ms)",
+                "shared-cause 3 off: FAIL (69ms)",
+                "user-edits 1 off: FAIL (54ms)",
+                "user-edits 1 on: FAIL (68ms)"
+              ]
+            },
+            {
+              "file": "tests/solid-benchmarks.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 1759.1355059999623,
+              "failures": [
+                "readonly-consumer 1 off: FAIL (54ms)",
+                "readonly-consumer 1 on: FAIL (52ms)"
+              ]
+            },
+            {
+              "file": "tests/skill-token-paths.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 220.2427350000362,
+              "failures": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "selected": [
+        "tests/cli.test.mjs",
+        "tests/benchmarks.test.mjs",
+        "tests/verify.test.mjs"
+      ],
+      "uses": [
+        "grader-early-exit/adaptive",
+        "grader-early-exit/ranked-k3",
+        "grader-early-exit/representative-k3"
+      ],
+      "runs": [
+        {
+          "ms": 44372.83081299998,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/cli.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 14389.220240000053,
+              "failures": []
+            },
+            {
+              "file": "tests/benchmarks.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 18929.699757999973,
+              "failures": [
+                "explicit-values 1 off: FAIL (73ms)",
+                "explicit-values 1 off: FAIL (73ms)",
+                "explicit-values 1 off: FAIL (62ms)",
+                "explicit-values 1 off: FAIL (51ms)",
+                "shared-cause 1 on: FAIL (56ms)",
+                "shared-cause 1 off: FAIL (58ms)",
+                "shared-cause 2 off: FAIL (87ms)",
+                "shared-cause 2 on: FAIL (61ms)",
+                "shared-cause 3 on: FAIL (56ms)",
+                "shared-cause 3 off: FAIL (60ms)",
+                "user-edits 1 off: FAIL (59ms)",
+                "user-edits 1 on: FAIL (53ms)"
+              ]
+            },
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 11053.774799000006,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "ms": 44786.584547000006,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/cli.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 14155.37989099999,
+              "failures": []
+            },
+            {
+              "file": "tests/benchmarks.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 18618.588988000003,
+              "failures": [
+                "explicit-values 1 off: FAIL (84ms)",
+                "explicit-values 1 off: FAIL (83ms)",
+                "explicit-values 1 off: FAIL (52ms)",
+                "explicit-values 1 off: FAIL (54ms)",
+                "shared-cause 1 on: FAIL (91ms)",
+                "shared-cause 1 off: FAIL (57ms)",
+                "shared-cause 2 off: FAIL (55ms)",
+                "shared-cause 2 on: FAIL (56ms)",
+                "shared-cause 3 on: FAIL (53ms)",
+                "shared-cause 3 off: FAIL (55ms)",
+                "user-edits 1 off: FAIL (57ms)",
+                "user-edits 1 on: FAIL (62ms)"
+              ]
+            },
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 12012.279998000013,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "ms": 44596.582404999994,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/cli.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 14360.719794999983,
+              "failures": []
+            },
+            {
+              "file": "tests/benchmarks.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 19040.818856999977,
+              "failures": [
+                "explicit-values 1 off: FAIL (84ms)",
+                "explicit-values 1 off: FAIL (82ms)",
+                "explicit-values 1 off: FAIL (53ms)",
+                "explicit-values 1 off: FAIL (64ms)",
+                "shared-cause 1 on: FAIL (64ms)",
+                "shared-cause 1 off: FAIL (68ms)",
+                "shared-cause 2 off: FAIL (62ms)",
+                "shared-cause 2 on: FAIL (63ms)",
+                "shared-cause 3 on: FAIL (70ms)",
+                "shared-cause 3 off: FAIL (58ms)",
+                "user-edits 1 off: FAIL (52ms)",
+                "user-edits 1 on: FAIL (53ms)"
+              ]
+            },
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 11194.794284000003,
+              "failures": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "selected": [
+        "tests/benchmarks.test.mjs",
+        "tests/verify.test.mjs",
+        "tests/skill-token-paths.test.mjs"
+      ],
+      "uses": [
+        "compound-four-families/ranked-k3"
+      ],
+      "runs": [
+        {
+          "ms": 29978.56650700001,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/benchmarks.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 18844.54571799998,
+              "failures": [
+                "explicit-values 1 off: FAIL (83ms)",
+                "explicit-values 1 off: FAIL (83ms)",
+                "explicit-values 1 off: FAIL (63ms)",
+                "explicit-values 1 off: FAIL (60ms)",
+                "shared-cause 1 on: FAIL (55ms)",
+                "shared-cause 1 off: FAIL (60ms)",
+                "shared-cause 2 off: FAIL (63ms)",
+                "shared-cause 2 on: FAIL (59ms)",
+                "shared-cause 3 on: FAIL (58ms)",
+                "shared-cause 3 off: FAIL (61ms)",
+                "user-edits 1 off: FAIL (55ms)",
+                "user-edits 1 on: FAIL (54ms)"
+              ]
+            },
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 10914.28553600004,
+              "failures": []
+            },
+            {
+              "file": "tests/skill-token-paths.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 219.54296300001442,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "ms": 29877.567958000058,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/benchmarks.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 18753.502534999978,
+              "failures": [
+                "explicit-values 1 off: FAIL (105ms)",
+                "explicit-values 1 off: FAIL (72ms)",
+                "explicit-values 1 off: FAIL (57ms)",
+                "explicit-values 1 off: FAIL (55ms)",
+                "shared-cause 1 on: FAIL (59ms)",
+                "shared-cause 1 off: FAIL (63ms)",
+                "shared-cause 2 off: FAIL (52ms)",
+                "shared-cause 2 on: FAIL (65ms)",
+                "shared-cause 3 on: FAIL (52ms)",
+                "shared-cause 3 off: FAIL (53ms)",
+                "user-edits 1 off: FAIL (53ms)",
+                "user-edits 1 on: FAIL (51ms)"
+              ]
+            },
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 10907.289907999977,
+              "failures": []
+            },
+            {
+              "file": "tests/skill-token-paths.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 216.66010800004005,
+              "failures": []
+            }
+          ]
+        },
+        {
+          "ms": 30041.767062,
+          "status": 0,
+          "tests": [
+            {
+              "file": "tests/benchmarks.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 18637.09003199998,
+              "failures": [
+                "explicit-values 1 off: FAIL (73ms)",
+                "explicit-values 1 off: FAIL (73ms)",
+                "explicit-values 1 off: FAIL (61ms)",
+                "explicit-values 1 off: FAIL (55ms)",
+                "shared-cause 1 on: FAIL (55ms)",
+                "shared-cause 1 off: FAIL (63ms)",
+                "shared-cause 2 off: FAIL (60ms)",
+                "shared-cause 2 on: FAIL (59ms)",
+                "shared-cause 3 on: FAIL (58ms)",
+                "shared-cause 3 off: FAIL (64ms)",
+                "user-edits 1 off: FAIL (55ms)",
+                "user-edits 1 on: FAIL (68ms)"
+              ]
+            },
+            {
+              "file": "tests/verify.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 11177.127458999981,
+              "failures": []
+            },
+            {
+              "file": "tests/skill-token-paths.test.mjs",
+              "status": 0,
+              "signal": null,
+              "ms": 227.33874999999534,
+              "failures": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "Mutation full-suite detection inferred from a failing constituent; full mutant npm test is not rerun.",
+    "Small hand-authored sample; selected suites can miss failures outside measured witnesses.",
+    "Working matcher source, including uncommitted implementation, is executed."
+  ],
+  "testEntrypoints": [
+    {
+      "file": "tests/benchmark-controls.test.mjs",
+      "args": [
+        "tests/benchmark-controls.test.mjs"
+      ]
+    },
+    {
+      "file": "skills/slop-check/scripts/check.test.mjs",
+      "args": [
+        "skills/slop-check/scripts/check.test.mjs"
+      ]
+    },
+    {
+      "file": "tests/cli.test.mjs",
+      "args": [
+        "tests/cli.test.mjs"
+      ]
+    },
+    {
+      "file": "tests/hooks.test.mjs",
+      "args": [
+        "tests/hooks.test.mjs"
+      ]
+    },
+    {
+      "file": "tests/language-guidance.test.mjs",
+      "args": [
+        "tests/language-guidance.test.mjs"
+      ]
+    },
+    {
+      "file": "tests/feedback.test.mjs",
+      "args": [
+        "tests/feedback.test.mjs"
+      ]
+    },
+    {
+      "file": "tests/benchmarks.test.mjs",
+      "args": [
+        "tests/benchmarks.test.mjs"
+      ]
+    },
+    {
+      "file": "tests/solid-benchmarks.test.mjs",
+      "args": [
+        "tests/solid-benchmarks.test.mjs"
+      ]
+    },
+    {
+      "file": "tests/implementation-benchmarks.test.mjs",
+      "args": [
+        "tests/implementation-benchmarks.test.mjs"
+      ]
+    },
+    {
+      "file": "tests/verify.test.mjs",
+      "args": [
+        "tests/verify.test.mjs"
+      ]
+    },
+    {
+      "file": "tests/skill-token-paths.test.mjs",
+      "args": [
+        "--test",
+        "tests/skill-token-paths.test.mjs"
+      ]
+    }
+  ],
+  "sourceRevalidation": {
+    "matcherSourceSha256": "178d3251b92e333eb2b6a4afe911654a41b7d899c979ad272fbaa8eaff834b64",
+    "matcherSha": "82417238d58d7e5a83d6f2d869abdd00f5d6bd6f",
+    "selectionChecks": 18,
+    "allIdentical": true,
+    "change": "Removed an unused export from REPRESENTATIVE_WARNING; no selection behavior change."
+  },
+  "attemptNotes": [
+    "An initial attempt aborted on a restored verify witness with nonzero exit; its exact failure output was not retained. An independent clean verify run and all controls in the completed mutation run passed.",
+    "Mutation phase was checkpointed before clean timing to reuse full baseline once rather than repeating it three times. A deliberately interrupted baseline prefix is preserved separately and excluded from runtime comparisons."
+  ],
+  "interruptedBaselines": [
+    {
+      "status": 1,
+      "signal": null,
+      "ms": 26117.684145000007,
+      "failures": [
+        "ok   edit partial input on stream error: callback count before timeout or EOF",
+        "ok   edit partial input on stream error: parsed payload",
+        "ok   edit partial input on stream error: clears timer and destroys stdin",
+        "ok   edit partial input on stream error: removes input listeners",
+        "ok   edit partial input on stream error: completes only once",
+        "FAIL matcher fails open on missing agent_type",
+        "FAIL matcher fails open on empty agent_type",
+        "FAIL matcher fails open on malformed JSON",
+        "FAIL matcher fails open on empty stdin",
+        "FAIL an invalid matcher regex is treated as unset (and never crashes)",
+        "FAIL an empty matcher means no matcher",
+        "FAIL edit-check exits 0 on findings — got 1, want 0"
+      ],
+      "excluded": true,
+      "reason": "Deliberately interrupted during checkpoint change. Subprocesses were terminated; this is not a clean baseline measurement."
+    }
+  ],
+  "completed": true,
+  "npm": "11.9.0",
+  "evaluatedOn": "2026-10-29"
+}
