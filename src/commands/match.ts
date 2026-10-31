@@ -18,6 +18,7 @@ import {
     type RankedMatchCandidate,
 } from '../services/match.ts';
 import { buildDocumentProfile, isTestLike, isTestLikeSource, listDiffFiles, resolveDiffRoot } from '../services/document-profile.ts';
+import { selectRepresentatives, type RepresentativeSelection } from '../services/representative-selection.ts';
 import { readGitChanges } from '../services/git-changes.ts';
 import { detectTestCommand, promptAndRunTests } from '../services/test-runner.ts';
 import { quoteShellArgument } from '../utils/shell.ts';
@@ -68,7 +69,7 @@ export function registerMatchCommand(program: Command): void {
         .option('-t, --threshold <number>', 'Minimum similarity threshold')
         .option('--min-score <number>', 'Minimum similarity score override')
         .option('--top-k <number>', 'Optional maximum number of selected tests')
-        .option('--selection-policy <name>', 'adaptive (default), conservative (fixed top five), or targeted (affirmative model top five)')
+        .option('--selection-policy <name>', 'adaptive (default), conservative, targeted, or representative (requires --top-k; may miss tests)')
         // Repeatable rather than variadic: a variadic option would swallow changed files that follow it.
         .option('-c, --candidates <pattern>', 'Candidate file path, directory, or file glob (repeat for several)', collect)
         .option('--include-file <pattern>', 'Include only matching files (glob pattern; repeat for several)', collect)
@@ -106,10 +107,19 @@ export function registerMatchCommand(program: Command): void {
             const cacheEntries = cacheRanker === 'decisions'
                 ? await getDecisionsCacheEntryCount(config.cacheDir)
                 : await getJevCacheEntryCount(config.cacheDir);
-            const selected = mergeSelections(reports);
+            const representative = config.match.selectionPolicy === 'representative'
+                ? selectRepresentatives(mergeSelections(reports), new Map(candidates.map((candidate) => [candidate.file, candidate.profile])), config.match.topK)
+                : undefined;
+            const selected = representative?.results ?? mergeSelections(reports);
+            const selectedFiles = new Set(selected.map((match) => match.file));
+            const outputReports = representative ? reports.map((report) => {
+                const results = report.results.filter((match) => selectedFiles.has(match.file));
+                return { ...report, results, matched: results.length, selectionLimit: representative.selectionLimit,
+                    selectionTruncated: results.length < report.eligibleCount };
+            }) : reports;
 
             if (options.json) {
-                printJson(reports, selected, cacheEntries);
+                printJson(outputReports, selected, cacheEntries, representative);
                 return;
             }
             if (options.pathsOnly) {
@@ -118,7 +128,7 @@ export function registerMatchCommand(program: Command): void {
                 }
                 return;
             }
-            printText(reports, selected, config, candidateScan.truncated);
+            printText(outputReports, selected, config, candidateScan.truncated, representative);
             if (!selected.length) {
                 return;
             }
@@ -328,7 +338,9 @@ function rankChangedFile(
         : candidates;
     const matches = rankMatches({ profile: source.profile }, ranked);
     const filtered = filterMatches(matches, config.match.minScore);
-    const selection = selectMatches(filtered, config.match.topK, config.match.selectionPolicy, ranker);
+    const representative = config.match.selectionPolicy === 'representative';
+    const selection = selectMatches(filtered, representative ? undefined : config.match.topK,
+        config.match.selectionPolicy === 'representative' ? 'adaptive' : config.match.selectionPolicy, ranker);
     return {
         file: source.file,
         ranker,
@@ -344,7 +356,9 @@ function rankChangedFile(
         topK: config.match.topK ?? null,
         selectionLimit: selection.effectiveLimit,
         selectionPolicy: config.match.selectionPolicy,
-        selectionFallback: selection.reason,
+        selectionFallback: representative ? undefined : selection.reason,
+        eligibilityPolicy: representative ? 'adaptive' : undefined,
+        eligibilityReason: representative ? selection.reason?.replace('all candidates retained', 'all candidates eligible') : undefined,
         eligibleCount: selection.eligibleCount,
         selectionTruncated: selection.truncated,
         selectionEvidence: selection.evidence,
@@ -378,9 +392,9 @@ function mergeSelections(reports: ChangeReport[]) {
     return typeof limit === 'number' ? merged.slice(0, limit) : merged;
 }
 
-function printJson(reports: ChangeReport[], selected: MatchCandidate[], cacheEntries: number) {
+function printJson(reports: ChangeReport[], selected: MatchCandidate[], cacheEntries: number, representative?: RepresentativeSelection) {
     console.log(JSON.stringify(reports.length === 1
-        ? { ...reports[0], cacheEntries }
+        ? { ...reports[0], ...representative, cacheEntries }
         : {
             files: reports.map((report) => report.file),
             ranker: reports[0]?.ranker,
@@ -389,6 +403,8 @@ function printJson(reports: ChangeReport[], selected: MatchCandidate[], cacheEnt
             rankerFallback: reports[0]?.rankerFallback,
             rankerAttempts: reports[0]?.rankerAttempts,
             matched: selected.length,
+            ...representative,
+            candidateLimitReached: representative ? reports.some((report) => report.candidateLimitReached) : undefined,
             cacheEntries,
             results: selected,
             changes: reports,
@@ -399,11 +415,19 @@ function printText(
     reports: ChangeReport[],
     selected: MatchCandidate[],
     config: RuntimeConfig,
-    candidateLimitReached: boolean
+    candidateLimitReached: boolean,
+    representative?: RepresentativeSelection
 ) {
     if (!config.quiet) {
+        if (representative) {
+            console.log(`Representative selection: ${representative.results.length}/${representative.eligibleCount} adaptive-eligible tests; greedy medoid Jaccard objective ${representative.selectionObjective.value.toFixed(4)}`);
+            console.log(`Warning: ${representative.selectionWarning}`);
+        }
         for (const report of reports) {
             console.log(`Matched ${report.matched}/${report.candidateCount} candidates for ${report.file}`);
+            if (report.eligibilityReason) {
+                console.log(`  Adaptive eligibility: ${report.eligibilityReason}`);
+            }
             if (report.selectionFallback) {
                 console.log(`  Why: ${report.selectionFallback}`);
             }

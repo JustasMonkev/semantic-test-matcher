@@ -21,6 +21,11 @@ interface MatchOutput {
     selectionLimit?: number | null;
     eligibleCount?: number;
     selectionTruncated?: boolean;
+    eligibilityPolicy?: string;
+    eligibilityReason?: string;
+    selectionMethod?: string;
+    selectionObjective?: { metric: string; value: number; tokenLimit: number };
+    selectionWarning?: string;
     model?: string;
     jev?: { requests: number; cacheHits: number; models: string[] };
     results: Array<{ file: string; score: number; structuralScore: number; modelScore?: number; jevScore?: number }>;
@@ -375,6 +380,11 @@ describe('match command rankers', () => {
         assert.equal(targeted.output.selectionPolicy, 'targeted');
         assert.deepEqual(targeted.output.results.map(x => x.file), ['tests/price.test.ts']);
         assert.equal(targeted.output.selectionFallback, undefined);
+        const representative = await runMatch('--ranker', 'jev', '--selection-policy', 'representative', '--top-k', '10');
+        assert.equal(representative.output.eligibleCount, 1);
+        assert.deepEqual(representative.output.results.map(x => x.file), ['tests/price.test.ts']);
+        assert.equal(representative.output.selectionTruncated, false);
+
     });
 
     it('matches a deleted file from its diff', async () => {
@@ -636,6 +646,59 @@ describe('match command rankers', () => {
             const output = JSON.parse(lines[lines.length - 1]) as { files: string[] };
 
             assert.deepEqual(output.files, ['src/socket.ts', 'src/price.ts']);
+        });
+
+        it('selects a global representative before any per-file relevance cap', async () => {
+            await fs.rm('tests', { recursive: true });
+            await fs.mkdir('tests');
+            await fs.writeFile('src/price.ts', 'export function red() { return 1; }');
+            await fs.writeFile('src/socket.ts', 'export function blue() { return 1; }');
+            await fs.writeFile('tests/red.test.ts', "test('red', () => red());");
+            await fs.writeFile('tests/blue.test.ts', "test('blue', () => blue());");
+            await fs.writeFile('tests/middle.test.ts', "test('red blue', () => { red(); blue(); });");
+            process.env.TYPESAFE_API_KEY = 'test-key';
+            globalThis.fetch = async (_url, init) => {
+                const body: { questions: Record<string, unknown> } = JSON.parse(String(init?.body));
+                return Response.json({ model: 'jev-1.13.0', answers: Object.fromEntries(
+                    Object.keys(body.questions).map((key) => [key, { type: 'noul', noul: 0.9 }])
+                ) });
+            };
+            const { lines } = await runCli('src/price.ts', 'src/socket.ts', '--selection-policy', 'representative', '--top-k', '1', '--json');
+            const output: MatchOutput & { changes: MatchOutput[]; matched: number } = JSON.parse(lines[lines.length - 1]);
+            assert.deepEqual(output.results.map((match) => match.file), ['tests/middle.test.ts']);
+            assert.equal(output.matched, 1);
+            assert.equal(output.eligibleCount, 3);
+            assert.equal(output.selectionLimit, 1);
+            assert.equal(output.selectionTruncated, true);
+            assert.equal(output.selectionMethod, 'greedy-medoid');
+            assert.equal(output.eligibilityPolicy, 'adaptive');
+            assert.equal(output.selectionObjective?.metric, 'jaccard');
+            assert.match(output.selectionWarning ?? '', /can miss relevant or failing tests/);
+            assert.ok(output.changes.every((change) => change.eligibleCount === 3 && change.results[0].file === 'tests/middle.test.ts'));
+        });
+
+        it('keeps adaptive eligibility and minimum-score filtering before representative compression', async () => {
+            const { output } = await runMatch('--ranker', 'heuristics', '--selection-policy', 'representative', '--top-k', '1', '--min-score', '1');
+            assert.deepEqual(output.results, []);
+            assert.equal(output.eligibleCount, 0);
+            assert.equal(output.selectionObjective?.value, 0);
+            assert.equal(output.selectionTruncated, false);
+            assert.match(output.eligibilityReason ?? '', /all candidates eligible/);
+            assert.equal(output.selectionFallback, undefined);
+        });
+
+        it('warns about representative omissions in text and preserves paths-only output', async () => {
+            const args = ['src/price.ts', '--ranker', 'heuristics', '--selection-policy', 'representative', '--top-k', '1'];
+            const text = await runCli(...args);
+            assert.ok(text.lines.some((line) => /Representative selection:/.test(line)), text.lines.join('\n'));
+            assert.ok(text.lines.some((line) => /Warning: .*can miss relevant or failing tests/.test(line)), text.lines.join('\n'));
+            const paths = await runCli(...args, '--paths-only');
+            assert.equal(paths.lines.length, 1);
+            assert.match(paths.lines[0], /^tests\/.*\.test\.ts$/);
+        });
+
+        it('rejects representative selection without a budget before reading files', async () => {
+            await assert.rejects(runCli('src/missing.ts', '--selection-policy', 'representative'), /explicit positive integer --top-k/);
         });
 
         it('caps the merged selection at --top-k', async () => {
