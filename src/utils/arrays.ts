@@ -9,29 +9,19 @@ export function mergeArrays(left: string[] = [], right: string[] = []): string[]
 }
 
 export function interleaveUniqueTokens(groups: string[][], limit: number): string[] {
-    const tokens: string[] = [];
-    const seen = new Set<string>();
+    const tokens = new Set<string>();
+    const longestGroup = Math.max(0, ...groups.map((group) => group.length));
 
-    for (let index = 0; tokens.length < limit; index += 1) {
-        let hasValue = false;
+    for (let index = 0; index < longestGroup && tokens.size < limit; index += 1) {
         for (const group of groups) {
-            const token = group[index];
-            if (token === undefined) {
-                continue;
+            if (tokens.size >= limit) {
+                break;
             }
-            hasValue = true;
-            if (!seen.has(token)) {
-                seen.add(token);
-                tokens.push(token);
-                if (tokens.length === limit) {
-                    break;
-                }
+            if (index < group.length) {
+                tokens.add(group[index]);
             }
-        }
-        if (!hasValue) {
-            break;
         }
     }
 
-    return tokens;
+    return [...tokens];
 }

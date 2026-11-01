@@ -1,18 +1,20 @@
 import { Command } from 'commander';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { resolveConfig, type MatchCommandOptions, type RootOptions, type RuntimeConfig } from '../config.ts';
+import { isTestLike } from '../services/document-profile.ts';
+import { attachModelScores, filterMatches, rankMatches, type MatchCandidate, type RankedMatchCandidate } from '../services/match.ts';
+import { createScorerFromConfig } from '../services/model-scorer-factory.ts';
+import { addTokenCounts, type ModelScorer, type ModelScoreResult } from '../services/model-scorer.ts';
+import { collectCandidateFiles } from '../utils/files.ts';
 import { findPathsOutside, normalizePathSeparators } from '../utils/paths.ts';
-import { resolveConfig } from '../config.ts';
-import { buildDocumentProfile, isTestLike } from '../services/document-profile.ts';
-import { JEV_API_KEY_ENV, getJevKey } from '../services/jev.ts';
-import { getOpenAIKey } from '../services/decisions.ts';
-import { createModelScorer } from '../services/model-scorer-factory.ts';
-import { filterMatches, rankMatches, type RankedMatchCandidate } from '../services/match.ts';
-import { collectCandidateFilesDetailed, readCandidateText } from '../utils/files.ts';
-import { mapWithConcurrency } from '../utils/async.ts';
-import { readFileIfExists } from '../utils/io.ts';
+import { loadCandidates, RANKER_OPTION_DESCRIPTION, readSourceDocument, rootOptionsOf } from './shared.ts';
 
-const READ_CONCURRENCY = 8;
+interface BenchmarkOptions extends MatchCommandOptions {
+    cases: string;
+    diffRoot?: string;
+    json?: boolean;
+}
 
 interface BenchmarkCase {
     source: string;
@@ -22,9 +24,12 @@ interface BenchmarkCase {
     diffText?: string;
 }
 
+type CheckName = 'top1' | 'top3' | 'top10Includes';
+type CheckTally = Record<CheckName, { cases: number; hits: number }>;
+
 interface BenchmarkMiss {
     source: string;
-    failedChecks: string[];
+    failedChecks: CheckName[];
     expectedTop1?: string;
     expectedTop3?: string[];
     expectedTop10Includes?: string[];
@@ -32,50 +37,18 @@ interface BenchmarkMiss {
     observedRanks: Record<string, number | null>;
 }
 
-function getExpectedTop3(entry: BenchmarkCase): string[] {
-    if (entry.expectedTop3?.length) {
-        return entry.expectedTop3;
-    }
-    const top1 = entry.expectedTop1;
-    return top1 ? [top1] : [];
+interface ModelUsage {
+    requests: number;
+    cacheHits: number;
+    inputTokens: number | undefined;
+    outputTokens: number | undefined;
+    modelIdentity: 'reported' | 'requested';
+    models: Set<string>;
 }
 
-function getObservedRanks(matches: Array<{ file: string }>, expectedFiles: string[]): Record<string, number | null> {
-    const ranks: Record<string, number | null> = {};
-    for (const file of expectedFiles) {
-        const index = matches.findIndex((match) => match.file === file);
-        ranks[file] = index === -1 ? null : index + 1;
-    }
-    return ranks;
-}
-
-async function loadBenchmarkCases(filePath: string): Promise<BenchmarkCase[]> {
-    const raw = await fs.readFile(filePath, 'utf8');
-    const parsed = JSON.parse(raw) as BenchmarkCase[];
-
-    return parsed.map((entry) => ({
-        source: normalizePathSeparators(entry.source),
-        expectedTop1: entry.expectedTop1 ? normalizePathSeparators(entry.expectedTop1) : undefined,
-        expectedTop3: entry.expectedTop3?.map(normalizePathSeparators),
-        expectedTop10Includes: entry.expectedTop10Includes?.map(normalizePathSeparators),
-        diffText: entry.diffText,
-    }));
-}
-
-async function prepareCandidates(candidateFiles: string[], cwd: string): Promise<RankedMatchCandidate[]> {
-    const candidates = await mapWithConcurrency(candidateFiles, READ_CONCURRENCY, async (candidatePath) => {
-        const candidateText = await readCandidateText(candidatePath);
-        if (candidateText === undefined) {
-            return undefined;
-        }
-        const candidateProfile = buildDocumentProfile(candidatePath, candidateText, cwd);
-        return {
-            file: normalizePathSeparators(path.relative(cwd, candidatePath)),
-            preview: candidateProfile.preview,
-            profile: candidateProfile,
-        };
-    });
-    return candidates.filter((candidate) => candidate !== undefined);
+interface ObservedRanking {
+    source: string;
+    results: Array<Pick<MatchCandidate, 'file' | 'score' | 'modelScore' | 'structuralScore'>>;
 }
 
 export function registerBenchmarkCommand(program: Command): void {
@@ -86,7 +59,7 @@ export function registerBenchmarkCommand(program: Command): void {
         .option('-c, --candidates <patterns...>', 'Candidate file paths, directories, or file globs')
         .option('--include-file <patterns...>', 'Include only matching files (glob pattern)')
         .option('--exclude-file <patterns...>', 'Exclude matching files (glob pattern)')
-        .option('--ranker <name>', `jev (TypeSafe API, default; key from ${JEV_API_KEY_ENV} or JEF) decisions (OpenAI API; key from OPENAI_API_KEY or OPEN_AI), or heuristics (local only)`)
+        .option('--ranker <name>', RANKER_OPTION_DESCRIPTION)
         .option('--jev-model <id>', 'TypeSafe Jev model id')
         .option('--decisions-model <id>', 'OpenAI Decisions model id')
         .option('--fallback-ranker <name>', 'Only heuristics allowed; benchmark never falls back')
@@ -95,246 +68,232 @@ export function registerBenchmarkCommand(program: Command): void {
         .option('-t, --threshold <number>', 'Minimum similarity threshold')
         .option('--min-score <number>', 'Minimum similarity score override')
         .option('--json', 'Print machine-readable output')
-        .action(async (options: {
-            cases: string;
-            candidates?: string[];
-            includeFile?: string[];
-            excludeFile?: string[];
-            ranker?: string;
-            jevModel?: string;
-            decisionsModel?: string;
-            fallbackRanker?: string;
-            cacheDir?: string;
-            diffRoot?: string;
-            threshold?: string;
-            minScore?: string;
-            json?: boolean;
-        }) => {
-            const rootOptions = program.opts();
-            const cwd = process.cwd();
-            const config = await resolveConfig(
-                {
-                    config: rootOptions.config,
-                    cacheDir: rootOptions.cacheDir,
-                    logLevel: rootOptions.logLevel,
-                    verbose: rootOptions.verbose,
-                    quiet: rootOptions.quiet,
-                },
-                {
-                    candidates: options.candidates,
-                    includeFile: options.includeFile,
-                    excludeFile: options.excludeFile,
-                    ranker: options.ranker,
-                    jevModel: options.jevModel,
-                    decisionsModel: options.decisionsModel,
-                    fallbackRanker: options.fallbackRanker,
-                    cacheDir: options.cacheDir,
-                    threshold: options.threshold,
-                    minScore: options.minScore,
-                    json: options.json,
-                },
-                cwd
-            );
-
-            if (config.fallbackRanker !== 'heuristics') {
-                throw new Error('Benchmark does not allow a remote fallback ranker; run each provider separately.');
-            }
-            const casesPath = path.resolve(cwd, options.cases);
-            const cases = await loadBenchmarkCases(casesPath);
-            const candidateResult = await collectCandidateFilesDetailed(
-                config.match.candidatePaths,
-                config.match.includePatterns,
-                config.match.excludePatterns,
-                cwd
-            );
-            const scorer = config.ranker === 'heuristics' ? undefined
-                : createModelScorer(config.ranker, {
-                    apiKey: config.ranker === 'jev' ? getJevKey() ?? '' : getOpenAIKey() ?? '',
-                    model: config.ranker === 'jev' ? config.jevModel : config.decisionsModel,
-                    cacheDir: config.cacheDir,
-                });
-            const modelStats: { requests: number; cacheHits: number; inputTokens: number | undefined; outputTokens: number | undefined; modelIdentity: 'reported' | 'requested'; models: Set<string> } = {
-                requests: 0, cacheHits: 0, inputTokens: 0, outputTokens: 0, modelIdentity: 'reported', models: new Set(),
-            };
-            const observedRanking: Array<{ source: string; results: Array<{ file: string; score: number; modelScore?: number; structuralScore: number }> }> = [];
-            const sourcePaths = new Set(cases.map((entry) => path.resolve(cwd, entry.source)));
-            // As in match, no case's source module is a candidate test; a test-like source stays one.
-            const preparedCandidates = (await prepareCandidates(candidateResult.files, cwd)).filter((candidate) =>
-                isTestLike(candidate.profile) || !sourcePaths.has(path.resolve(cwd, candidate.file))
-            );
-
-            let top1Hits = 0;
-            let top1Total = 0;
-            let top3Hits = 0;
-            let top3Total = 0;
-            let top10IncludeHits = 0;
-            let top10IncludeTotal = 0;
-            const misses: BenchmarkMiss[] = [];
-
-            // A cases file may come from an untrusted checkout; its sources are read and sent to Jev.
-            const [outsideSource] = await findPathsOutside([...sourcePaths], cwd);
-            if (outsideSource) {
-                throw new Error(`Benchmark source ${outsideSource} is outside the workspace ${cwd}`);
-            }
-
-            // Flush even when a later case fails, so answers already paid for stay cached.
-            try {
-                for (const entry of cases) {
-                    const sourcePath = path.resolve(cwd, entry.source);
-                    const sourceFileText = await readFileIfExists(sourcePath);
-                    const sourceText = sourceFileText ?? '';
-                    const sourceProfile = buildDocumentProfile(
-                        sourcePath,
-                        sourceText,
-                        cwd,
-                        entry.diffText,
-                        options.diffRoot
-                    );
-                    if (sourceFileText === undefined && !sourceProfile.diffExcerpt) {
-                        throw new Error(`Benchmark source not found: ${entry.source} (add a diffText that deletes it)`);
-                    }
-                    let caseCandidates = preparedCandidates.filter(
-                        (candidate) => path.resolve(cwd, candidate.file) !== sourcePath
-                    );
-                    if (scorer) {
-                        const result = await scorer.score(
-                            { profile: sourceProfile, text: sourceText, diffOnly: entry.diffText !== undefined },
-                            caseCandidates
-                        );
-                        modelStats.requests += result.requests;
-                        modelStats.cacheHits += result.cacheHits;
-                        modelStats.inputTokens = modelStats.inputTokens === undefined || result.inputTokens === undefined
-                            ? undefined : modelStats.inputTokens + result.inputTokens;
-                        modelStats.outputTokens = modelStats.outputTokens === undefined || result.outputTokens === undefined
-                            ? undefined : modelStats.outputTokens + result.outputTokens;
-                        if (result.modelIdentity === 'requested') modelStats.modelIdentity = 'requested';
-                        result.models.forEach((model) => modelStats.models.add(model));
-                        caseCandidates = caseCandidates.map((candidate) => ({
-                            ...candidate,
-                            modelScore: result.scores.get(candidate.file),
-                            jevScore: config.ranker === 'jev' ? result.scores.get(candidate.file) : undefined,
-                        }));
-                    }
-
-                    const matches = filterMatches(
-                        rankMatches({ profile: sourceProfile }, caseCandidates),
-                        config.match.minScore
-                    );
-                    observedRanking.push({ source: entry.source, results: matches.map(({ file, score, modelScore, structuralScore }) => ({ file, score, modelScore, structuralScore })) });
-                    const topThree = matches.slice(0, 3);
-                    const topTen = matches.slice(0, 10);
-                    const failedChecks: string[] = [];
-
-                    const expectedTop1 = entry.expectedTop1;
-                    if (expectedTop1) {
-                        top1Total += 1;
-                        if ((matches[0]?.file ?? '') === expectedTop1) {
-                            top1Hits += 1;
-                        } else {
-                            failedChecks.push('top1');
-                        }
-                    }
-
-                    const expectedTop3 = getExpectedTop3(entry);
-                    if (expectedTop3.length) {
-                        top3Total += 1;
-                        if (topThree.some((match) => expectedTop3.includes(match.file))) {
-                            top3Hits += 1;
-                        } else {
-                            failedChecks.push('top3');
-                        }
-                    }
-
-                    const expectedTop10Includes = entry.expectedTop10Includes ?? [];
-                    if (expectedTop10Includes.length) {
-                        top10IncludeTotal += 1;
-                        if (expectedTop10Includes.every((file) => topTen.some((match) => match.file === file))) {
-                            top10IncludeHits += 1;
-                        } else {
-                            failedChecks.push('top10Includes');
-                        }
-                    }
-
-                    if (failedChecks.length) {
-                        const expectedFiles = uniqueExpectedFiles(expectedTop1, expectedTop3, expectedTop10Includes);
-                        misses.push({
-                            source: entry.source,
-                            failedChecks,
-                            expectedTop1,
-                            expectedTop3: expectedTop3.length ? expectedTop3 : undefined,
-                            expectedTop10Includes: expectedTop10Includes.length ? expectedTop10Includes : undefined,
-                            observedTop10: topTen.map((match) => match.file),
-                            observedRanks: getObservedRanks(matches, expectedFiles),
-                        });
-                    }
-                }
-            } finally {
-                await scorer?.flush();
-            }
-
-            const summary = {
-                ranker: config.ranker,
-                requestedRanker: config.ranker,
-                effectiveRanker: config.ranker,
-                observedRanking,
-                modelScorer: scorer ? { provider: config.ranker, ...modelStats, models: [...modelStats.models].sort() } : undefined,
-                cases: cases.length,
-                threshold: config.match.threshold,
-                minScore: config.match.minScore,
-                top1Cases: top1Total,
-                top1Rate: top1Total ? top1Hits / top1Total : 0,
-                top3Cases: top3Total,
-                top3Rate: top3Total ? top3Hits / top3Total : 0,
-                top10IncludeCases: top10IncludeTotal,
-                top10IncludeRate: top10IncludeTotal ? top10IncludeHits / top10IncludeTotal : 0,
-                misses,
-                candidateLimitReached: candidateResult.truncated,
-                jev: config.ranker === 'jev' && scorer ? { requests: modelStats.requests, cacheHits: modelStats.cacheHits,
-                    inputTokens: modelStats.inputTokens, models: [...modelStats.models].sort() } : undefined,
-            };
-
-            if (options.json) {
-                console.log(JSON.stringify(summary));
-                return;
-            }
-
-            console.log(`ranker: ${summary.ranker}`);
-            console.log(`cases: ${summary.cases}`);
-            console.log(`top1Cases: ${summary.top1Cases}`);
-            console.log(`top1Rate: ${summary.top1Rate.toFixed(4)}`);
-            console.log(`top3Cases: ${summary.top3Cases}`);
-            console.log(`top3Rate: ${summary.top3Rate.toFixed(4)}`);
-            console.log(`top10IncludeCases: ${summary.top10IncludeCases}`);
-            console.log(`top10IncludeRate: ${summary.top10IncludeRate.toFixed(4)}`);
-            console.log(`candidateLimitReached: ${summary.candidateLimitReached}`);
-            if (summary.modelScorer) {
-                const label = summary.modelScorer.provider;
-                console.log(`${label}Requests: ${summary.modelScorer.requests}`);
-                console.log(`${label}CacheHits: ${summary.modelScorer.cacheHits}`);
-                console.log(`${label}InputTokens: ${summary.modelScorer.inputTokens ?? 'unknown'}`);
-                console.log(`${label}Models: ${summary.modelScorer.models.join(', ') || 'none'}`);
-            }
-            if (!summary.misses.length) {
-                console.log('misses: none');
-                return;
-            }
-
-            console.log(`misses: ${summary.misses.length}`);
-            for (const miss of summary.misses) {
-                console.log(`- ${miss.source}: ${miss.failedChecks.join(', ')}`);
-                console.log(`  observedTop10: ${miss.observedTop10.join(', ')}`);
-            }
-        });
+        .action((options: BenchmarkOptions) => runBenchmark(options, rootOptionsOf(program)));
 }
 
-function uniqueExpectedFiles(
-    expectedTop1: string | undefined,
-    expectedTop3: string[],
-    expectedTop10Includes: string[]
-): string[] {
-    return [...new Set([
-        ...(expectedTop1 ? [expectedTop1] : []),
-        ...expectedTop3,
-        ...expectedTop10Includes,
-    ])];
+async function loadBenchmarkCases(filePath: string): Promise<BenchmarkCase[]> {
+    const parsed = JSON.parse(await fs.readFile(filePath, 'utf8')) as BenchmarkCase[];
+    return parsed.map((entry) => ({
+        source: normalizePathSeparators(entry.source),
+        expectedTop1: entry.expectedTop1 ? normalizePathSeparators(entry.expectedTop1) : undefined,
+        expectedTop3: entry.expectedTop3?.map(normalizePathSeparators),
+        expectedTop10Includes: entry.expectedTop10Includes?.map(normalizePathSeparators),
+        diffText: entry.diffText,
+    }));
+}
+
+function expectedTop3Of(entry: BenchmarkCase): string[] {
+    if (entry.expectedTop3?.length) {
+        return entry.expectedTop3;
+    }
+    return entry.expectedTop1 ? [entry.expectedTop1] : [];
+}
+
+function observedRanks(matches: MatchCandidate[], files: string[]): Record<string, number | null> {
+    const ranks: Record<string, number | null> = {};
+    for (const file of files) {
+        const index = matches.findIndex((match) => match.file === file);
+        ranks[file] = index === -1 ? null : index + 1;
+    }
+    return ranks;
+}
+
+function emptyTally(): CheckTally {
+    return { top1: { cases: 0, hits: 0 }, top3: { cases: 0, hits: 0 }, top10Includes: { cases: 0, hits: 0 } };
+}
+
+function hitRate({ cases, hits }: { cases: number; hits: number }): number {
+    return cases ? hits / cases : 0;
+}
+
+function evaluateCase(entry: BenchmarkCase, matches: MatchCandidate[], tally: CheckTally): BenchmarkMiss | undefined {
+    const expectedTop1 = entry.expectedTop1;
+    const expectedTop3 = expectedTop3Of(entry);
+    const expectedTop10Includes = entry.expectedTop10Includes ?? [];
+    const observedTop3 = matches.slice(0, 3).map((match) => match.file);
+    const observedTop10 = matches.slice(0, 10).map((match) => match.file);
+
+    const checks: Array<{ name: CheckName; applies: boolean; passes: () => boolean }> = [
+        { name: 'top1', applies: Boolean(expectedTop1), passes: () => matches[0]?.file === expectedTop1 },
+        { name: 'top3', applies: expectedTop3.length > 0, passes: () => observedTop3.some((file) => expectedTop3.includes(file)) },
+        {
+            name: 'top10Includes',
+            applies: expectedTop10Includes.length > 0,
+            passes: () => expectedTop10Includes.every((file) => observedTop10.includes(file)),
+        },
+    ];
+
+    const failedChecks: CheckName[] = [];
+    for (const { name, passes } of checks.filter((check) => check.applies)) {
+        tally[name].cases += 1;
+        if (passes()) {
+            tally[name].hits += 1;
+        } else {
+            failedChecks.push(name);
+        }
+    }
+    if (!failedChecks.length) {
+        return undefined;
+    }
+
+    const expectedFiles = [...new Set([...(expectedTop1 ? [expectedTop1] : []), ...expectedTop3, ...expectedTop10Includes])];
+    return {
+        source: entry.source,
+        failedChecks,
+        expectedTop1,
+        expectedTop3: expectedTop3.length ? expectedTop3 : undefined,
+        expectedTop10Includes: expectedTop10Includes.length ? expectedTop10Includes : undefined,
+        observedTop10,
+        observedRanks: observedRanks(matches, expectedFiles),
+    };
+}
+
+function recordUsage(usage: ModelUsage, result: ModelScoreResult): void {
+    usage.requests += result.requests;
+    usage.cacheHits += result.cacheHits;
+    usage.inputTokens = addTokenCounts(usage.inputTokens, result.inputTokens);
+    usage.outputTokens = addTokenCounts(usage.outputTokens, result.outputTokens);
+    if (result.modelIdentity === 'requested') {
+        usage.modelIdentity = 'requested';
+    }
+    result.models.forEach((model) => usage.models.add(model));
+}
+
+async function runBenchmark(options: BenchmarkOptions, rootOptions: RootOptions): Promise<void> {
+    const cwd = process.cwd();
+    const config = await resolveConfig(rootOptions, options, cwd);
+    if (config.fallbackRanker !== 'heuristics') {
+        throw new Error('Benchmark does not allow a remote fallback ranker; run each provider separately.');
+    }
+
+    const cases = await loadBenchmarkCases(path.resolve(cwd, options.cases));
+    const candidateScan = await collectCandidateFiles(
+        config.match.candidatePaths,
+        config.match.includePatterns,
+        config.match.excludePatterns,
+        cwd
+    );
+    const scorer = config.ranker === 'heuristics' ? undefined : createScorerFromConfig(config.ranker, config);
+    const sourcePaths = new Set(cases.map((entry) => path.resolve(cwd, entry.source)));
+    const candidates = (await loadCandidates(candidateScan.files, cwd)).filter((candidate) =>
+        isTestLike(candidate.profile) || !sourcePaths.has(path.resolve(cwd, candidate.file))
+    );
+    const [outsideSource] = await findPathsOutside([...sourcePaths], cwd);
+    if (outsideSource) {
+        throw new Error(`Benchmark source ${outsideSource} is outside the workspace ${cwd}`);
+    }
+
+    const usage: ModelUsage = { requests: 0, cacheHits: 0, inputTokens: 0, outputTokens: 0, modelIdentity: 'reported', models: new Set() };
+    const tally = emptyTally();
+    const observedRanking: ObservedRanking[] = [];
+    const misses: BenchmarkMiss[] = [];
+    try {
+        for (const entry of cases) {
+            const matches = await rankCase(entry, candidates, scorer, usage, config, cwd, options.diffRoot);
+            observedRanking.push({
+                source: entry.source,
+                results: matches.map(({ file, score, modelScore, structuralScore }) => ({ file, score, modelScore, structuralScore })),
+            });
+            const miss = evaluateCase(entry, matches, tally);
+            if (miss) {
+                misses.push(miss);
+            }
+        }
+    } finally {
+        await scorer?.flush();
+    }
+
+    const models = [...usage.models].sort();
+    const summary = {
+        ranker: config.ranker,
+        requestedRanker: config.ranker,
+        effectiveRanker: config.ranker,
+        observedRanking,
+        modelScorer: scorer ? { provider: config.ranker, ...usage, models } : undefined,
+        cases: cases.length,
+        threshold: config.match.threshold,
+        minScore: config.match.minScore,
+        top1Cases: tally.top1.cases,
+        top1Rate: hitRate(tally.top1),
+        top3Cases: tally.top3.cases,
+        top3Rate: hitRate(tally.top3),
+        top10IncludeCases: tally.top10Includes.cases,
+        top10IncludeRate: hitRate(tally.top10Includes),
+        misses,
+        candidateLimitReached: candidateScan.truncated,
+        jev: config.ranker === 'jev' && scorer
+            ? { requests: usage.requests, cacheHits: usage.cacheHits, inputTokens: usage.inputTokens, models }
+            : undefined,
+    };
+
+    if (options.json) {
+        console.log(JSON.stringify(summary));
+        return;
+    }
+    printSummary(summary);
+}
+
+async function rankCase(
+    entry: BenchmarkCase,
+    candidates: RankedMatchCandidate[],
+    scorer: ModelScorer | undefined,
+    usage: ModelUsage,
+    config: RuntimeConfig,
+    cwd: string,
+    diffRoot: string | undefined
+): Promise<MatchCandidate[]> {
+    const sourcePath = path.resolve(cwd, entry.source);
+    const source = await readSourceDocument(sourcePath, cwd, entry.diffText, diffRoot);
+    if (source.missingWithoutDeletionDiff) {
+        throw new Error(`Benchmark source not found: ${entry.source} (add a diffText that deletes it)`);
+    }
+    const caseCandidates = candidates.filter((candidate) => path.resolve(cwd, candidate.file) !== sourcePath);
+    const modelResult = scorer
+        ? await scorer.score({ profile: source.profile, text: source.text, diffOnly: entry.diffText !== undefined }, caseCandidates)
+        : undefined;
+    if (modelResult) {
+        recordUsage(usage, modelResult);
+    }
+    const ranked = rankMatches({ profile: source.profile }, attachModelScores(caseCandidates, modelResult, config.ranker));
+    return filterMatches(ranked, config.match.minScore);
+}
+
+function printSummary(summary: {
+    ranker: string;
+    cases: number;
+    top1Cases: number;
+    top1Rate: number;
+    top3Cases: number;
+    top3Rate: number;
+    top10IncludeCases: number;
+    top10IncludeRate: number;
+    candidateLimitReached: boolean;
+    modelScorer?: { provider: string; requests: number; cacheHits: number; inputTokens: number | undefined; models: string[] };
+    misses: BenchmarkMiss[];
+}): void {
+    console.log(`ranker: ${summary.ranker}`);
+    console.log(`cases: ${summary.cases}`);
+    console.log(`top1Cases: ${summary.top1Cases}`);
+    console.log(`top1Rate: ${summary.top1Rate.toFixed(4)}`);
+    console.log(`top3Cases: ${summary.top3Cases}`);
+    console.log(`top3Rate: ${summary.top3Rate.toFixed(4)}`);
+    console.log(`top10IncludeCases: ${summary.top10IncludeCases}`);
+    console.log(`top10IncludeRate: ${summary.top10IncludeRate.toFixed(4)}`);
+    console.log(`candidateLimitReached: ${summary.candidateLimitReached}`);
+    if (summary.modelScorer) {
+        const { provider, requests, cacheHits, inputTokens, models } = summary.modelScorer;
+        console.log(`${provider}Requests: ${requests}`);
+        console.log(`${provider}CacheHits: ${cacheHits}`);
+        console.log(`${provider}InputTokens: ${inputTokens ?? 'unknown'}`);
+        console.log(`${provider}Models: ${models.join(', ') || 'none'}`);
+    }
+    if (!summary.misses.length) {
+        console.log('misses: none');
+        return;
+    }
+    console.log(`misses: ${summary.misses.length}`);
+    for (const miss of summary.misses) {
+        console.log(`- ${miss.source}: ${miss.failedChecks.join(', ')}`);
+        console.log(`  observedTop10: ${miss.observedTop10.join(', ')}`);
+    }
 }

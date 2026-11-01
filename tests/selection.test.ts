@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { selectMatches, TARGETED_JEV_THRESHOLD, type MatchCandidate } from '../src/services/match.ts';
+import { selectMatches, TARGETED_MODEL_THRESHOLD, type MatchCandidate } from '../src/services/match.ts';
 
 function candidate(file: string, score: number, jevScore?: number, structuralScore = score): MatchCandidate {
     return {
@@ -25,7 +25,7 @@ describe('test selection policy', () => {
     });
 
     it('keeps all Jev-positive candidates, even those beyond the structural top-K', () => {
-        assert.equal(TARGETED_JEV_THRESHOLD, 0.5);
+        assert.equal(TARGETED_MODEL_THRESHOLD, 0.5);
         assert.deepEqual(selectMatches(ranked, 2, 'targeted', 'jev').results.map(x => x.file), [
             'direct.spec.ts', 'related-beyond-top-k.spec.ts',
         ]);

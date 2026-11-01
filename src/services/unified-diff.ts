@@ -15,21 +15,15 @@ interface HunkCounts {
     newLines: number;
 }
 
-/** Header state of one file in a diff; it ends with that file's `+++` line. */
 interface FileSection {
-    /** Present only in Git diffs; plain unified diffs have just `---`/`+++` headers. */
     gitDiffLine?: string;
-    /** The old and new paths as written on the `diff --git` line, prefixes included. */
-    gitPaths?: [string, string];
-    /** Prefix-free old and new paths from `rename`/`copy` lines. */
-    logicalPaths: [string | undefined, string | undefined];
+    prefixedGitPaths?: [string, string];
+    unprefixedPaths: [string | undefined, string | undefined];
     gitPrefixes?: GitPrefixes;
     isCopy: boolean;
-    /** A plain diff's `---` path, kept until its `+++` path shows whether both use `a/`/`b/`. */
     plainOldPath?: string;
 }
 
-/** Where the profiled file is and which directories relative diff paths may resolve from. */
 interface DiffTarget {
     absolutePath: string;
     cwd: string;
@@ -40,8 +34,7 @@ interface DiffTarget {
 const GIT_DIFF_LINE_PREFIX = 'diff --git ';
 const DEV_NULL = '/dev/null';
 const DELETED_FILE_PREFIX = 'deleted file mode ';
-// Lines that show a header-less Git section changed content: a binary change or an empty new file.
-const HEADERLESS_CONTENT_PATTERN = /^(?:Binary files |GIT binary patch|new file mode )/;
+const CONTENT_CHANGE_WITHOUT_HUNKS = /^(?:Binary files |GIT binary patch|new file mode )/;
 const FILE_HEADER_PREFIX_LENGTH = '--- '.length;
 const HUNK_HEADER_PATTERN = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/;
 const HEADER_TIMESTAMP_PATTERN = /\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?: [+-]\d{4})?$/;
@@ -107,7 +100,6 @@ function isStandardPrefixPair(oldPath: string, newPath: string): boolean {
     return oldPath.startsWith('a/') && newPath.startsWith('b/') && oldPath.slice(2) === newPath.slice(2);
 }
 
-/** Plain diffs can use Git's a/ and b/ labels too, with /dev/null for an added or deleted side. */
 function isPlainPrefixPair(oldPath: string, newPath: string): boolean {
     return isStandardPrefixPair(oldPath, newPath)
         || oldPath === DEV_NULL && newPath.startsWith('b/')
@@ -118,18 +110,18 @@ function stripPlainLabel(diffPath: string): string {
     return diffPath === DEV_NULL ? diffPath : diffPath.slice(2);
 }
 
-/** The path a plain diff changes (its old path for a deletion), without a/ or b/ labels unless they are real. */
 function plainChangedPath(oldPath: string, newPath: string, basePath: string): string {
-    const changedPath = newPath === DEV_NULL ? oldPath : newPath;
+    const isDeletion = newPath === DEV_NULL;
+    const changedPath = isDeletion ? oldPath : newPath;
     if (!isPlainPrefixPair(oldPath, newPath)) {
         return changedPath;
     }
-    // A deleted file is gone, so only its directory can show that a/ is real.
-    const realPath = path.resolve(basePath, changedPath);
-    return existsSync(newPath === DEV_NULL ? path.dirname(realPath) : realPath) ? changedPath : changedPath.slice(2);
+    const labeledPath = path.resolve(basePath, changedPath);
+    const pathThatStillExists = isDeletion ? path.dirname(labeledPath) : labeledPath;
+    const labelIsPartOfRealPath = existsSync(pathThatStillExists);
+    return labelIsPartOfRealPath ? changedPath : changedPath.slice(2);
 }
 
-/** Splits unquoted `diff --git` paths, which may contain spaces, after the last `<oldPath> `. */
 function splitAfterOldPath(value: string, oldPath: string, newPath: string): [string, string] | undefined {
     const oldPathStart = value.lastIndexOf(`${oldPath} `);
     if (oldPathStart === -1) {
@@ -141,7 +133,6 @@ function splitAfterOldPath(value: string, oldPath: string, newPath: string): [st
     return paths[1].endsWith(newPath) ? paths : undefined;
 }
 
-/** Without a known file, splits unquoted paths with spaces where both sides name it after their prefixes. */
 function splitSameFilePaths(value: string): [string, string] | undefined {
     const dropPrefix = (diffPath: string) => diffPath.slice(diffPath.indexOf('/') + 1);
     for (let index = value.indexOf(' '); index !== -1; index = value.indexOf(' ', index + 1)) {
@@ -177,35 +168,30 @@ function parseGitDiffPaths(line: string, relativePath: string | undefined): [str
     return paths ? [paths[1], paths[2]] : undefined;
 }
 
-/**
- * Custom prefixes are whatever precedes the trailing path segments both sides share.
- * A single shared segment (just the filename) is too weak to tell a prefix from a move,
- * except for a root-level file under one-segment prefixes, such as `old/foo.ts new/foo.ts`.
- */
 function inferGitPrefixes(paths: [string, string]): GitPrefixes | undefined {
     const [oldPath, newPath] = paths;
     const oldParts = oldPath.split('/');
     const newParts = newPath.split('/');
-    let sharedParts = 0;
+    let sharedTrailingSegments = 0;
     while (
-        sharedParts < oldParts.length
-        && sharedParts < newParts.length
-        && oldParts[oldParts.length - sharedParts - 1] === newParts[newParts.length - sharedParts - 1]
+        sharedTrailingSegments < oldParts.length
+        && sharedTrailingSegments < newParts.length
+        && oldParts[oldParts.length - sharedTrailingSegments - 1] === newParts[newParts.length - sharedTrailingSegments - 1]
     ) {
-        sharedParts += 1;
+        sharedTrailingSegments += 1;
     }
 
-    if (oldPath.startsWith('a/') && newPath.startsWith('b/') && (
-        oldPath.slice(2) === newPath.slice(2) || sharedParts <= 1
-    )) {
+    const onlyFilenameShared = sharedTrailingSegments <= 1;
+    if (oldPath.startsWith('a/') && newPath.startsWith('b/') && (oldPath.slice(2) === newPath.slice(2) || onlyFilenameShared)) {
         return ['a/', 'b/'];
     }
-    const isPrefixedRootFile = sharedParts === 1 && oldParts.length === 2 && newParts.length === 2;
-    if (sharedParts <= 1 && !isPrefixedRootFile) {
+    const isPrefixedRootFile = sharedTrailingSegments === 1 && oldParts.length === 2 && newParts.length === 2;
+    const tooWeakToTellPrefixFromMove = onlyFilenameShared && !isPrefixedRootFile;
+    if (tooWeakToTellPrefixFromMove) {
         return undefined;
     }
 
-    const sharedPath = oldParts.slice(-sharedParts).join('/');
+    const sharedPath = oldParts.slice(-sharedTrailingSegments).join('/');
     const prefixes: GitPrefixes = [
         oldPath.slice(0, -sharedPath.length),
         newPath.slice(0, -sharedPath.length),
@@ -222,24 +208,28 @@ function parseGitPathMetadata(line: string): [0 | 1, string] | undefined {
 }
 
 function applyGitPathMetadata(
-    gitPaths: [string, string] | undefined,
-    logicalPaths: [string | undefined, string | undefined],
+    prefixedGitPaths: [string, string] | undefined,
+    unprefixedPaths: [string | undefined, string | undefined],
     gitPrefixes: GitPrefixes | undefined
 ): GitPrefixes | undefined {
-    if (!gitPaths) {
+    if (!prefixedGitPaths) {
         return gitPrefixes;
     }
 
     const prefixes: GitPrefixes = gitPrefixes ? [...gitPrefixes] : [undefined, undefined];
     let updated = false;
-    for (let pathIndex = 0; pathIndex < gitPaths.length; pathIndex += 1) {
-        const logicalPath = logicalPaths[pathIndex];
-        if (logicalPath !== undefined && gitPaths[pathIndex].endsWith(logicalPath)) {
-            prefixes[pathIndex] = gitPaths[pathIndex].slice(0, -logicalPath.length);
+    for (let pathIndex = 0; pathIndex < prefixedGitPaths.length; pathIndex += 1) {
+        const unprefixedPath = unprefixedPaths[pathIndex];
+        if (unprefixedPath !== undefined && prefixedGitPaths[pathIndex].endsWith(unprefixedPath)) {
+            prefixes[pathIndex] = prefixedGitPaths[pathIndex].slice(0, -unprefixedPath.length);
             updated = true;
         }
     }
     return updated ? prefixes : gitPrefixes;
+}
+
+function cwdFallbackBase(target: DiffTarget): string | undefined {
+    return target.allowCwdRelativeGitPaths ? target.cwd : undefined;
 }
 
 function matchesDiffPath(
@@ -285,42 +275,40 @@ function findGitRoot(cwd: string): string {
     }
 }
 
-/** The directory relative diff paths resolve from: `--diff-root`, else the enclosing Git root. */
 export function resolveDiffRoot(cwd: string, diffRoot: string | undefined): string {
     return diffRoot ? path.resolve(cwd, diffRoot) : findGitRoot(cwd);
 }
 
 function emptyFileSection(): FileSection {
-    return { logicalPaths: [undefined, undefined], isCopy: false };
+    return { unprefixedPaths: [undefined, undefined], isCopy: false };
 }
 
 function startGitSection(line: string, relativePath?: string, rootRelativePath = relativePath): FileSection {
-    let gitPaths = parseGitDiffPaths(line, rootRelativePath);
-    if (!gitPaths && rootRelativePath !== relativePath) {
-        gitPaths = parseGitDiffPaths(line, relativePath);
+    let prefixedGitPaths = parseGitDiffPaths(line, rootRelativePath);
+    if (!prefixedGitPaths && rootRelativePath !== relativePath) {
+        prefixedGitPaths = parseGitDiffPaths(line, relativePath);
     }
     return {
         ...emptyFileSection(),
         gitDiffLine: line,
-        gitPaths,
-        gitPrefixes: gitPaths ? inferGitPrefixes(gitPaths) : undefined,
+        prefixedGitPaths,
+        gitPrefixes: prefixedGitPaths ? inferGitPrefixes(prefixedGitPaths) : undefined,
     };
 }
 
-/** Rename and copy lines carry prefix-free paths, which expose the prefixes on the `diff --git` line. */
 function readRenameOrCopyLine(line: string, section: FileSection): void {
     section.isCopy ||= line.startsWith('copy ');
     const metadata = parseGitPathMetadata(line);
     if (metadata) {
-        section.logicalPaths[metadata[0]] = metadata[1];
+        section.unprefixedPaths[metadata[0]] = metadata[1];
     }
-    const [oldLogicalPath, newLogicalPath] = section.logicalPaths;
-    if (!section.gitPaths && section.gitDiffLine && oldLogicalPath !== undefined && newLogicalPath !== undefined) {
+    const [oldUnprefixedPath, newUnprefixedPath] = section.unprefixedPaths;
+    if (!section.prefixedGitPaths && section.gitDiffLine && oldUnprefixedPath !== undefined && newUnprefixedPath !== undefined) {
         const value = section.gitDiffLine.slice(GIT_DIFF_LINE_PREFIX.length);
-        section.gitPaths = splitAfterOldPath(value, oldLogicalPath, newLogicalPath);
-        section.gitPrefixes = section.gitPaths ? inferGitPrefixes(section.gitPaths) : undefined;
+        section.prefixedGitPaths = splitAfterOldPath(value, oldUnprefixedPath, newUnprefixedPath);
+        section.gitPrefixes = section.prefixedGitPaths ? inferGitPrefixes(section.prefixedGitPaths) : undefined;
     }
-    section.gitPrefixes = applyGitPathMetadata(section.gitPaths, section.logicalPaths, section.gitPrefixes);
+    section.gitPrefixes = applyGitPathMetadata(section.prefixedGitPaths, section.unprefixedPaths, section.gitPrefixes);
 }
 
 function readFileHeaderPath(line: string): string {
@@ -331,7 +319,6 @@ function readFileHeaderPath(line: string): string {
     );
 }
 
-/** Drops the section's Git prefix from a header path unless the prefixed path is itself real. */
 function stripGitPrefix(
     diffPath: string,
     prefix: string | undefined,
@@ -342,17 +329,16 @@ function stripGitPrefix(
     if (!prefix || !diffPath.startsWith(prefix)) {
         return diffPath;
     }
-    const prefixIsSynthetic = section.logicalPaths[0] !== undefined && section.logicalPaths[1] !== undefined
-        || section.gitPaths !== undefined && isStandardPrefixPair(section.gitPaths[0], section.gitPaths[1]);
+    const prefixIsSynthetic = section.unprefixedPaths[0] !== undefined && section.unprefixedPaths[1] !== undefined
+        || section.prefixedGitPaths !== undefined && isStandardPrefixPair(section.prefixedGitPaths[0], section.prefixedGitPaths[1]);
     if (prefixIsSynthetic) {
         return diffPath.slice(prefix.length);
     }
-    const prefixedPathExists = section.gitPaths?.some((gitPath) => existsSync(path.resolve(diffBase, gitPath))) ?? false;
+    const prefixedPathExists = section.prefixedGitPaths?.some((gitPath) => existsSync(path.resolve(diffBase, gitPath))) ?? false;
     return prefixedPathExists || isTargetPath(diffPath) ? diffPath : diffPath.slice(prefix.length);
 }
 
-/** Reads a `---` or `+++` line and returns whether the current section is the target file. */
-function readFileHeader(
+function readFileHeaderAndMatchTarget(
     line: string,
     section: FileSection,
     target: DiffTarget,
@@ -383,28 +369,26 @@ function readFileHeader(
         diffPath,
         target.absolutePath,
         diffBase,
-        isGitDiff && target.allowCwdRelativeGitPaths ? target.cwd : undefined
+        isGitDiff ? cwdFallbackBase(target) : undefined
     );
-    // A copy leaves its source untouched, so only the copy's own `+++` path can match.
-    if (section.isCopy) {
+    const copySourceIsUntouched = section.isCopy;
+    if (copySourceIsUntouched) {
         return isNewFileHeader && diffPathMatches;
     }
     return isNewFileHeader ? fileMatches || diffPathMatches : diffPathMatches;
 }
 
-/** Whether a rename or copy's prefix-free target path is the profiled file. */
 function isRenameOrCopyTarget(newPath: string, target: DiffTarget): boolean {
     return matchesDiffPath(
         newPath,
         target.absolutePath,
         target.rootPath,
-        target.allowCwdRelativeGitPaths ? target.cwd : undefined
+        cwdFallbackBase(target)
     );
 }
 
-/** Whether a Git section deletes the profiled file, judged from its `diff --git` old path. */
 function isDeletedTarget(section: FileSection, target: DiffTarget): boolean {
-    const oldGitPath = section.gitPaths?.[0];
+    const oldGitPath = section.prefixedGitPaths?.[0];
     if (oldGitPath === undefined) {
         return false;
     }
@@ -414,11 +398,10 @@ function isDeletedTarget(section: FileSection, target: DiffTarget): boolean {
         diffPath,
         target.absolutePath,
         target.rootPath,
-        target.allowCwdRelativeGitPaths ? target.cwd : undefined
+        cwdFallbackBase(target)
     );
 }
 
-/** The profiled file's changed lines and hunks, from a diff that may cover many files. */
 export function collectChangedLines(
     diffText: string | undefined,
     relativePath: string,
@@ -440,23 +423,20 @@ export function collectChangedLines(
     let section = emptyFileSection();
     let fileMatches = true;
     let hunk: HunkCounts | undefined;
-    // Text with no diff headers at all is read as bare `+`/`-` lines.
     let hasDiffHeaders = false;
-    // A change without hunks (a pure rename or copy, or an empty or binary deletion) is marked by its
-    // Git metadata lines; a renamed file's old path also counts as removed, since imports of it break.
-    let headerlessMarker: { lines: string[]; removedPath?: string } | undefined;
-    const keepHeaderlessMarker = () => {
-        if (headerlessMarker) {
-            changedLines.hunks.push(...headerlessMarker.lines);
-            if (headerlessMarker.removedPath !== undefined) {
-                changedLines.removed.push(headerlessMarker.removedPath);
+    let hunklessChange: { metadataLines: string[]; pathWhoseImportsBreak?: string } | undefined;
+    const recordHunklessChange = () => {
+        if (hunklessChange) {
+            changedLines.hunks.push(...hunklessChange.metadataLines);
+            if (hunklessChange.pathWhoseImportsBreak !== undefined) {
+                changedLines.removed.push(hunklessChange.pathWhoseImportsBreak);
             }
-            headerlessMarker = undefined;
+            hunklessChange = undefined;
         }
     };
     for (const line of diffText.split(/\r?\n/)) {
         if (line.startsWith(GIT_DIFF_LINE_PREFIX)) {
-            keepHeaderlessMarker();
+            recordHunklessChange();
             section = startGitSection(line, relativePath, rootRelativePath);
             fileMatches = false;
             hunk = undefined;
@@ -465,24 +445,23 @@ export function collectChangedLines(
         }
         if (!hunk && RENAME_OR_COPY_PATTERN.test(line)) {
             readRenameOrCopyLine(line, section);
-            const [oldPath, newPath] = section.logicalPaths;
+            const [oldPath, newPath] = section.unprefixedPaths;
             if (oldPath !== undefined && newPath !== undefined && isRenameOrCopyTarget(newPath, target)) {
                 const verb = section.isCopy ? 'copy' : 'rename';
-                headerlessMarker = {
-                    lines: [`${verb} from ${oldPath}`, `${verb} to ${newPath}`],
-                    removedPath: section.isCopy ? undefined : oldPath,
+                hunklessChange = {
+                    metadataLines: [`${verb} from ${oldPath}`, `${verb} to ${newPath}`],
+                    pathWhoseImportsBreak: section.isCopy ? undefined : oldPath,
                 };
             }
             continue;
         }
         if (!hunk && line.startsWith(DELETED_FILE_PREFIX) && isDeletedTarget(section, target)) {
-            headerlessMarker = { lines: [line] };
+            hunklessChange = { metadataLines: [line] };
             continue;
         }
         if (!hunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
-            // Headers carry the change as hunks, so the marker is not needed.
-            headerlessMarker = undefined;
-            fileMatches = readFileHeader(line, section, target, fileMatches);
+            hunklessChange = undefined;
+            fileMatches = readFileHeaderAndMatchTarget(line, section, target, fileMatches);
             if (line.startsWith('+++ ')) {
                 section = emptyFileSection();
             }
@@ -525,14 +504,13 @@ export function collectChangedLines(
             }
         }
     }
-    keepHeaderlessMarker();
+    recordHunklessChange();
 
     return changedLines;
 }
 
 interface DiffFileScan {
     changed: Set<string>;
-    /** Files whose only change is their mode, such as the executable bit. */
     modeOnly: Set<string>;
 }
 
@@ -542,17 +520,14 @@ function scanDiffFiles(diffText: string, basePath: string): DiffFileScan {
     let headerlessContentChanged = false;
     let deleted = false;
     let modeChanged = false;
-    const headerlessPath = (side: 0 | 1) => section.gitPaths
-        && stripGitPrefix(section.gitPaths[side], section.gitPrefixes?.[side], section, basePath, () => false);
-    // A Git section without `---`/`+++` headers: a pure rename or copy names its target on a
-    // `rename to`/`copy to` line; a binary change, an empty new file, or an empty or binary deletion
-    // has only its `diff --git` paths; and a mode-only change leaves no content to profile.
+    const headerlessPath = (side: 0 | 1) => section.prefixedGitPaths
+        && stripGitPrefix(section.prefixedGitPaths[side], section.gitPrefixes?.[side], section, basePath, () => false);
     const addHeaderlessTarget = () => {
         if (section.gitDiffLine === undefined) {
             return;
         }
         const targetPath = deleted ? headerlessPath(0)
-            : section.logicalPaths[1] ?? (headerlessContentChanged ? headerlessPath(1) : undefined);
+            : section.unprefixedPaths[1] ?? (headerlessContentChanged ? headerlessPath(1) : undefined);
         if (targetPath) {
             scan.changed.add(path.resolve(basePath, targetPath));
         } else if (modeChanged) {
@@ -565,8 +540,8 @@ function scanDiffFiles(diffText: string, basePath: string): DiffFileScan {
     let oldPath = '';
     let hunk: HunkCounts = { oldLines: 0, newLines: 0 };
     for (const line of diffText.split(/\r?\n/)) {
-        // Hunk bodies can hold lines like "--- x" that are content, not headers.
-        if (hunk.oldLines > 0 || hunk.newLines > 0) {
+        const insideHunkBody = hunk.oldLines > 0 || hunk.newLines > 0;
+        if (insideHunkBody) {
             if (line.startsWith('-')) {
                 hunk.oldLines -= 1;
             } else if (line.startsWith('+')) {
@@ -594,7 +569,7 @@ function scanDiffFiles(diffText: string, basePath: string): DiffFileScan {
             readRenameOrCopyLine(line, section);
             continue;
         }
-        headerlessContentChanged ||= HEADERLESS_CONTENT_PATTERN.test(line);
+        headerlessContentChanged ||= CONTENT_CHANGE_WITHOUT_HUNKS.test(line);
         deleted ||= line.startsWith(DELETED_FILE_PREFIX);
         modeChanged ||= line.startsWith('old mode ');
         if (!line.startsWith('--- ') && !line.startsWith('+++ ')) {
@@ -617,12 +592,10 @@ function scanDiffFiles(diffText: string, basePath: string): DiffFileScan {
     return scan;
 }
 
-/** Absolute paths of the files a unified diff changes; a deleted file keeps its old path. */
 export function listDiffFiles(diffText: string, cwd: string, diffRoot?: string): string[] {
     return [...scanDiffFiles(diffText, resolveDiffRoot(cwd, diffRoot)).changed];
 }
 
-/** Absolute paths of files whose only change in the diff is their mode, which leaves nothing to match. */
 export function listModeOnlyDiffFiles(diffText: string, cwd: string, diffRoot?: string): string[] {
     const { changed, modeOnly } = scanDiffFiles(diffText, resolveDiffRoot(cwd, diffRoot));
     return [...modeOnly].filter((file) => !changed.has(file));

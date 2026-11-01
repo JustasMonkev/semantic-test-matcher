@@ -5,16 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildDocumentProfile } from '../src/services/document-profile.ts';
 import {
-    buildJevState,
-    estimateTokens,
+    estimateTokensUpperBound,
     getJevCacheEntryCount,
     getJevCacheFile,
     JEV_ENDPOINT,
     JevError,
     JevScorer,
-    type JevCandidate,
-    type JevSource,
 } from '../src/services/jev.ts';
+import { buildModelEvidence, type ModelCandidate, type ModelSource } from '../src/services/model-scorer.ts';
 
 const CWD = '/workspace';
 
@@ -46,11 +44,11 @@ type JevRequestBody = {
     questions: Record<string, { type: string; instructions: { test_file: { path: string; test_titles: string[] }; question: string } }>;
 };
 
-function makeSource(diff?: string): JevSource {
+function makeSource(diff?: string): ModelSource {
     return { profile: buildDocumentProfile(`${CWD}/src/tabs.ts`, TABS_SOURCE, CWD, diff), text: TABS_SOURCE };
 }
 
-function makeCandidate(file: string, text: string): JevCandidate {
+function makeCandidate(file: string, text: string): ModelCandidate {
     return { file, profile: buildDocumentProfile(`${CWD}/${file}`, text, CWD) };
 }
 
@@ -85,9 +83,9 @@ function fakeFetch(handler: (body: JevRequestBody, call: number) => Response) {
 
 const byTabs = (testPath: string) => (testPath.includes('tabs') ? 0.9 : 0.1);
 
-describe('buildJevState', () => {
+describe('buildModelEvidence', () => {
     it('sends only the profiled file\'s diff hunks when a diff is available', () => {
-        const state = buildJevState(makeSource(TABS_DIFF));
+        const state = buildModelEvidence(makeSource(TABS_DIFF));
         assert.equal(state.changed_file.path, 'src/tabs.ts');
         assert.match(String(state.changed_file.diff), /\+    return tabs\[index\];/);
         assert.doesNotMatch(String(state.changed_file.diff), /other/);
@@ -96,14 +94,14 @@ describe('buildJevState', () => {
 
     it('never sends source text when a supplied diff has no hunks for the file', () => {
         const otherFileOnly = TABS_DIFF.slice(TABS_DIFF.indexOf('diff --git a/src/other.ts'));
-        const state = buildJevState({ ...makeSource(otherFileOnly), diffOnly: true });
+        const state = buildModelEvidence({ ...makeSource(otherFileOnly), diffOnly: true });
         assert.equal(state.changed_file.source_code, undefined);
         assert.equal(state.changed_file.diff, undefined);
         assert.equal(state.changed_file.path, 'src/tabs.ts');
     });
 
     it('sends a source excerpt without the leading license block when there is no diff', () => {
-        const state = buildJevState(makeSource());
+        const state = buildModelEvidence(makeSource());
         assert.equal(state.changed_file.diff, undefined);
         assert.match(String(state.changed_file.source_code), /^export function selectTab/);
     });
@@ -201,7 +199,7 @@ describe('JevScorer', () => {
         assert.ok(calls.length > 1);
         for (const call of calls) {
             assert.ok(Object.keys(call.body.questions).length <= 250);
-            assert.ok(estimateTokens(String(call.init.body)) < 64_000);
+            assert.ok(estimateTokensUpperBound(String(call.init.body)) < 64_000);
         }
         assert.equal(result.scores.size, 600);
         assert.equal(result.requests, calls.length);
@@ -225,8 +223,8 @@ describe('JevScorer', () => {
     });
 
     it('sizes batches by estimated tokens, so non-ASCII test titles split sooner', async () => {
-        assert.equal(estimateTokens('abcdef'), 6);
-        assert.equal(estimateTokens('日本'), 6);
+        assert.equal(estimateTokensUpperBound('abcdef'), 6);
+        assert.equal(estimateTokensUpperBound('日本'), 6);
         const title = '日本語のテスト'.repeat(20);
         const text = Array.from({ length: 40 }, (_, index) => `test('${title} ${index}', () => {});`).join('\n');
         const candidates = Array.from({ length: 10 }, (_, index) => makeCandidate(`tests/cjk-${index}.spec.ts`, text));
@@ -236,7 +234,7 @@ describe('JevScorer', () => {
         assert.equal(result.scores.size, 10);
         assert.ok(calls.length > 1);
         for (const call of calls) {
-            assert.ok(estimateTokens(String(call.init.body)) < 64_000);
+            assert.ok(estimateTokensUpperBound(String(call.init.body)) < 64_000);
         }
     });
 

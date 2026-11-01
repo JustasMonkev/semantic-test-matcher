@@ -1,22 +1,33 @@
 import path from 'node:path';
-import { isProbability } from '../utils/values.ts';
-import { buildCacheKey, loadCache, writeCacheEntries } from './cache.ts';
-import { buildCandidateEvidence, buildModelEvidence, ModelScorerError } from './model-scorer.ts';
-import type { ModelCandidate, ModelScoreResult, ModelScorerOptions, ModelSource } from './model-scorer.ts';
 import { mapWithConcurrency, sleep } from '../utils/async.ts';
-import { isDebug } from '../utils/io.ts';
+import { debugWarn } from '../utils/io.ts';
+import { isProbability, readFirstEnv } from '../utils/values.ts';
+import { BufferedCache, buildCacheKey, countCacheEntries } from './cache.ts';
+import {
+    buildCandidateEvidence,
+    buildModelEvidence,
+    isRetryableStatus,
+    ModelScorerError,
+    packBatches,
+    parseRetryAfterMs,
+    type ModelCandidate,
+    type ModelScorer,
+    type ModelScoreResult,
+    type ModelScorerOptions,
+    type ModelSource,
+} from './model-scorer.ts';
 
 export const JEV_PROVIDER = 'typesafe';
-export const JEV_API_KEY_ENV = 'TYPESAFE_API_KEY';
+export const JEV_API_KEY_NAMES = ['TYPESAFE_API_KEY', 'JEF'] as const;
 export const JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
 
-// One request must stay inside Jev's 64k-token budget (state plus every question), with headroom.
-const MAX_REQUEST_TOKENS = 60_000;
+const JEV_TOKEN_LIMIT_WITH_HEADROOM = 60_000;
 const MAX_QUESTIONS_PER_REQUEST = 250;
 const REQUEST_CONCURRENCY = 4;
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_ATTEMPTS = 5;
 const MAX_RETRY_AFTER_MS = 30_000;
+const DEFAULT_RETRY_BASE_MS = 500;
 
 const QUESTION_WITH_DIFF = 'Should the tests in `test_file` be re-run to check the code change shown in `changed_file`?';
 const QUESTION_WITHOUT_DIFF = 'Do the tests in `test_file` exercise the behavior implemented in `changed_file`?';
@@ -25,12 +36,7 @@ const CRITERIA = {
     false: 'The tests in `test_file` cover other features; `changed_file` does not plausibly affect their outcome.',
 };
 
-export type JevSource = ModelSource;
-export type JevCandidate = ModelCandidate;
-export type JevScorerOptions = ModelScorerOptions;
-export interface JevScoreResult extends ModelScoreResult {
-    inputTokens: number;
-}
+type JevState = ReturnType<typeof buildModelEvidence>;
 
 interface JevNoulQuestion {
     type: 'noul';
@@ -61,25 +67,18 @@ export class JevError extends ModelScorerError {
 }
 
 export function getJevKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-    return env.TYPESAFE_API_KEY?.trim() || env.JEF?.trim() || undefined;
+    return readFirstEnv(JEV_API_KEY_NAMES, env);
 }
 
 export function getJevCacheFile(cacheDirectory: string): string {
     return path.join(cacheDirectory, 'jev.json');
 }
 
-export async function getJevCacheEntryCount(cacheDirectory: string): Promise<number> {
-    try {
-        return Object.keys(await loadCache<CachedJevAnswer>(getJevCacheFile(cacheDirectory))).length;
-    } catch {
-        // Cache statistics are best-effort and must not fail an otherwise successful match.
-        return 0;
-    }
+export function getJevCacheEntryCount(cacheDirectory: string): Promise<number> {
+    return countCacheEntries(getJevCacheFile(cacheDirectory));
 }
 
-export const buildJevState = buildModelEvidence;
-
-export function buildJevQuestion(source: JevSource, candidate: JevCandidate): JevNoulQuestion {
+export function buildJevQuestion(source: ModelSource, candidate: ModelCandidate): JevNoulQuestion {
     return {
         type: 'noul',
         instructions: {
@@ -90,144 +89,81 @@ export function buildJevQuestion(source: JevSource, candidate: JevCandidate): Je
     };
 }
 
-/** An upper bound on tokens: byte-level tokenizers never emit more than one token per UTF-8 byte. */
-export function estimateTokens(text: string): number {
+export function estimateTokensUpperBound(text: string): number {
     return Buffer.byteLength(text);
 }
 
-function batchQuestions(indices: number[], questions: JevNoulQuestion[], tokenBudget: number): number[][] {
-    const batches: number[][] = [];
-    let current: number[] = [];
-    let currentTokens = 0;
-
-    for (const index of indices) {
-        const size = estimateTokens(JSON.stringify(questions[index]))
-            + estimateTokens(JSON.stringify(questionId(index))) + 2;
-        if (size > tokenBudget) {
-            throw new JevError('Jev candidate evidence exceeds the local request budget');
-        }
-        if (
-            current.length &&
-            (current.length >= MAX_QUESTIONS_PER_REQUEST || currentTokens + size > tokenBudget)
-        ) {
-            batches.push(current);
-            current = [];
-            currentTokens = 0;
-        }
-        current.push(index);
-        currentTokens += size;
-    }
-
-    if (current.length) {
-        batches.push(current);
-    }
-    return batches;
+function questionId(candidateIndex: number): string {
+    return `t${candidateIndex}`;
 }
 
-function isRetryableStatus(status: number): boolean {
-    return status === 408 || status === 429 || status >= 500;
+function questionTokens(question: JevNoulQuestion, candidateIndex: number): number {
+    const keyValueSeparators = 2;
+    return estimateTokensUpperBound(JSON.stringify(question))
+        + estimateTokensUpperBound(JSON.stringify(questionId(candidateIndex)))
+        + keyValueSeparators;
 }
 
 function describeFailure(status: number): string {
-    const hint = status === 401 || status === 403 ? `; check ${JEV_API_KEY_ENV} or JEF` : '';
+    const hint = status === 401 || status === 403 ? '; check TYPESAFE_API_KEY or JEF' : '';
     return `HTTP ${status}${hint}`;
 }
 
-/** Retry-After is either delay-seconds or an HTTP date; anything else means no hint. */
-function parseRetryAfterMs(header: string | null): number {
-    const seconds = Number(header ?? 0);
-    return Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header ?? '') - Date.now();
-}
-
-// Honors the server's Retry-After (capped) but never waits less than exponential backoff.
 function retryDelayMs(attempt: number, retryAfterMs: number, retryBaseMs: number): number {
-    return Math.max(
-        Math.min(Number.isFinite(retryAfterMs) ? retryAfterMs : 0, MAX_RETRY_AFTER_MS),
-        retryBaseMs * 2 ** (attempt - 1)
-    );
+    const cappedRetryAfterMs = Math.min(Number.isFinite(retryAfterMs) ? retryAfterMs : 0, MAX_RETRY_AFTER_MS);
+    const backoffMs = retryBaseMs * 2 ** (attempt - 1);
+    return Math.max(cappedRetryAfterMs, backoffMs);
 }
 
-/** A 200 body can still be `null`, another non-object, or miss the answering model, e.g. from a proxy. */
 function isJevResponse(value: unknown): value is JevResponse {
     return typeof value === 'object' && value !== null
         && 'answers' in value && typeof value.answers === 'object' && value.answers !== null
         && 'model' in value && typeof value.model === 'string' && value.model !== '';
 }
 
-// Batch questions are keyed by candidate index so answers map back to candidates.
-function questionId(index: number): string {
-    return `t${index}`;
-}
-
-/** Asks Jev, once per candidate test file, whether it should re-run for a change; answers are cached. */
-export class JevScorer {
-    private cachePromise?: Promise<Record<string, CachedJevAnswer>>;
-    private pending: Record<string, CachedJevAnswer> = {};
-    private readonly options: JevScorerOptions;
-    private readonly cacheFile: string;
+export class JevScorer implements ModelScorer {
+    private readonly options: ModelScorerOptions;
+    private readonly cache: BufferedCache<CachedJevAnswer>;
     private readonly fetchImpl: typeof fetch;
 
-    constructor(options: JevScorerOptions) {
+    constructor(options: ModelScorerOptions) {
         if (!options.apiKey) {
-            throw new JevError(`${JEV_API_KEY_ENV} (or JEF) is required for the jev ranker`);
+            throw new JevError('TYPESAFE_API_KEY (or JEF) is required for the jev ranker');
         }
         this.options = options;
-        this.cacheFile = getJevCacheFile(options.cacheDir);
+        this.cache = new BufferedCache(getJevCacheFile(options.cacheDir), 'Jev', !options.skipCache);
         this.fetchImpl = options.fetch ?? fetch;
     }
 
-    private getCache(): Promise<Record<string, CachedJevAnswer>> {
-        this.cachePromise ??= loadCache<CachedJevAnswer>(this.cacheFile).catch((error) => {
-            if (isDebug()) {
-                console.warn(`Jev cache read failed: ${(error as Error).message}`);
-            }
-            return {};
-        });
-        return this.cachePromise;
-    }
-
-    async score(source: JevSource, candidates: JevCandidate[]): Promise<JevScoreResult> {
-        const state = buildJevState(source);
+    async score(source: ModelSource, candidates: ModelCandidate[]): Promise<ModelScoreResult> {
+        const { model } = this.options;
+        const state = buildModelEvidence(source);
         const questions = candidates.map((candidate) => buildJevQuestion(source, candidate));
-        const keys = questions.map((question) =>
-            buildCacheKey(JEV_PROVIDER, this.options.model, JSON.stringify({ state, question }))
-        );
-        const cache = this.options.skipCache ? {} : await this.getCache();
+        const keys = questions.map((question) => buildCacheKey(JEV_PROVIDER, model, JSON.stringify({ state, question })));
         const scores = new Map<string, number>();
         const models = new Set<string>();
         const uncached: number[] = [];
 
-        keys.forEach((key, index) => {
-            const hit = this.pending[key] ?? cache[key];
-            // An answer from any other model than the one requested came through a moving alias.
-            if (hit?.model === this.options.model && isProbability(hit.noul)) {
+        for (const [index, key] of keys.entries()) {
+            const hit = await this.cache.get(key);
+            if (hit?.model === model && isProbability(hit.noul)) {
                 scores.set(candidates[index].file, hit.noul);
                 models.add(hit.model);
             } else {
                 uncached.push(index);
             }
-        });
+        }
 
-        const result: JevScoreResult = {
-            provider: 'jev',
-            scores,
-            requests: 0,
-            cacheHits: candidates.length - uncached.length,
-            inputTokens: 0,
-            models: [],
-        };
-
+        let requests = 0;
+        let inputTokens = 0;
         try {
-            const emptyPayload = JSON.stringify({ model: this.options.model, state, questions: {} });
-            const questionTokenBudget = MAX_REQUEST_TOKENS - estimateTokens(emptyPayload);
-            const batches = batchQuestions(uncached, questions, questionTokenBudget);
+            const batches = this.batchQuestions(state, questions, uncached);
             await mapWithConcurrency(batches, REQUEST_CONCURRENCY, async (batch) => {
-                const { response, attempts } = await this.request({
-                    state,
-                    questions: Object.fromEntries(batch.map((index) => [questionId(index), questions[index]])),
-                });
-                result.requests += attempts;
-                result.inputTokens += response.usage?.input_tokens ?? 0;
+                const { response, attempts } = await this.request(state, Object.fromEntries(
+                    batch.map((index) => [questionId(index), questions[index]])
+                ));
+                requests += attempts;
+                inputTokens += response.usage?.input_tokens ?? 0;
                 models.add(response.model);
 
                 for (const index of batch) {
@@ -235,16 +171,15 @@ export class JevScorer {
                     if (answer?.type !== 'noul' || !isProbability(answer.noul)) {
                         throw new JevError(`Jev response has no answer for ${candidates[index].file}`);
                     }
-                    const noul = answer.noul;
-                    scores.set(candidates[index].file, noul);
-                    // A moving alias such as `jev-latest` answers as the version it names today, so only pinned answers are cached.
-                    if (!this.options.skipCache && response.model === this.options.model) {
-                        this.pending[keys[index]] = {
+                    scores.set(candidates[index].file, answer.noul);
+                    const answeredByPinnedModel = response.model === model;
+                    if (answeredByPinnedModel) {
+                        this.cache.set(keys[index], {
                             createdAt: new Date().toISOString(),
                             provider: JEV_PROVIDER,
                             model: response.model,
-                            noul,
-                        };
+                            noul: answer.noul,
+                        });
                     }
                 }
             });
@@ -253,16 +188,36 @@ export class JevScorer {
             throw error;
         }
 
-        result.models = [...models].sort();
-        return result;
+        return {
+            provider: 'jev',
+            scores,
+            requests,
+            cacheHits: candidates.length - uncached.length,
+            inputTokens,
+            models: [...models].sort(),
+        };
     }
 
-    private async request(body: {
-        state: ReturnType<typeof buildJevState>;
-        questions: Record<string, JevNoulQuestion>;
-    }): Promise<{ response: JevResponse; attempts: number }> {
-        const payload = JSON.stringify({ model: this.options.model, ...body });
-        const retryBaseMs = this.options.retryBaseMs ?? 500;
+    private batchQuestions(state: JevState, questions: JevNoulQuestion[], indices: number[]): number[][] {
+        const emptyPayload = JSON.stringify({ model: this.options.model, state, questions: {} });
+        const tokenBudget = JEV_TOKEN_LIMIT_WITH_HEADROOM - estimateTokensUpperBound(emptyPayload);
+        const tokensOf = new Map(indices.map((index) => [index, questionTokens(questions[index], index)]));
+        const fits = (batch: number[]) => batch.length <= MAX_QUESTIONS_PER_REQUEST
+            && batch.reduce((sum, index) => sum + tokensOf.get(index)!, 0) <= tokenBudget;
+
+        const batches = packBatches(indices, fits);
+        if (!batches) {
+            throw new JevError('Jev candidate evidence exceeds the local request budget');
+        }
+        return batches;
+    }
+
+    private async request(
+        state: JevState,
+        questions: Record<string, JevNoulQuestion>
+    ): Promise<{ response: JevResponse; attempts: number }> {
+        const payload = JSON.stringify({ model: this.options.model, state, questions });
+        const retryBaseMs = this.options.retryBaseMs ?? DEFAULT_RETRY_BASE_MS;
 
         for (let attempt = 1; ; attempt += 1) {
             const outcome = await this.attempt(payload);
@@ -272,14 +227,11 @@ export class JevScorer {
             if (attempt >= MAX_ATTEMPTS) {
                 throw new JevError(`Jev request failed after ${attempt} attempts (${outcome.failure})`);
             }
-            if (isDebug()) {
-                console.warn(`Jev request attempt ${attempt} failed (${outcome.failure}); retrying`);
-            }
+            debugWarn(`Jev request attempt ${attempt} failed (${outcome.failure}); retrying`);
             await sleep(retryDelayMs(attempt, outcome.retryAfterMs, retryBaseMs));
         }
     }
 
-    /** Sends one request. Retryable failures are returned; others throw JevError. */
     private async attempt(payload: string): Promise<JevAttempt> {
         try {
             const response = await this.fetchImpl(JEV_ENDPOINT, {
@@ -293,7 +245,6 @@ export class JevScorer {
             });
             if (response.ok) {
                 const body: unknown = await response.json();
-                // score() still checks each answer's noul before use.
                 return isJevResponse(body)
                     ? { response: body }
                     : { failure: 'response has no answers or model', retryAfterMs: 0 };
@@ -302,7 +253,7 @@ export class JevScorer {
             if (!isRetryableStatus(response.status)) {
                 throw new JevError(`Jev request failed (${failure})`);
             }
-            return { failure, retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')) };
+            return { failure, retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after'), Date.now()) };
         } catch (error) {
             if (error instanceof JevError) {
                 throw error;
@@ -311,19 +262,7 @@ export class JevScorer {
         }
     }
 
-    /** Persists buffered answers in a single locked cache write. Best-effort. */
-    async flush(): Promise<void> {
-        if (!Object.keys(this.pending).length) {
-            return;
-        }
-
-        try {
-            await writeCacheEntries(this.cacheFile, this.pending);
-            this.pending = {};
-        } catch (error) {
-            if (isDebug()) {
-                console.warn(`Jev cache write failed: ${(error as Error).message}`);
-            }
-        }
+    flush(): Promise<void> {
+        return this.cache.flush();
     }
 }

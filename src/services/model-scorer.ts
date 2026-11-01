@@ -45,6 +45,12 @@ export class ModelScorerError extends Error {
     }
 }
 
+const MAX_EXPORTED_SYMBOLS = 20;
+const MAX_DIFF_CHARS = 8000;
+const MAX_SOURCE_CHARS = 6000;
+const MAX_TEST_TITLES = 40;
+const LEADING_BLOCK_COMMENT = /^\s*\/\*[\s\S]*?\*\/\s*/;
+
 function truncate(text: string, maxChars: number): string {
     return text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n…(truncated)`;
 }
@@ -52,16 +58,48 @@ function truncate(text: string, maxChars: number): string {
 export function buildModelEvidence(source: ModelSource): { changed_file: Record<string, unknown> } {
     const changedFile: Record<string, unknown> = {
         path: source.profile.relativePath,
-        exported_symbols: source.profile.exports.slice(0, 20),
+        exported_symbols: source.profile.exports.slice(0, MAX_EXPORTED_SYMBOLS),
     };
     if (source.profile.diffExcerpt) {
-        changedFile.diff = truncate(source.profile.diffExcerpt, 8000);
+        changedFile.diff = truncate(source.profile.diffExcerpt, MAX_DIFF_CHARS);
     } else if (!source.diffOnly) {
-        changedFile.source_code = truncate(source.text.replace(/^\s*\/\*[\s\S]*?\*\/\s*/, ''), 6000);
+        changedFile.source_code = truncate(source.text.replace(LEADING_BLOCK_COMMENT, ''), MAX_SOURCE_CHARS);
     }
     return { changed_file: changedFile };
 }
 
 export function buildCandidateEvidence(candidate: ModelCandidate): { path: string; test_titles: string[] } {
-    return { path: candidate.file, test_titles: candidate.profile.testTitles.slice(0, 40) };
+    return { path: candidate.file, test_titles: candidate.profile.testTitles.slice(0, MAX_TEST_TITLES) };
+}
+
+export function isRetryableStatus(status: number): boolean {
+    return status === 408 || status === 429 || status >= 500;
+}
+
+export function parseRetryAfterMs(header: string | null, now: number): number {
+    const seconds = Number(header ?? 0);
+    return Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header ?? '') - now;
+}
+
+export function addTokenCounts(total: number | undefined, added: number | undefined): number | undefined {
+    return total === undefined || added === undefined ? undefined : total + added;
+}
+
+export function packBatches<T>(items: readonly T[], fits: (batch: T[]) => boolean): T[][] | undefined {
+    const batches: T[][] = [];
+    let current: T[] = [];
+    for (const item of items) {
+        if (!fits([item])) {
+            return undefined;
+        }
+        if (current.length && !fits([...current, item])) {
+            batches.push(current);
+            current = [];
+        }
+        current.push(item);
+    }
+    if (current.length) {
+        batches.push(current);
+    }
+    return batches;
 }

@@ -2,6 +2,7 @@
 import { Command } from 'commander';
 import { createRequire } from 'node:module';
 import { registerCommands } from './commands/index.ts';
+import { errorMessage } from './utils/errors.ts';
 import { isDebug } from './utils/io.ts';
 
 const { version } = createRequire(import.meta.url)('../package.json');
@@ -10,28 +11,20 @@ const program = new Command();
 program
     .name('rbt')
     .description('RBT Semantic Test Matcher')
-    .version(version);
-
-program
+    .version(version)
     .option('-c, --config <path>', 'Path to config file')
     .option('--cache-dir <path>', 'Directory used to store provider answer caches')
     .option('--log-level <level>', 'debug | info | warn | error')
     .option('-v, --verbose', 'Enable verbose output')
     .option('-q, --quiet', 'Suppress non-essential output')
-    .configureHelp({
-        sortSubcommands: true,
-    });
+    .configureHelp({ sortSubcommands: true });
 
 registerCommands(program);
 
 try {
     await program.parseAsync(process.argv);
 } catch (error) {
-    const err = error as Error;
-    if (isDebug() && err.stack) {
-        console.error(err.stack);
-    } else {
-        console.error(`Error: ${err.message ?? String(error)}`);
-    }
+    const stack = error instanceof Error ? error.stack : undefined;
+    console.error(isDebug() && stack ? stack : `Error: ${errorMessage(error)}`);
     process.exitCode = 1;
 }

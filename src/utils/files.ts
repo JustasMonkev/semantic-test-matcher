@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { hasErrorCode } from './errors.ts';
 import { normalizePathSeparators } from './paths.ts';
 import { createPatternMatcher } from './patterns.ts';
 
-const SKIP_DIRS = new Set([
+const SKIPPED_DIRECTORIES = new Set([
     '.git',
     'node_modules',
     '.idea',
@@ -15,22 +16,11 @@ const SKIP_DIRS = new Set([
     '.next',
 ]);
 
-const ALLOWED_EXTENSIONS = new Set([
-    '.ts',
-    '.tsx',
-    '.js',
-    '.jsx',
-    '.mjs',
-    '.mts',
-    '.cjs',
-    '.cts',
-]);
+const SCRIPT_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts', '.cjs', '.cts']);
 
 export const MAX_CANDIDATE_FILES = 1000;
-// Real test files stay well under this (Playwright's largest is ~180 KB).
 export const MAX_CANDIDATE_BYTES = 1_000_000;
 
-/** Reads a candidate file, or warns and returns undefined when it is too large to profile. */
 export async function readCandidateText(filePath: string): Promise<string | undefined> {
     const handle = await fs.open(filePath, 'r');
     try {
@@ -45,8 +35,7 @@ export async function readCandidateText(filePath: string): Promise<string | unde
 }
 
 export function isAllowedFile(filePath: string): boolean {
-    const ext = path.extname(filePath);
-    return ALLOWED_EXTENSIONS.has(ext);
+    return SCRIPT_EXTENSIONS.has(path.extname(filePath));
 }
 
 export interface CollectCandidateFilesResult {
@@ -54,24 +43,29 @@ export interface CollectCandidateFilesResult {
     truncated: boolean;
 }
 
-/** `accept` narrows the candidates; only accepted files count toward {@link MAX_CANDIDATE_FILES}. */
-export async function collectCandidateFilesDetailed(
+export async function collectCandidateFiles(
     seeds: string[],
     includes: string[],
     excludes: string[],
     cwd: string,
     accept?: (absolutePath: string) => Promise<boolean>
 ): Promise<CollectCandidateFilesResult> {
-    // A Set keeps discovery order and drops files reachable through several seeds.
     const files = new Set<string>();
     const isFull = () => files.size >= MAX_CANDIDATE_FILES;
-    const includeMatcher = createPatternMatcher(includes, true);
-    const excludeMatcher = createPatternMatcher(excludes, false);
+    const isIncluded = createPatternMatcher(includes, true);
+    const isExcluded = createPatternMatcher(excludes, false);
     const relativePath = (absolute: string) => normalizePathSeparators(path.relative(cwd, absolute));
+
+    const shouldWalk = (directory: string, name: string) => {
+        const relative = relativePath(directory);
+        const isDotPath = relative.startsWith('.');
+        return !SKIPPED_DIRECTORIES.has(name) && !isDotPath && !isExcluded(relative);
+    };
 
     const addFile = async (absolute: string) => {
         const relative = relativePath(absolute);
-        if (includeMatcher(relative) && !excludeMatcher(relative) && !files.has(absolute) && (!accept || await accept(absolute))) {
+        const matchesFilters = isIncluded(relative) && !isExcluded(relative);
+        if (matchesFilters && !files.has(absolute) && (!accept || await accept(absolute))) {
             files.add(absolute);
         }
     };
@@ -81,23 +75,16 @@ export async function collectCandidateFilesDetailed(
             if (isFull()) {
                 return;
             }
-            const next = path.join(directory, entry.name);
-            if (entry.isDirectory()) {
-                const relative = relativePath(next);
-                if (!SKIP_DIRS.has(entry.name) && !relative.startsWith('.') && !excludeMatcher(relative)) {
-                    await walkDirectory(next);
-                }
-            } else if (entry.isFile() && isAllowedFile(next)) {
-                await addFile(next);
+            const entryPath = path.join(directory, entry.name);
+            if (entry.isDirectory() && shouldWalk(entryPath, entry.name)) {
+                await walkDirectory(entryPath);
+            } else if (entry.isFile() && isAllowedFile(entryPath)) {
+                await addFile(entryPath);
             }
         }
     };
 
-    for (const seed of seeds.length ? seeds : [cwd]) {
-        if (isFull()) {
-            break;
-        }
-        const absolute = path.resolve(cwd, seed);
+    const visitSeed = async (absolute: string) => {
         try {
             const entry = await fs.lstat(absolute);
             if (entry.isDirectory()) {
@@ -106,12 +93,18 @@ export async function collectCandidateFilesDetailed(
                 await addFile(absolute);
             }
         } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            if (!hasErrorCode(error, 'ENOENT')) {
                 throw error;
             }
         }
+    };
+
+    for (const seed of seeds.length ? seeds : [cwd]) {
+        if (isFull()) {
+            break;
+        }
+        await visitSeed(path.resolve(cwd, seed));
     }
 
-    // Reaching the cap counts as truncated even when nothing was left to collect.
     return { files: [...files], truncated: isFull() };
 }

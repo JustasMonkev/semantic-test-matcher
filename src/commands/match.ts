@@ -1,15 +1,14 @@
 import { Command } from 'commander';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { collectCandidateFilesDetailed, isAllowedFile, MAX_CANDIDATE_FILES, readCandidateText } from '../utils/files.ts';
-import { parseStdinList, readFileIfExists, readStdinText } from '../utils/io.ts';
-import { mapWithConcurrency } from '../utils/async.ts';
-import { resolveConfig, type Ranker, type RootOptions, type RuntimeConfig } from '../config.ts';
-import { getJevCacheEntryCount, JEV_API_KEY_ENV, getJevKey } from '../services/jev.ts';
-import { getDecisionsCacheEntryCount, getOpenAIKey } from '../services/decisions.ts';
-import { ModelScorerError, type ModelScoreResult, type ModelScorer } from '../services/model-scorer.ts';
-import { createModelScorer } from '../services/model-scorer-factory.ts';
+import { resolveConfig, type MatchCommandOptions, type Ranker, type RootOptions, type RuntimeConfig } from '../config.ts';
+import { getDecisionsCacheEntryCount } from '../services/decisions.ts';
+import { isTestLike, isTestLikeSource } from '../services/document-profile.ts';
+import { readGitChanges } from '../services/git-changes.ts';
+import { getJevCacheEntryCount } from '../services/jev.ts';
 import {
+    attachModelScores,
+    byScoreThenFile,
     filterMatches,
     rankMatches,
     selectMatches,
@@ -17,28 +16,18 @@ import {
     type MatchCandidate,
     type RankedMatchCandidate,
 } from '../services/match.ts';
-import { buildDocumentProfile, isTestLike, isTestLikeSource, listDiffFiles, resolveDiffRoot } from '../services/document-profile.ts';
+import { createScorerFromConfig } from '../services/model-scorer-factory.ts';
+import { ModelScorerError, type ModelScorer, type ModelScoreResult } from '../services/model-scorer.ts';
 import { selectRepresentatives, type RepresentativeSelection } from '../services/representative-selection.ts';
-import { readGitChanges } from '../services/git-changes.ts';
 import { detectTestCommand, promptAndRunTests } from '../services/test-runner.ts';
-import { quoteShellArgument } from '../utils/shell.ts';
+import { listDiffFiles, resolveDiffRoot } from '../services/unified-diff.ts';
+import { collectCandidateFiles, isAllowedFile, MAX_CANDIDATE_FILES, readCandidateText } from '../utils/files.ts';
+import { parseStdinList, readStdinText } from '../utils/io.ts';
 import { findPathsOutside } from '../utils/paths.ts';
+import { quoteShellArgument } from '../utils/shell.ts';
+import { loadCandidates, RANKER_OPTION_DESCRIPTION, readSourceDocument, rootOptionsOf, type SourceDocument } from './shared.ts';
 
-const READ_CONCURRENCY = 8;
-
-interface MatchOptions {
-    threshold?: string;
-    minScore?: string;
-    topK?: string;
-    selectionPolicy?: string;
-    candidates?: string[];
-    includeFile?: string[];
-    excludeFile?: string[];
-    ranker?: string;
-    jevModel?: string;
-    decisionsModel?: string;
-    fallbackRanker?: string;
-    cacheDir?: string;
+interface MatchOptions extends MatchCommandOptions {
     diffFile?: string;
     diffRoot?: string;
     json?: boolean;
@@ -47,17 +36,45 @@ interface MatchOptions {
 }
 
 interface ChangedFiles {
-    /** No files and no --diff-file: rank local Git changes, then offer to run the tests. */
-    automatic: boolean;
+    isAutomatic: boolean;
     paths: string[];
     diffText?: string;
     diffRoot?: string;
 }
 
-type ChangedSource = Awaited<ReturnType<typeof readChangedFile>>;
-type ChangeReport = ReturnType<typeof rankChangedFile>;
+interface ChangedSource extends SourceDocument {
+    file: string;
+}
 
-function collect(value: string, previous: string[] = []): string[] {
+interface ChangeJob {
+    source: ChangedSource;
+    candidates: RankedMatchCandidate[];
+}
+
+type RemoteRanker = Exclude<Ranker, 'heuristics'>;
+
+interface RankerAttempt {
+    ranker: Ranker;
+    status: 'succeeded' | 'failed';
+    reason?: string;
+}
+
+interface RankingOutcome {
+    ranker: Ranker;
+    rankerFallback?: string;
+    attempts: RankerAttempt[];
+    modelResults: ModelScoreResult[];
+}
+
+type ChangeReport = ReturnType<typeof buildChangeReport>;
+
+interface FinalSelection {
+    selected: MatchCandidate[];
+    reports: ChangeReport[];
+    representative?: RepresentativeSelection;
+}
+
+function appendValue(value: string, previous: string[] = []): string[] {
     return [...previous, value];
 }
 
@@ -70,12 +87,11 @@ export function registerMatchCommand(program: Command): void {
         .option('--min-score <number>', 'Minimum similarity score override')
         .option('--top-k <number>', 'Optional maximum number of selected tests')
         .option('--selection-policy <name>', 'adaptive (default), conservative, targeted, or representative (requires --top-k; may miss tests)')
-        // Repeatable rather than variadic: a variadic option would swallow changed files that follow it.
-        .option('-c, --candidates <pattern>', 'Candidate file path, directory, or file glob (repeat for several)', collect)
-        .option('--include-file <pattern>', 'Include only matching files (glob pattern; repeat for several)', collect)
-        .option('--exclude-file <pattern>', 'Exclude matching files (glob pattern; repeat for several)', collect)
+        .option('-c, --candidates <pattern>', 'Candidate file path, directory, or file glob (repeat for several)', appendValue)
+        .option('--include-file <pattern>', 'Include only matching files (glob pattern; repeat for several)', appendValue)
+        .option('--exclude-file <pattern>', 'Exclude matching files (glob pattern; repeat for several)', appendValue)
         .option('--candidates-from-stdin', 'Read candidate file list (JSON array or newline list) from stdin')
-        .option('--ranker <name>', `jev (TypeSafe API, default; key from ${JEV_API_KEY_ENV} or JEF) decisions (OpenAI API; key from OPENAI_API_KEY or OPEN_AI), or heuristics (local only)`)
+        .option('--ranker <name>', RANKER_OPTION_DESCRIPTION)
         .option('--jev-model <id>', 'TypeSafe Jev model id')
         .option('--decisions-model <id>', 'OpenAI Decisions model id')
         .option('--fallback-ranker <name>', 'heuristics (default), or decisions (only with jev)')
@@ -84,112 +100,77 @@ export function registerMatchCommand(program: Command): void {
         .option('--diff-root <path>', 'Base directory for relative paths in --diff-file')
         .option('--json', 'Print machine-readable output')
         .option('--paths-only', 'Print only the selected test paths, one per line')
-        .action(async (files: string[], options: MatchOptions) => {
-            const config = await resolveMatchConfig(program.opts(), options);
-            const cwd = process.cwd();
-            const changes = await resolveChangedFiles(files, options, cwd);
-            if (!changes.paths.length) {
-                if (options.json) console.log(JSON.stringify({ files: [], matched: 0, results: [], changes: [] }));
-                else if (!options.pathsOnly && !config.quiet) console.log('No local source changes. Tests not run.');
-                return;
-            }
-
-            const candidateScan = await collectCandidateFilesDetailed(
-                config.match.candidatePaths,
-                config.match.includePatterns,
-                config.match.excludePatterns,
-                cwd,
-                changes.automatic ? (file) => isRunnableCandidate(file, cwd) : undefined
-            );
-            const candidates = await loadCandidates(candidateScan.files, cwd);
-            const reports = await matchChangedFiles(changes, candidates, config, candidateScan.truncated, cwd);
-            const cacheRanker = reports[0]?.rankerAttempts.filter(attempt => attempt.ranker !== 'heuristics').pop()?.ranker ?? config.ranker;
-            const cacheEntries = cacheRanker === 'decisions'
-                ? await getDecisionsCacheEntryCount(config.cacheDir)
-                : await getJevCacheEntryCount(config.cacheDir);
-            const representative = config.match.selectionPolicy === 'representative'
-                ? selectRepresentatives(mergeSelections(reports), new Map(candidates.map((candidate) => [candidate.file, candidate.profile])), config.match.topK)
-                : undefined;
-            const selected = representative?.results ?? mergeSelections(reports);
-            const selectedFiles = new Set(selected.map((match) => match.file));
-            const outputReports = representative ? reports.map((report) => {
-                const results = report.results.filter((match) => selectedFiles.has(match.file));
-                return { ...report, results, matched: results.length, selectionLimit: representative.selectionLimit,
-                    selectionTruncated: results.length < report.eligibleCount };
-            }) : reports;
-
-            if (options.json) {
-                printJson(outputReports, selected, cacheEntries, representative);
-                return;
-            }
-            if (options.pathsOnly) {
-                for (const match of selected) {
-                    console.log(match.file);
-                }
-                return;
-            }
-            printText(outputReports, selected, config, candidateScan.truncated, representative);
-            if (!selected.length) {
-                return;
-            }
-            if (changes.automatic) {
-                process.exitCode = await promptAndRunTests(selected.map((match) => match.file), cwd);
-            } else if (!config.quiet) {
-                const testCommand = await detectTestCommand(cwd);
-                if (testCommand) {
-                    console.log(`\nRun: ${testCommand} ${selected.map((match) => quoteShellArgument(match.file)).join(' ')}`);
-                }
-            }
-        });
+        .action((files: string[], options: MatchOptions) => runMatch(files, options, rootOptionsOf(program)));
 }
 
-async function resolveMatchConfig(rootOptions: RootOptions, options: MatchOptions) {
-    const candidatesFromStdin = options.candidatesFromStdin
-        ? parseStdinList(await readStdinText())
-        : undefined;
-    return resolveConfig(
-        {
-            config: rootOptions.config,
-            cacheDir: rootOptions.cacheDir,
-            logLevel: rootOptions.logLevel,
-            verbose: rootOptions.verbose,
-            quiet: rootOptions.quiet,
-        },
-        {
-            threshold: options.threshold,
-            minScore: options.minScore,
-            topK: options.topK,
-            selectionPolicy: options.selectionPolicy,
-            candidates: options.candidates?.length ? options.candidates : candidatesFromStdin,
-            includeFile: options.includeFile,
-            excludeFile: options.excludeFile,
-            ranker: options.ranker,
-            jevModel: options.jevModel,
-            decisionsModel: options.decisionsModel,
-            fallbackRanker: options.fallbackRanker,
-            cacheDir: options.cacheDir,
-            json: options.json,
-        },
+async function runMatch(files: string[], options: MatchOptions, rootOptions: RootOptions): Promise<void> {
+    const config = await resolveMatchConfig(rootOptions, options);
+    const cwd = process.cwd();
+    const changes = await resolveChangedFiles(files, options, cwd);
+    if (!changes.paths.length) {
+        printNoChanges(options, config);
+        return;
+    }
+
+    const candidateScan = await collectCandidateFiles(
+        config.match.candidatePaths,
+        config.match.includePatterns,
+        config.match.excludePatterns,
+        cwd,
+        changes.isAutomatic ? (file) => isRunnableCandidate(file, cwd) : undefined
     );
+    const candidates = await loadCandidates(candidateScan.files, cwd);
+    const jobs = await prepareChangeJobs(changes, candidates, cwd);
+    const ranking = await scoreWithProviderChain(jobs, changes, config);
+    const reports = jobs.map((job, index) =>
+        buildChangeReport(job, ranking, ranking.modelResults[index], config, candidateScan.truncated)
+    );
+    const cacheEntries = await countProviderCacheEntries(ranking, config);
+    const final = finalizeSelection(reports, candidates, config);
+
+    if (options.json) {
+        printJson(final, cacheEntries);
+        return;
+    }
+    if (options.pathsOnly) {
+        final.selected.forEach((match) => console.log(match.file));
+        return;
+    }
+    printText(final, config, candidateScan.truncated);
+    if (final.selected.length) {
+        await runOrSuggestTests(final.selected.map((match) => match.file), changes.isAutomatic, config.quiet, cwd);
+    }
+}
+
+async function resolveMatchConfig(rootOptions: RootOptions, options: MatchOptions): Promise<RuntimeConfig> {
+    const candidates = options.candidates?.length
+        ? options.candidates
+        : options.candidatesFromStdin ? parseStdinList(await readStdinText()) : undefined;
+    return resolveConfig(rootOptions, { ...options, candidates });
 }
 
 async function resolveChangedFiles(files: string[], options: MatchOptions, cwd: string): Promise<ChangedFiles> {
-    const automatic = !files.length && !options.diffFile;
-    const gitChanges = automatic ? await readGitChanges(cwd) : undefined;
-    const diffText = options.diffFile ? await fs.readFile(path.resolve(cwd, options.diffFile), 'utf8') : gitChanges?.diffText;
-    const diffRoot = gitChanges?.root ?? options.diffRoot;
-    const paths = files.length
-        ? files.map((file) => path.resolve(cwd, file))
-        : gitChanges ? await keepGitChangesInRoot(gitChanges.files, gitChanges.root, cwd)
-            : await listContainedDiffFiles(diffText ?? '', cwd, diffRoot);
-    if (!paths.length && !automatic) {
-        throw new Error('The --diff-file changes no source files');
+    const diffText = options.diffFile ? await fs.readFile(path.resolve(cwd, options.diffFile), 'utf8') : undefined;
+    if (files.length) {
+        return { isAutomatic: false, paths: files.map((file) => path.resolve(cwd, file)), diffText, diffRoot: options.diffRoot };
     }
-    return { automatic, paths, diffText, diffRoot };
+    if (diffText !== undefined) {
+        const paths = await listDiffFilesInsideRoot(diffText, cwd, options.diffRoot);
+        if (!paths.length) {
+            throw new Error('The --diff-file changes no source files');
+        }
+        return { isAutomatic: false, paths, diffText, diffRoot: options.diffRoot };
+    }
+    const git = await readGitChanges(cwd);
+    return {
+        isAutomatic: true,
+        paths: await skipGitChangesOutsideRoot(git.files, git.root, cwd),
+        diffText: git.diffText,
+        diffRoot: git.root,
+    };
 }
 
-// Discovered changed files are read and may be sent to Jev, so none may leave its root.
-async function listContainedDiffFiles(diffText: string, cwd: string, diffRoot: string | undefined): Promise<string[]> {
+async function listDiffFilesInsideRoot(diffText: string, cwd: string, diffRoot: string | undefined): Promise<string[]> {
     const root = resolveDiffRoot(cwd, diffRoot);
     const files = listDiffFiles(diffText, cwd, diffRoot).filter(isAllowedFile);
     const [outside] = await findPathsOutside(files, root);
@@ -199,8 +180,7 @@ async function listContainedDiffFiles(diffText: string, cwd: string, diffRoot: s
     return files;
 }
 
-// An untracked symlink to a file elsewhere is common enough to skip rather than fail the run.
-async function keepGitChangesInRoot(files: string[], root: string, cwd: string): Promise<string[]> {
+async function skipGitChangesOutsideRoot(files: string[], root: string, cwd: string): Promise<string[]> {
     const outside = new Set(await findPathsOutside(files, root));
     for (const file of outside) {
         console.warn(`Warning: skipping ${path.relative(cwd, file)}, which resolves outside the repository`);
@@ -208,10 +188,8 @@ async function keepGitChangesInRoot(files: string[], root: string, cwd: string):
     return files.filter((file) => !outside.has(file));
 }
 
-// Automatic mode runs its selection, so only test-like files may fill the candidate cap there.
 async function isRunnableCandidate(file: string, cwd: string): Promise<boolean> {
     const relativePath = path.relative(cwd, file);
-    // A test file name decides it without reading the file.
     if (isTestLikeSource(relativePath, '')) {
         return true;
     }
@@ -219,234 +197,271 @@ async function isRunnableCandidate(file: string, cwd: string): Promise<boolean> 
     return text !== undefined && isTestLikeSource(relativePath, text);
 }
 
-async function loadCandidates(candidateFiles: string[], cwd: string) {
-    const candidates = await mapWithConcurrency(
-        candidateFiles,
-        READ_CONCURRENCY,
-        async (candidatePath): Promise<RankedMatchCandidate | undefined> => {
-            const candidateText = await readCandidateText(candidatePath);
-            if (candidateText === undefined) {
-                return undefined;
-            }
-            const candidateProfile = buildDocumentProfile(candidatePath, candidateText, cwd);
-            return {
-                file: path.relative(cwd, candidatePath),
-                preview: candidateProfile.preview,
-                profile: candidateProfile,
-            };
-        }
-    );
-    return candidates.filter((candidate) => candidate !== undefined);
+async function readChangedFile(changedPath: string, changes: ChangedFiles, cwd: string): Promise<ChangedSource> {
+    const file = path.relative(cwd, changedPath);
+    const document = await readSourceDocument(changedPath, cwd, changes.diffText, changes.diffRoot);
+    if (document.missingWithoutDeletionDiff) {
+        throw new Error(`Changed file not found: ${file} (pass a --diff-file that deletes it)`);
+    }
+    return { file, ...document };
 }
 
-async function matchChangedFiles(
-    changes: ChangedFiles,
-    candidates: RankedMatchCandidate[],
-    config: RuntimeConfig,
-    candidateLimitReached: boolean,
-    cwd: string
-) {
+async function prepareChangeJobs(changes: ChangedFiles, candidates: RankedMatchCandidate[], cwd: string): Promise<ChangeJob[]> {
     const changedPaths = new Set(changes.paths);
-    // Automatic mode runs what it selects, so only test-like files are candidates there. Elsewhere a
-    // changed source module is still never a test to run; a changed test stays a candidate for the other files.
-    const eligible = candidates.filter((candidate) => changes.automatic
-        ? isTestLike(candidate.profile)
-        : isTestLike(candidate.profile) || !changedPaths.has(path.resolve(cwd, candidate.file))
+    const absolutePathOf = (candidate: RankedMatchCandidate) => path.resolve(cwd, candidate.file);
+    const eligible = candidates.filter((candidate) =>
+        isTestLike(candidate.profile) || (!changes.isAutomatic && !changedPaths.has(absolutePathOf(candidate)))
     );
-    const changed: Array<{ source: ChangedSource; fileCandidates: RankedMatchCandidate[] }> = [];
+
+    const jobs: ChangeJob[] = [];
     for (const changedPath of changes.paths) {
-        changed.push({
+        jobs.push({
             source: await readChangedFile(changedPath, changes, cwd),
-            // Automatic mode also selects an edited test for itself, so it runs.
-            fileCandidates: changes.automatic
+            candidates: changes.isAutomatic
                 ? eligible
-                : eligible.filter((candidate) => path.resolve(cwd, candidate.file) !== changedPath),
+                : eligible.filter((candidate) => absolutePathOf(candidate) !== changedPath),
         });
     }
+    return jobs;
+}
 
-    let ranker = config.ranker;
-    let rankerFallback: string | undefined;
-    let modelResults: ModelScoreResult[] = [];
-    const attempts: Array<{ ranker: Ranker; status: 'succeeded' | 'failed'; reason?: string }> = [];
-    const providers: Array<Exclude<Ranker, 'heuristics'>> = ranker === 'heuristics' ? []
-        : ranker === 'jev' && config.fallbackRanker === 'decisions' ? ['jev', 'decisions'] : [ranker];
-    for (const provider of providers) {
+function remoteProviderChain(config: RuntimeConfig): RemoteRanker[] {
+    if (config.ranker === 'heuristics') {
+        return [];
+    }
+    return config.ranker === 'jev' && config.fallbackRanker === 'decisions' ? ['jev', 'decisions'] : [config.ranker];
+}
+
+async function scoreEveryChange(scorer: ModelScorer, jobs: ChangeJob[], diffOnly: boolean): Promise<ModelScoreResult[]> {
+    const results: ModelScoreResult[] = [];
+    for (const { source, candidates } of jobs) {
+        results.push(await scorer.score({ profile: source.profile, text: source.text, diffOnly }, candidates));
+    }
+    return results;
+}
+
+async function scoreWithProviderChain(jobs: ChangeJob[], changes: ChangedFiles, config: RuntimeConfig): Promise<RankingOutcome> {
+    const diffOnly = !changes.isAutomatic && changes.diffText !== undefined;
+    const chain = remoteProviderChain(config);
+    const attempts: RankerAttempt[] = [];
+    const failureReasons: string[] = [];
+    const rankerFallback = () => (failureReasons.length ? failureReasons.join('; ') : undefined);
+
+    for (const [position, provider] of chain.entries()) {
         let scorer: ModelScorer | undefined;
         try {
-            scorer = createModelScorer(provider, {
-                apiKey: provider === 'jev' ? getJevKey() ?? '' : getOpenAIKey() ?? '',
-                model: provider === 'jev' ? config.jevModel : config.decisionsModel,
-                cacheDir: config.cacheDir,
-            });
-            const results: ModelScoreResult[] = [];
-            for (const { source, fileCandidates } of changed) {
-                const diffOnly = !changes.automatic && changes.diffText !== undefined;
-                results.push(await scorer.score({ profile: source.profile, text: source.text, diffOnly }, fileCandidates));
-            }
-            modelResults = results;
-            ranker = provider;
+            scorer = createScorerFromConfig(provider, config);
+            const modelResults = await scoreEveryChange(scorer, jobs, diffOnly);
             attempts.push({ ranker: provider, status: 'succeeded' });
-            break;
+            return { ranker: provider, rankerFallback: rankerFallback(), attempts, modelResults };
         } catch (error) {
-            if (!(error instanceof ModelScorerError)) throw error;
-            rankerFallback = rankerFallback ? `${rankerFallback}; ${error.message}` : error.message;
+            if (!(error instanceof ModelScorerError)) {
+                throw error;
+            }
+            failureReasons.push(error.message);
             attempts.push({ ranker: provider, status: 'failed', reason: error.message });
-            ranker = 'heuristics';
-            const next = provider === 'jev' && config.fallbackRanker === 'decisions' ? 'decisions' : 'heuristics';
-            console.warn(`Warning: ${provider} ranker unavailable (${error.message}); ranking with ${next}${next === 'heuristics' ? ' only' : ''}`);
+            const nextRanking = position + 1 < chain.length ? chain[position + 1] : 'heuristics only';
+            console.warn(`Warning: ${provider} ranker unavailable (${error.message}); ranking with ${nextRanking}`);
         } finally {
             await scorer?.flush();
         }
     }
-    if (ranker === 'heuristics') attempts.push({ ranker: 'heuristics', status: 'succeeded' });
-    return changed.map(({ source, fileCandidates }, index) => rankChangedFile(
-        source,
-        fileCandidates,
-        { ranker, rankerFallback, attempts, modelResult: modelResults[index] },
-        config,
-        candidateLimitReached
-    ));
+
+    attempts.push({ ranker: 'heuristics', status: 'succeeded' });
+    return { ranker: 'heuristics', rankerFallback: rankerFallback(), attempts, modelResults: [] };
 }
 
-async function readChangedFile(changedPath: string, changes: ChangedFiles, cwd: string) {
-    const file = path.relative(cwd, changedPath);
-    const fileText = await readFileIfExists(changedPath);
-    // A deleted file has no text; its profile comes from the path and the diff.
-    const text = fileText ?? '';
-    const profile = buildDocumentProfile(changedPath, text, cwd, changes.diffText, changes.diffRoot);
-    if (fileText === undefined && !profile.diffExcerpt) {
-        throw new Error(`Changed file not found: ${file} (pass a --diff-file that deletes it)`);
+async function countProviderCacheEntries(ranking: RankingOutcome, config: RuntimeConfig): Promise<number> {
+    const cacheRanker = ranking.attempts.filter((attempt) => attempt.ranker !== 'heuristics').pop()?.ranker ?? config.ranker;
+    return cacheRanker === 'decisions'
+        ? getDecisionsCacheEntryCount(config.cacheDir)
+        : getJevCacheEntryCount(config.cacheDir);
+}
+
+function reportedModel(modelResult: ModelScoreResult | undefined, ranker: Ranker, config: RuntimeConfig): string | undefined {
+    if (!modelResult) {
+        return undefined;
     }
-    return { file, text, profile };
+    if (modelResult.models.length === 1) {
+        return modelResult.models[0];
+    }
+    return ranker === 'jev' ? config.jevModel : config.decisionsModel;
 }
 
-function rankChangedFile(
-    source: ChangedSource,
-    candidates: RankedMatchCandidate[],
-    { ranker, rankerFallback, attempts, modelResult }: {
-        ranker: Ranker;
-        rankerFallback?: string;
-        attempts: Array<{ ranker: Ranker; status: 'succeeded' | 'failed'; reason?: string }>;
-        modelResult?: ModelScoreResult;
-    },
+function buildChangeReport(
+    job: ChangeJob,
+    { ranker, rankerFallback, attempts }: RankingOutcome,
+    modelResult: ModelScoreResult | undefined,
     config: RuntimeConfig,
     candidateLimitReached: boolean
 ) {
-    const ranked = modelResult
-        ? candidates.map((candidate) => ({ ...candidate, modelScore: modelResult.scores.get(candidate.file),
-            jevScore: ranker === 'jev' ? modelResult.scores.get(candidate.file) : undefined }))
-        : candidates;
-    const matches = rankMatches({ profile: source.profile }, ranked);
-    const filtered = filterMatches(matches, config.match.minScore);
-    const representative = config.match.selectionPolicy === 'representative';
-    const selection = selectMatches(filtered, representative ? undefined : config.match.topK,
-        config.match.selectionPolicy === 'representative' ? 'adaptive' : config.match.selectionPolicy, ranker);
+    const { selectionPolicy, topK, minScore, threshold } = config.match;
+    const isRepresentative = selectionPolicy === 'representative';
+    const isTargeted = selectionPolicy === 'targeted';
+    const matches = rankMatches({ profile: job.source.profile }, attachModelScores(job.candidates, modelResult, ranker));
+    const selection = selectMatches(
+        filterMatches(matches, minScore),
+        isRepresentative ? undefined : topK,
+        isRepresentative ? 'adaptive' : selectionPolicy,
+        ranker
+    );
+
     return {
-        file: source.file,
+        file: job.source.file,
         ranker,
         requestedRanker: config.ranker,
         effectiveRanker: ranker,
         rankerAttempts: attempts,
         rankerFallback,
-        model: modelResult ? (modelResult.models.length === 1 ? modelResult.models[0] : ranker === 'jev' ? config.jevModel : config.decisionsModel) : undefined,
+        model: reportedModel(modelResult, ranker, config),
         matched: selection.results.length,
         candidateCount: matches.length,
-        threshold: config.match.threshold,
-        minScore: config.match.minScore,
-        topK: config.match.topK ?? null,
+        threshold,
+        minScore,
+        topK: topK ?? null,
         selectionLimit: selection.effectiveLimit,
-        selectionPolicy: config.match.selectionPolicy,
-        selectionFallback: representative ? undefined : selection.reason,
-        eligibilityPolicy: representative ? 'adaptive' : undefined,
-        eligibilityReason: representative ? selection.reason?.replace('all candidates retained', 'all candidates eligible') : undefined,
+        selectionPolicy,
+        selectionFallback: isRepresentative ? undefined : selection.reason,
+        eligibilityPolicy: isRepresentative ? 'adaptive' : undefined,
+        eligibilityReason: isRepresentative ? selection.reason?.replace('all candidates retained', 'all candidates eligible') : undefined,
         eligibleCount: selection.eligibleCount,
         selectionTruncated: selection.truncated,
         selectionEvidence: selection.evidence,
-        targetedModelThreshold: config.match.selectionPolicy === 'targeted' ? TARGETED_MODEL_THRESHOLD : undefined,
-        targetedJevThreshold: config.match.selectionPolicy === 'targeted' && ranker !== 'decisions' ? TARGETED_MODEL_THRESHOLD : undefined,
-        source: source.profile.preview,
+        targetedModelThreshold: isTargeted ? TARGETED_MODEL_THRESHOLD : undefined,
+        targetedJevThreshold: isTargeted && ranker !== 'decisions' ? TARGETED_MODEL_THRESHOLD : undefined,
+        source: job.source.profile.preview,
         modelScorer: modelResult && {
-            provider: ranker, modelIdentity: modelResult.modelIdentity, requests: modelResult.requests, cacheHits: modelResult.cacheHits,
-            inputTokens: modelResult.inputTokens, outputTokens: modelResult.outputTokens, models: modelResult.models,
+            provider: ranker,
+            modelIdentity: modelResult.modelIdentity,
+            requests: modelResult.requests,
+            cacheHits: modelResult.cacheHits,
+            inputTokens: modelResult.inputTokens,
+            outputTokens: modelResult.outputTokens,
+            models: modelResult.models,
         },
         jev: ranker === 'jev' && modelResult ? {
-            requests: modelResult.requests, cacheHits: modelResult.cacheHits,
-            inputTokens: modelResult.inputTokens, models: modelResult.models,
+            requests: modelResult.requests,
+            cacheHits: modelResult.cacheHits,
+            inputTokens: modelResult.inputTokens,
+            models: modelResult.models,
         } : undefined,
         candidateLimitReached,
         results: selection.results,
     };
 }
 
-// A test selected for several changed files keeps its best score.
-function mergeSelections(reports: ChangeReport[]) {
+function mergeSelections(reports: ChangeReport[]): MatchCandidate[] {
     const bestByFile = new Map<string, MatchCandidate>();
     for (const match of reports.flatMap((report) => report.results)) {
         if ((bestByFile.get(match.file)?.score ?? -1) < match.score) {
             bestByFile.set(match.file, match);
         }
     }
-    const merged = [...bestByFile.values()].sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
-    // All reports share one config, so the per-file limit is also the overall limit.
-    const limit = reports[0]?.selectionLimit;
-    return typeof limit === 'number' ? merged.slice(0, limit) : merged;
+    const merged = [...bestByFile.values()].sort(byScoreThenFile);
+    const sharedLimit = reports[0]?.selectionLimit;
+    return typeof sharedLimit === 'number' ? merged.slice(0, sharedLimit) : merged;
 }
 
-function printJson(reports: ChangeReport[], selected: MatchCandidate[], cacheEntries: number, representative?: RepresentativeSelection) {
-    console.log(JSON.stringify(reports.length === 1
-        ? { ...reports[0], ...representative, cacheEntries }
-        : {
-            files: reports.map((report) => report.file),
-            ranker: reports[0]?.ranker,
-            requestedRanker: reports[0]?.requestedRanker,
-            effectiveRanker: reports[0]?.effectiveRanker,
-            rankerFallback: reports[0]?.rankerFallback,
-            rankerAttempts: reports[0]?.rankerAttempts,
-            matched: selected.length,
-            ...representative,
-            candidateLimitReached: representative ? reports.some((report) => report.candidateLimitReached) : undefined,
-            cacheEntries,
-            results: selected,
-            changes: reports,
-        }));
+function finalizeSelection(reports: ChangeReport[], candidates: RankedMatchCandidate[], config: RuntimeConfig): FinalSelection {
+    const merged = mergeSelections(reports);
+    if (config.match.selectionPolicy !== 'representative') {
+        return { selected: merged, reports };
+    }
+
+    const profiles = new Map(candidates.map((candidate) => [candidate.file, candidate.profile]));
+    const representative = selectRepresentatives(merged, profiles, config.match.topK);
+    const selectedFiles = new Set(representative.results.map((match) => match.file));
+    const narrowedReports = reports.map((report) => {
+        const results = report.results.filter((match) => selectedFiles.has(match.file));
+        return {
+            ...report,
+            results,
+            matched: results.length,
+            selectionLimit: representative.selectionLimit,
+            selectionTruncated: results.length < report.eligibleCount,
+        };
+    });
+    return { selected: representative.results, reports: narrowedReports, representative };
 }
 
-function printText(
-    reports: ChangeReport[],
-    selected: MatchCandidate[],
-    config: RuntimeConfig,
-    candidateLimitReached: boolean,
-    representative?: RepresentativeSelection
-) {
+async function runOrSuggestTests(files: string[], isAutomatic: boolean, quiet: boolean, cwd: string): Promise<void> {
+    if (isAutomatic) {
+        process.exitCode = await promptAndRunTests(files, cwd);
+        return;
+    }
+    if (quiet) {
+        return;
+    }
+    const testCommand = await detectTestCommand(cwd);
+    if (testCommand) {
+        console.log(`\nRun: ${testCommand} ${files.map(quoteShellArgument).join(' ')}`);
+    }
+}
+
+function printNoChanges(options: MatchOptions, config: RuntimeConfig): void {
+    if (options.json) {
+        console.log(JSON.stringify({ files: [], matched: 0, results: [], changes: [] }));
+    } else if (!options.pathsOnly && !config.quiet) {
+        console.log('No local source changes. Tests not run.');
+    }
+}
+
+function printJson({ selected, reports, representative }: FinalSelection, cacheEntries: number): void {
+    if (reports.length === 1) {
+        console.log(JSON.stringify({ ...reports[0], ...representative, cacheEntries }));
+        return;
+    }
+    const [first] = reports;
+    console.log(JSON.stringify({
+        files: reports.map((report) => report.file),
+        ranker: first?.ranker,
+        requestedRanker: first?.requestedRanker,
+        effectiveRanker: first?.effectiveRanker,
+        rankerFallback: first?.rankerFallback,
+        rankerAttempts: first?.rankerAttempts,
+        matched: selected.length,
+        ...representative,
+        candidateLimitReached: representative ? reports.some((report) => report.candidateLimitReached) : undefined,
+        cacheEntries,
+        results: selected,
+        changes: reports,
+    }));
+}
+
+function printSummary({ selected, reports, representative }: FinalSelection, minScore: number, candidateLimitReached: boolean): void {
+    if (representative) {
+        const objective = representative.selectionObjective.value.toFixed(4);
+        console.log(`Representative selection: ${representative.results.length}/${representative.eligibleCount} adaptive-eligible tests; greedy medoid Jaccard objective ${objective}`);
+        console.log(`Warning: ${representative.selectionWarning}`);
+    }
+    for (const report of reports) {
+        console.log(`Matched ${report.matched}/${report.candidateCount} candidates for ${report.file}`);
+        if (report.eligibilityReason) {
+            console.log(`  Adaptive eligibility: ${report.eligibilityReason}`);
+        }
+        if (report.selectionFallback) {
+            console.log(`  Why: ${report.selectionFallback}`);
+        }
+        if (report.selectionTruncated) {
+            console.log(`  Selection capped at ${report.matched} of ${report.eligibleCount} eligible tests`);
+        }
+    }
+    if (candidateLimitReached) {
+        console.log(`Candidate scan truncated at ${MAX_CANDIDATE_FILES} files`);
+    }
+    if (reports.length > 1) {
+        console.log(`Selected ${selected.length} tests for ${reports.length} changed files`);
+    }
+    if (!selected.length) {
+        console.log(`No matches reached minimum score ${minScore}`);
+    }
+}
+
+function printText(final: FinalSelection, config: RuntimeConfig, candidateLimitReached: boolean): void {
     if (!config.quiet) {
-        if (representative) {
-            console.log(`Representative selection: ${representative.results.length}/${representative.eligibleCount} adaptive-eligible tests; greedy medoid Jaccard objective ${representative.selectionObjective.value.toFixed(4)}`);
-            console.log(`Warning: ${representative.selectionWarning}`);
-        }
-        for (const report of reports) {
-            console.log(`Matched ${report.matched}/${report.candidateCount} candidates for ${report.file}`);
-            if (report.eligibilityReason) {
-                console.log(`  Adaptive eligibility: ${report.eligibilityReason}`);
-            }
-            if (report.selectionFallback) {
-                console.log(`  Why: ${report.selectionFallback}`);
-            }
-            if (report.selectionTruncated) {
-                console.log(`  Selection capped at ${report.matched} of ${report.eligibleCount} eligible tests`);
-            }
-        }
-        if (candidateLimitReached) {
-            console.log(`Candidate scan truncated at ${MAX_CANDIDATE_FILES} files`);
-        }
-        if (reports.length > 1) {
-            console.log(`Selected ${selected.length} tests for ${reports.length} changed files`);
-        }
+        printSummary(final, config.match.minScore, candidateLimitReached);
     }
-
-    if (!selected.length && !config.quiet) {
-        console.log(`No matches reached minimum score ${config.match.minScore}`);
-    }
-    for (const match of selected) {
+    for (const match of final.selected) {
         console.log(`${match.score.toFixed(4)} ${match.file}`);
         if (config.verbose && match.preview) {
             console.log(`  ${match.preview}`);

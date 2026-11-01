@@ -4,8 +4,6 @@ import { normalizePathSeparators } from '../utils/paths.ts';
 import { canonicalizeToken, splitIntoParts, tokenizeText, uniqueTokens } from './text-utils.ts';
 import { collectChangedLines, type ChangedLines } from './unified-diff.ts';
 
-export { listDiffFiles, listModeOnlyDiffFiles, resolveDiffRoot } from './unified-diff.ts';
-
 export type DocumentKind = 'source' | 'test' | 'fixture' | 'unknown';
 
 export interface DocumentProfile {
@@ -35,28 +33,8 @@ export interface DocumentProfile {
 }
 
 const GENERIC_PATH_SEGMENTS = new Set([
-    'src',
-    'test',
-    'tests',
-    'lib',
-    'dist',
-    'build',
-    'package',
-    'packages',
-    'packag',
-    'fixture',
-    'fixtures',
-    'playwright',
-    'core',
-    'spec',
-    'ts',
-    'js',
-    'mjs',
-    'cjs',
-    'mts',
-    'cts',
-    'util',
-    'utils',
+    'src', 'test', 'tests', 'lib', 'dist', 'build', 'package', 'packages', 'packag', 'fixture', 'fixtures',
+    'playwright', 'core', 'spec', 'ts', 'js', 'mjs', 'cjs', 'mts', 'cts', 'util', 'utils',
 ]);
 
 const RARE_ANCHOR_PATTERNS = [
@@ -76,18 +54,13 @@ const RARE_ANCHOR_PATTERNS = [
     /\bcodegen\b/gi,
 ];
 
-const GENERIC_ANCHOR_TOKENS = new Set([
-    'id',
-    'name',
-    'selector',
-    'attribute',
-    'config',
-    'browser',
-    'command',
-    'option',
-]);
-
+const GENERIC_ANCHOR_TOKENS = new Set(['id', 'name', 'selector', 'attribute', 'config', 'browser', 'command', 'option']);
 const GENERIC_CHANGE_TOKENS = new Set([...GENERIC_ANCHOR_TOKENS, 'is']);
+const INTERNAL_ANCHOR_FRAGMENT = /(selector|attribute)/i;
+const SHORT_PHRASE_PARTS_KEPT = new Set(['cli', 'mcp', 'sse', 'cdp']);
+const MIN_STANDALONE_PHRASE_PART_LENGTH = 6;
+const MAX_PHRASE_WINDOW = 4;
+const MAX_PATH_FAMILY_DEPTH = 3;
 
 const MAX_SEMANTIC_TOKENS = 72;
 const MAX_CHANGE_SEMANTIC_TOKENS = 24;
@@ -101,72 +74,95 @@ const MAX_LATE_CALL_TOKENS = 128;
 const MAX_TITLE_LENGTH = 160;
 const MAX_PREVIEW_LENGTH = 160;
 
-function collectIdentifierTokens(value: string, filterGenericAnchors = false): string[] {
-    const tokens = uniqueTokens([
-        ...tokenizeText(value),
-        ...buildPhraseTokens(splitPhraseParts(value)),
-    ]);
+const NOT_AFTER_IDENTIFIER_OR_DOT = '(?<![\\w$.])';
+const TEST_FUNCTION = '(?:Deno\\.test|test|it|describe)';
+const TEST_MODIFIERS = '(?:\\.(?:describe|only|skip|ignore|todo|fixme|fail|failing|slow|serial|parallel|concurrent|sequential))*';
+const TAGGED_TEMPLATE_TABLE = '`[^`]{0,4000}`';
+const BOUNDED_CALL_ARGUMENTS = '\\((?:[^()]|\\([^()]{0,400}\\)){0,4000}\\)';
+const PARAMETRIZED_CALL = `(?:\\.(?:each|for|skipIf|runIf)(?:${TAGGED_TEMPLATE_TABLE}|${BOUNDED_CALL_ARGUMENTS}))?`;
+const QUOTED_TITLE_ARGUMENT = '\\(\\s*([\'"`])((?:\\\\.|(?!\\1|\\\\).)+)\\1';
+const TEST_TITLE_PATTERN = new RegExp(
+    NOT_AFTER_IDENTIFIER_OR_DOT + TEST_FUNCTION + TEST_MODIFIERS + PARAMETRIZED_CALL + QUOTED_TITLE_ARGUMENT,
+    'g'
+);
 
-    if (!filterGenericAnchors) {
-        return tokens;
-    }
+const TEST_FILE_NAME = /(?:\.(?:test|spec)|_test)\.[cm]?[jt]sx?$/i;
+const FIXTURE_PATH = /(^|\/)(fixture|fixtures|__fixtures__)\//i;
+const FIXTURE_FILE_NAME = /\.(fixture)\.[cm]?[jt]sx?$/i;
+const TEST_DIRECTORY_PATH = /(^|\/)(test|tests|__tests__)\//i;
 
-    return tokens.filter((token) => !GENERIC_ANCHOR_TOKENS.has(token));
+const KEYWORDS_FOLLOWED_BY_EXPRESSION = new Set([
+    'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await',
+]);
+const KEYWORDS_FOLLOWED_BY_STATEMENT = new Set(['if', 'while', 'for', 'with']);
+const IDENTIFIER_CHARACTER = /[\w$]/;
+
+function splitPhraseParts(value: string): string[] {
+    return value
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .split(/[^A-Za-z0-9]+/)
+        .filter(Boolean);
 }
 
-function collectMatches(value: string, pattern: RegExp, splitter?: (input: string) => string[]): string[] {
-    const matches: string[] = [];
-    for (const match of value.matchAll(pattern)) {
-        const captured = match[1] || '';
-        if (!captured) {
-            continue;
+function normalizePhrasePart(part: string): string | undefined {
+    const normalized = part.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const isMeaningful = normalized.length >= 2 && !/^\d+$/.test(normalized);
+    return isMeaningful ? normalized : undefined;
+}
+
+function phraseTokensOf(value: string): string[] {
+    const parts = splitPhraseParts(value)
+        .map(normalizePhrasePart)
+        .filter((part): part is string => part !== undefined);
+
+    const standaloneParts = parts.filter((part) =>
+        part.length >= MIN_STANDALONE_PHRASE_PART_LENGTH || SHORT_PHRASE_PARTS_KEPT.has(part)
+    );
+    const joinedWindows: string[] = [];
+    for (let size = 2; size <= Math.min(MAX_PHRASE_WINDOW, parts.length); size += 1) {
+        for (let start = 0; start + size <= parts.length; start += 1) {
+            joinedWindows.push(parts.slice(start, start + size).join(''));
         }
-
-        const segments = splitter ? splitter(captured) : tokenizeText(captured);
-        matches.push(...segments);
     }
-
-    return uniqueTokens(matches);
+    return uniqueTokens([...standaloneParts, ...joinedWindows]);
 }
 
-/** Original names from a `{ a, b as c }` list. */
-function collectListedIdentifiers(list: string): string[] {
+function identifierTokens(value: string): string[] {
+    return uniqueTokens([...tokenizeText(value), ...phraseTokensOf(value)]);
+}
+
+function collectCaptures(text: string, pattern: RegExp, toTokens: (captured: string) => string[] = tokenizeText): string[] {
+    const tokens: string[] = [];
+    for (const match of text.matchAll(pattern)) {
+        if (match[1]) {
+            tokens.push(...toTokens(match[1]));
+        }
+    }
+    return uniqueTokens(tokens);
+}
+
+function originalNamesInBraceList(list: string): string[] {
     return list
         .split(',')
         .map((entry) => entry.split(/\s+as\s+/i)[0].trim())
         .filter(Boolean)
-        .flatMap((entry) => collectIdentifierTokens(entry));
+        .flatMap(identifierTokens);
 }
 
 function collectExportedSymbols(text: string): string[] {
-    const direct = collectMatches(
-        text,
-        /export\s+(?:declare\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)/g,
-        collectIdentifierTokens
-    );
-    const classes = collectMatches(
-        text,
-        /export\s+(?:class|interface|type|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
-        collectIdentifierTokens
-    );
-    const variables = collectMatches(
-        text,
-        /export\s+(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
-        collectIdentifierTokens
-    );
-    const braceExports = collectMatches(text, /export\s*{\s*([^}]+)\s*}/g, collectListedIdentifiers);
-
-    return uniqueTokens([...direct, ...classes, ...variables, ...braceExports]);
+    return uniqueTokens([
+        ...collectCaptures(text, /export\s+(?:declare\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)/g, identifierTokens),
+        ...collectCaptures(text, /export\s+(?:class|interface|type|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/g, identifierTokens),
+        ...collectCaptures(text, /export\s+(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)/g, identifierTokens),
+        ...collectCaptures(text, /export\s*{\s*([^}]+)\s*}/g, originalNamesInBraceList),
+    ]);
 }
 
 function collectImportedSymbols(text: string): string[] {
-    const direct = collectMatches(text, /import\s+{([^}]+)}\s+from\s+['"][^'"]+['"]/g, collectListedIdentifiers);
-    const defaultImports = collectMatches(
-        text,
-        /import\s+([A-Za-z_][A-Za-z0-9_]*)\s+from\s+['"][^'"]+['"]/g,
-        collectIdentifierTokens
-    );
-    return uniqueTokens([...direct, ...defaultImports]);
+    return uniqueTokens([
+        ...collectCaptures(text, /import\s+{([^}]+)}\s+from\s+['"][^'"]+['"]/g, originalNamesInBraceList),
+        ...collectCaptures(text, /import\s+([A-Za-z_][A-Za-z0-9_]*)\s+from\s+['"][^'"]+['"]/g, identifierTokens),
+    ]);
 }
 
 function collectImportedPaths(text: string): string[] {
@@ -178,108 +174,88 @@ function collectImportedPaths(text: string): string[] {
 }
 
 function collectTestNames(text: string): string[] {
-    const names: string[] = [];
-    const regex = /(?:describe|it|test)\s*\(\s*['"`]([^'"`]{1,160})['"`]/g;
-    for (const match of text.matchAll(regex)) {
-        const name = match[1]?.trim();
-        if (name) {
-            names.push(...collectIdentifierTokens(name));
-        }
-    }
-    return uniqueTokens(names);
+    return collectCaptures(text, /(?:describe|it|test)\s*\(\s*['"`]([^'"`]{1,160})['"`]/g, (name) => {
+        const trimmed = name.trim();
+        return trimmed ? identifierTokens(trimmed) : [];
+    });
 }
 
-// `.each(table)`, `.each`table``, `.for(table)`, and `.skipIf(condition)` call once before the title;
-// the bounded table keeps an unclosed call cheap to reject.
-// The lookbehind skips method calls such as `/\d+/.test('42')`; `Deno.test` is the dotted call that declares tests.
-const TEST_TITLE_PATTERN = /(?<![\w$.])(?:Deno\.test|test|it|describe)(?:\.(?:describe|only|skip|ignore|todo|fixme|fail|failing|slow|serial|parallel|concurrent|sequential))*(?:\.(?:each|for|skipIf|runIf)(?:`[^`]{0,4000}`|\((?:[^()]|\([^()]{0,400}\)){0,4000}\)))?\(\s*(['"`])((?:\\.|(?!\1|\\).)+)\1/g;
-
-// After these keywords an expression follows, so `/` starts a regex literal: `return /x/`.
-const KEYWORDS_BEFORE_EXPRESSION = new Set([
-    'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await',
-]);
-// A statement head such as `if (x)` is followed by a statement, which may start with a regex.
-const CONTROL_KEYWORDS = new Set(['if', 'while', 'for', 'with']);
-const IDENTIFIER_CHARACTER = /[\w$]/;
-
-/**
- * The text at the same offsets with comments blanked and string, template, and regex contents
- * masked, so a match can be checked for being code. A heuristic lexer: a misread literal only
- * masks up to the end of its line.
- */
 function maskNonCode(text: string): string {
     let masked = '';
-    let previousCode = '';
+    let previousCodeCharacter = '';
     let lastWord = '';
-    let closedControlParen = false;
-    const parens: boolean[] = [];
-    // `/` is division after an operand (a name, number, literal, `)` or `]`) and a regex elsewhere.
-    const startsRegex = () => {
-        if (previousCode === ')') {
-            return closedControlParen;
+    let lastClosedParenEndedStatementHead = false;
+    const openParensAreStatementHeads: boolean[] = [];
+
+    const slashStartsRegex = () => {
+        if (previousCodeCharacter === ')') {
+            return lastClosedParenEndedStatementHead;
         }
-        if (IDENTIFIER_CHARACTER.test(previousCode)) {
-            return KEYWORDS_BEFORE_EXPRESSION.has(lastWord);
+        if (IDENTIFIER_CHARACTER.test(previousCodeCharacter)) {
+            return KEYWORDS_FOLLOWED_BY_EXPRESSION.has(lastWord);
         }
-        return previousCode !== ']';
+        return previousCodeCharacter !== ']';
     };
+
     let index = 0;
     while (index < text.length) {
         const character = text[index];
         const next = text[index + 1];
-        if (character === '/' && (next === '/' || next === '*')) {
+
+        const startsComment = character === '/' && (next === '/' || next === '*');
+        if (startsComment) {
             const close = next === '/' ? text.indexOf('\n', index) : text.indexOf('*/', index + 2);
             const end = close === -1 ? text.length : next === '/' ? close : close + 2;
             masked += text.slice(index, end).replace(/[^\n]/g, ' ');
             index = end;
             continue;
         }
-        if (character === '"' || character === "'" || character === '`' || (character === '/' && startsRegex())) {
+
+        const startsLiteral = character === '"' || character === "'" || character === '`' || (character === '/' && slashStartsRegex());
+        if (startsLiteral) {
+            const spansLines = character === '`';
             let end = index + 1;
-            // Only template literals span lines.
-            while (end < text.length && text[end] !== character && (character === '`' || text[end] !== '\n')) {
+            while (end < text.length && text[end] !== character && (spansLines || text[end] !== '\n')) {
                 end += text[end] === '\\' ? 2 : 1;
             }
             end = Math.min(end, text.length);
             const closed = text[end] === character;
             masked += character + text.slice(index + 1, end).replace(/[^\n]/g, 'x') + (closed ? character : '');
             index = closed ? end + 1 : end;
-            // A literal is an operand, like a name that is not a keyword.
-            previousCode = 'x';
+            previousCodeCharacter = 'x';
             lastWord = '';
             continue;
         }
+
         masked += character;
         if (IDENTIFIER_CHARACTER.test(character)) {
-            lastWord = IDENTIFIER_CHARACTER.test(text[index - 1] ?? '') ? lastWord + character : character;
+            const continuesWord = IDENTIFIER_CHARACTER.test(text[index - 1] ?? '');
+            lastWord = continuesWord ? lastWord + character : character;
         } else if (character === '(') {
-            parens.push(IDENTIFIER_CHARACTER.test(previousCode) && CONTROL_KEYWORDS.has(lastWord));
+            const opensStatementHead = IDENTIFIER_CHARACTER.test(previousCodeCharacter) && KEYWORDS_FOLLOWED_BY_STATEMENT.has(lastWord);
+            openParensAreStatementHeads.push(opensStatementHead);
         } else if (character === ')') {
-            closedControlParen = parens.pop() ?? false;
+            lastClosedParenEndedStatementHead = openParensAreStatementHeads.pop() ?? false;
         }
         if (!/\s/.test(character)) {
-            previousCode = character;
+            previousCodeCharacter = character;
         }
         index += 1;
     }
     return masked;
 }
 
-/** Raw test titles, kept verbatim for consumers that read them as prose. */
 function collectTestTitles(text: string): string[] {
-    const titles: string[] = [];
     const code = maskNonCode(text);
+    const titles: string[] = [];
     for (const match of text.matchAll(TEST_TITLE_PATTERN)) {
-        // A call inside a comment or string, such as `// test('example')`, declares no test.
-        if (code[match.index] !== text[match.index]) {
-            continue;
-        }
+        const callIsCode = code[match.index] === text[match.index];
         const title = match[2].trim().slice(0, MAX_TITLE_LENGTH);
-        if (title) {
+        if (callIsCode && title) {
             titles.push(title);
         }
     }
-    return [...new Set(titles)];
+    return uniqueTokens(titles);
 }
 
 function collectStemTokens(basename: string): string[] {
@@ -289,13 +265,13 @@ function collectStemTokens(basename: string): string[] {
 
     return uniqueTokens(
         splitIntoParts(stem)
-            .map((token) => canonicalizeToken(token, { skipStopWords: true }))
+            .map((token) => canonicalizeToken(token, { keepStopWords: true }))
             .filter((token): token is string => Boolean(token))
     );
 }
 
 function collectCommandTokens(text: string): string[] {
-    return collectMatches(text, /\.\s*command\s*\(\s*['"`]([^'"`]{1,160})['"`]/g);
+    return collectCaptures(text, /\.\s*command\s*\(\s*['"`]([^'"`]{1,160})['"`]/g);
 }
 
 function collectOptionTokens(text: string): string[] {
@@ -306,114 +282,56 @@ function collectOptionTokens(text: string): string[] {
     );
 }
 
-function splitPhraseParts(value: string): string[] {
-    return value
-        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-        .split(/[^A-Za-z0-9]+/)
-        .filter(Boolean);
+function withoutTemplateExpressions(value: string): string {
+    return value.replace(/\$\{[^}]+\}/g, ' ').trim();
 }
 
-function normalizePhrasePart(part: string): string | null {
-    const normalized = part.toLowerCase().replace(/[^a-z0-9]+/g, '');
-    if (!normalized || normalized.length < 2 || /^\d+$/.test(normalized)) {
-        return null;
-    }
-
-    return normalized;
+function isPhraseWorthyIdentifier(identifier: string): boolean {
+    return /[A-Z]/.test(identifier) || identifier.length >= 12;
 }
 
-function buildPhraseTokens(parts: string[]): string[] {
-    const normalizedParts = parts
-        .map((part) => normalizePhrasePart(part))
-        .filter((part): part is string => Boolean(part));
-    if (!normalizedParts.length) {
-        return [];
+function isPhraseWorthyString(value: string): boolean {
+    if (!value || /^internal:/i.test(value)) {
+        return false;
     }
-
-    const tokens: string[] = [];
-    for (const part of normalizedParts) {
-        if (part.length >= 6 || part === 'cli' || part === 'mcp' || part === 'sse' || part === 'cdp') {
-            tokens.push(part);
-        }
-    }
-
-    const maxWindow = Math.min(4, normalizedParts.length);
-    for (let size = 2; size <= maxWindow; size += 1) {
-        for (let start = 0; start + size <= normalizedParts.length; start += 1) {
-            tokens.push(normalizedParts.slice(start, start + size).join(''));
-        }
-    }
-
-    return uniqueTokens(tokens);
+    return /[A-Z:-]/.test(value) || /(testid|selector|codegen|locator|mcp|config|timeout|browser)/i.test(value);
 }
 
-function collectPhraseTokens(
-    text: string,
-    relativePath: string,
-    extraValues: string[] = [],
-    allowInternalStrings = false
-): string[] {
-    const rawValues: string[] = [path.basename(relativePath), ...extraValues];
-
-    for (const match of text.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)) {
-        const value = match[0] || '';
-        if (!value || (!/[A-Z]/.test(value) && value.length < 12)) {
-            continue;
-        }
-        rawValues.push(value);
-    }
-
-    for (const match of text.matchAll(/['"`]([^'"`\n]{2,240})['"`]/g)) {
-        const value = (match[1] || '').replace(/\$\{[^}]+\}/g, ' ').trim();
-        if (!allowInternalStrings && /^internal:/i.test(value)) {
-            continue;
-        }
-        if (!value || (!/[A-Z:-]/.test(value) && !/(testid|selector|codegen|locator|mcp|config|timeout|browser)/i.test(value))) {
-            continue;
-        }
-        rawValues.push(value);
-    }
-
-    return uniqueTokens(rawValues.flatMap((value) => buildPhraseTokens(splitPhraseParts(value)))).slice(0, MAX_PHRASE_TOKENS);
+function collectPhraseTokens(text: string, relativePath: string): string[] {
+    const identifiers = Array.from(text.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g), (match) => match[0])
+        .filter(isPhraseWorthyIdentifier);
+    const strings = Array.from(text.matchAll(/['"`]([^'"`\n]{2,240})['"`]/g), (match) => withoutTemplateExpressions(match[1]))
+        .filter(isPhraseWorthyString);
+    const values = [path.basename(relativePath), ...identifiers, ...strings];
+    return uniqueTokens(values.flatMap(phraseTokensOf)).slice(0, MAX_PHRASE_TOKENS);
 }
 
-function collectRareAnchorTokens(
-    text: string,
-    relativePath: string,
-    extraValues: string[] = [],
-    includeInternalFragments = false
-): string[] {
-    const rawValues: string[] = [relativePath, path.basename(relativePath), ...extraValues, text];
-    const anchors: string[] = [];
+function anchorTokensIn(values: string[]): string[] {
+    const anchors = values.flatMap((value) =>
+        RARE_ANCHOR_PATTERNS.flatMap((pattern) => Array.from(value.matchAll(pattern), (match) => match[0]))
+    );
+    return uniqueTokens(anchors.flatMap(identifierTokens)).filter((token) => !GENERIC_ANCHOR_TOKENS.has(token));
+}
 
-    for (const value of rawValues) {
-        for (const pattern of RARE_ANCHOR_PATTERNS) {
-            for (const match of value.matchAll(pattern)) {
-                anchors.push(match[0]);
-            }
-        }
-    }
-
-    return uniqueTokens(
-        anchors.flatMap((value) => collectIdentifierTokens(value, true))
-    )
-        .filter((token) => includeInternalFragments || !/(selector|attribute)/i.test(token))
+function collectRareAnchorTokens(text: string, relativePath: string): string[] {
+    return anchorTokensIn([relativePath, path.basename(relativePath), text])
+        .filter((token) => !INTERNAL_ANCHOR_FRAGMENT.test(token))
         .slice(0, MAX_RARE_ANCHOR_TOKENS);
 }
 
-function collectPathSegments(value: string): string[] {
+function pathSegments(value: string): string[] {
     const segments = normalizePathSeparators(value)
         .split('/')
         .flatMap((segment) => segment.split(/[._-]+/))
-        .map((segment) => canonicalizeToken(segment, { skipStopWords: true }))
+        .map((segment) => canonicalizeToken(segment, { keepStopWords: true }))
         .filter((segment): segment is string => Boolean(segment));
 
     return uniqueTokens(segments.filter((segment) => !GENERIC_PATH_SEGMENTS.has(segment)));
 }
 
-function buildPathFamilyTokensFromSegments(segments: string[]): string[] {
+function pathFamilies(segments: string[]): string[] {
     const families: string[] = [];
-    for (let size = 1; size <= Math.min(3, segments.length); size += 1) {
+    for (let size = 1; size <= Math.min(MAX_PATH_FAMILY_DEPTH, segments.length); size += 1) {
         for (let start = 0; start + size <= segments.length; start += 1) {
             families.push(segments.slice(start, start + size).join('/'));
         }
@@ -422,16 +340,21 @@ function buildPathFamilyTokensFromSegments(segments: string[]): string[] {
 }
 
 function collectPathFamilyTokens(relativePath: string, text: string): string[] {
-    const values = [relativePath, ...collectImportedPaths(text)];
-    return uniqueTokens(
-        values.flatMap((value) => buildPathFamilyTokensFromSegments(collectPathSegments(value)))
-    ).slice(0, MAX_PATH_FAMILY_TOKENS);
+    const paths = [relativePath, ...collectImportedPaths(text)];
+    return uniqueTokens(paths.flatMap((value) => pathFamilies(pathSegments(value)))).slice(0, MAX_PATH_FAMILY_TOKENS);
 }
+
+const CHANGE_SIGNAL_PATTERNS = {
+    identifier: /\b[A-Za-z_][A-Za-z0-9_]*\b/g,
+    quotedString: /['"`]([^'"`\n]{1,240})['"`]/g,
+    cliOption: /--[a-z0-9][a-z0-9-]*/gi,
+    slashPath: /\b(?:\.{0,2}\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\b/g,
+    namespacedName: /\b[a-z-]+:[a-z-]+\b/gi,
+};
 
 function collectChangeSignalValues(changedLines: string[]): string[] {
     const values: string[] = [];
-
-    const pushMatches = (line: string, pattern: RegExp) => {
+    const addMatches = (line: string, pattern: RegExp) => {
         for (const match of line.matchAll(pattern)) {
             const value = match[0].trim();
             if (value) {
@@ -441,42 +364,39 @@ function collectChangeSignalValues(changedLines: string[]): string[] {
     };
 
     for (const line of changedLines) {
-        pushMatches(line, /\b[A-Za-z_][A-Za-z0-9_]*\b/g);
-
-        for (const match of line.matchAll(/['"`]([^'"`\n]{1,240})['"`]/g)) {
-            const value = (match[1] || '').replace(/\$\{[^}]+\}/g, ' ').trim();
+        addMatches(line, CHANGE_SIGNAL_PATTERNS.identifier);
+        for (const match of line.matchAll(CHANGE_SIGNAL_PATTERNS.quotedString)) {
+            const value = withoutTemplateExpressions(match[1]);
             if (value) {
                 values.push(value);
             }
         }
-
-        pushMatches(line, /--[a-z0-9][a-z0-9-]*/gi);
-        pushMatches(line, /\b(?:\.{0,2}\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\b/g);
-        pushMatches(line, /\b[a-z-]+:[a-z-]+\b/gi);
+        addMatches(line, CHANGE_SIGNAL_PATTERNS.cliOption);
+        addMatches(line, CHANGE_SIGNAL_PATTERNS.slashPath);
+        addMatches(line, CHANGE_SIGNAL_PATTERNS.namespacedName);
     }
-
     return values;
 }
 
-function collectChangedTokens(changedLines: ChangedLines, collect: (lines: string[]) => string[]): string[] {
-    const added = collect(changedLines.added);
-    const removed = collect(changedLines.removed);
-    const count = (tokens: string[]): Map<string, number> => {
-        const counts = new Map<string, number>();
-        for (const token of tokens) {
-            counts.set(token, (counts.get(token) || 0) + 1);
-        }
-        return counts;
-    };
-    const addedCounts = count(added);
-    const removedCounts = count(removed);
+function countOccurrences(tokens: string[]): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const token of tokens) {
+        counts.set(token, (counts.get(token) ?? 0) + 1);
+    }
+    return counts;
+}
+
+function tokensWhoseCountChanged(changedLines: ChangedLines, tokensOf: (lines: string[]) => string[]): string[] {
+    const added = tokensOf(changedLines.added);
+    const removed = tokensOf(changedLines.removed);
+    const addedCounts = countOccurrences(added);
+    const removedCounts = countOccurrences(removed);
 
     const changedTokens = uniqueTokens([...added, ...removed].filter(
         (token) => addedCounts.get(token) !== removedCounts.get(token)
     ));
-    return changedTokens.length
-        ? changedTokens
-        : uniqueTokens(added.filter((token) => removedCounts.has(token)));
+    const onlyMovedTokens = uniqueTokens(added.filter((token) => removedCounts.has(token)));
+    return changedTokens.length ? changedTokens : onlyMovedTokens;
 }
 
 function isUsefulChangeToken(token: string): boolean {
@@ -485,122 +405,102 @@ function isUsefulChangeToken(token: string): boolean {
 }
 
 function collectChangeTokens(changedLines: ChangedLines): string[] {
-    return collectChangedTokens(changedLines, (lines) =>
+    return tokensWhoseCountChanged(changedLines, (lines) =>
         collectChangeSignalValues(lines)
-            .flatMap((value) => tokenizeText(value))
+            .flatMap(tokenizeText)
             .filter(isUsefulChangeToken)
     ).slice(0, MAX_CHANGE_TOKENS);
 }
 
 function collectChangePhraseTokens(changedLines: ChangedLines, relativePath: string): string[] {
-    return collectChangedTokens(changedLines, (lines) => {
+    return tokensWhoseCountChanged(changedLines, (lines) => {
         const values = collectChangeSignalValues(lines);
-
         return [
-            ...values.flatMap((value) => buildPhraseTokens(splitPhraseParts(value))),
-            ...collectRareAnchorTokens(values.join('\n'), relativePath, values, true),
+            ...values.flatMap(phraseTokensOf),
+            ...anchorTokensIn([relativePath, path.basename(relativePath), ...values]).slice(0, MAX_RARE_ANCHOR_TOKENS),
         ].filter(isUsefulChangeToken);
     }).slice(0, MAX_CHANGE_PHRASE_TOKENS);
 }
 
-// Keeps an unterminated string instead of failing the match, which made the scan retry at every quote.
-function stripClosedString(match: string, closingQuote?: string): string {
-    return closingQuote ? ' ' : match;
+function blankClosedLiteral(literal: string, closingQuote?: string): string {
+    return closingQuote ? ' ' : literal;
 }
 
 function stripCommentsAndStrings(text: string): string {
     return text
         .replace(/\/\*[\s\S]*?\*\//g, ' ')
         .replace(/\/\/.*$/gm, ' ')
-        .replace(/'(?:[^'\\]|\\.)*(')?/g, stripClosedString)
-        .replace(/"(?:[^"\\]|\\.)*(")?/g, stripClosedString)
-        .replace(/`(?:[^`\\]|\\.)*(`)?/g, stripClosedString);
+        .replace(/'(?:[^'\\]|\\.)*(')?/g, blankClosedLiteral)
+        .replace(/"(?:[^"\\]|\\.)*(")?/g, blankClosedLiteral)
+        .replace(/`(?:[^`\\]|\\.)*(`)?/g, blankClosedLiteral);
 }
 
-function collectLateCallTokens(text: string, contentTokens: string[]): string[] {
-    const tokens: string[] = [];
-    for (const match of text.matchAll(/\b((?:[A-Za-z_$][A-Za-z0-9_$]*\s*(?:\?\.|\.)\s*)*[A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\?\.)?\(/g)) {
-        tokens.push(...tokenizeText(match[1]));
-    }
-    const retainedContentTokens = new Set(contentTokens);
-    // ponytail: bounded overflow; use source-aware call matching if 128 unseen call tokens is too small.
+function collectLateCallTokens(code: string, keptContentTokens: string[]): string[] {
+    const calledNames = /\b((?:[A-Za-z_$][A-Za-z0-9_$]*\s*(?:\?\.|\.)\s*)*[A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\?\.)?\(/g;
+    const tokens = Array.from(code.matchAll(calledNames)).flatMap((match) => tokenizeText(match[1]));
+    const alreadyKept = new Set(keptContentTokens);
     return uniqueTokens(tokens)
-        .filter((token) => !retainedContentTokens.has(token))
+        .filter((token) => !alreadyKept.has(token))
         .slice(0, MAX_LATE_CALL_TOKENS);
 }
 
-// `.test`/`.spec` files and Deno's `_test` files.
-const TEST_FILE_NAME = /(?:\.(?:test|spec)|_test)\.[cm]?[jt]sx?$/i;
-
 function determineKind(relativePath: string): DocumentKind {
     const normalized = normalizePathSeparators(relativePath);
-    if (TEST_FILE_NAME.test(normalized)) {
+    if (hasTestFileName(normalized)) {
         return 'test';
     }
-    // Fixtures often live under test directories, so they are recognized first.
-    if (/(^|\/)(fixture|fixtures|__fixtures__)\//i.test(normalized) || /\.(fixture)\.[cm]?[jt]sx?$/i.test(normalized)) {
+    if (FIXTURE_PATH.test(normalized) || FIXTURE_FILE_NAME.test(normalized)) {
         return 'fixture';
     }
-    if (/(^|\/)(test|tests|__tests__)\//i.test(normalized)) {
+    if (TEST_DIRECTORY_PATH.test(normalized)) {
         return 'test';
     }
-
     return 'source';
 }
 
+type TokenListField = { [K in keyof DocumentProfile]: DocumentProfile[K] extends string[] ? K : never }[keyof DocumentProfile];
+
+const SUMMARY_SECTIONS: Array<{ label: string; field: TokenListField; limit: number; separator?: string }> = [
+    { label: 'changes', field: 'changePhraseTokens', limit: 8 },
+    { label: 'exports', field: 'exports', limit: 8 },
+    { label: 'imports', field: 'imports', limit: 8 },
+    { label: 'tests', field: 'testNames', limit: 4, separator: ' | ' },
+    { label: 'commands', field: 'commandTokens', limit: 6 },
+    { label: 'options', field: 'optionTokens', limit: 8 },
+    { label: 'paths', field: 'pathFamilyTokens', limit: 6 },
+    { label: 'anchors', field: 'rareAnchorTokens', limit: 8 },
+];
+
+const SUBJECT_BY_KIND: Record<DocumentKind, string> = {
+    test: 'test file',
+    fixture: 'fixture file',
+    source: 'source module',
+    unknown: 'source module',
+};
+
 function createSummary(profile: Omit<DocumentProfile, 'summary' | 'preview'>): string {
-    const subject = profile.kind === 'test' ? 'test file' : profile.kind === 'fixture' ? 'fixture file' : 'source module';
-    const focus = profile.semanticTokens.slice(0, 12).join(', ');
-    const lines = [`${subject} about ${focus || profile.basenameTokens.join(', ')}`];
-
-    if (profile.changePhraseTokens.length) {
-        lines.push(`changes: ${profile.changePhraseTokens.slice(0, 8).join(', ')}`);
+    const focus = profile.semanticTokens.slice(0, 12).join(', ') || profile.basenameTokens.join(', ');
+    const lines = [`${SUBJECT_BY_KIND[profile.kind]} about ${focus}`];
+    for (const { label, field, limit, separator = ', ' } of SUMMARY_SECTIONS) {
+        const values = profile[field];
+        if (values.length) {
+            lines.push(`${label}: ${values.slice(0, limit).join(separator)}`);
+        }
     }
-
-    if (profile.exports.length) {
-        lines.push(`exports: ${profile.exports.slice(0, 8).join(', ')}`);
-    }
-
-    if (profile.imports.length) {
-        lines.push(`imports: ${profile.imports.slice(0, 8).join(', ')}`);
-    }
-
-    if (profile.testNames.length) {
-        lines.push(`tests: ${profile.testNames.slice(0, 4).join(' | ')}`);
-    }
-
-    if (profile.commandTokens.length) {
-        lines.push(`commands: ${profile.commandTokens.slice(0, 6).join(', ')}`);
-    }
-
-    if (profile.optionTokens.length) {
-        lines.push(`options: ${profile.optionTokens.slice(0, 8).join(', ')}`);
-    }
-
-    if (profile.pathFamilyTokens.length) {
-        lines.push(`paths: ${profile.pathFamilyTokens.slice(0, 6).join(', ')}`);
-    }
-
-    if (profile.rareAnchorTokens.length) {
-        lines.push(`anchors: ${profile.rareAnchorTokens.slice(0, 8).join(', ')}`);
-    }
-
     return lines.join('\n');
 }
 
-/**
- * Whether a file can be handed to a test runner: a test file by name, or a file outside fixtures
- * that declares tests, such as `e2e/checkout.ts`. A helper or fixture in a test directory is neither.
- */
+function hasTestFileName(relativePath: string): boolean {
+    return TEST_FILE_NAME.test(normalizePathSeparators(relativePath));
+}
+
 export function isTestLikeSource(relativePath: string, text: string): boolean {
-    return TEST_FILE_NAME.test(normalizePathSeparators(relativePath))
+    return hasTestFileName(relativePath)
         || (determineKind(relativePath) !== 'fixture' && collectTestTitles(text).length > 0);
 }
 
-/** {@link isTestLikeSource} for an already built profile. */
 export function isTestLike(profile: DocumentProfile): boolean {
-    return TEST_FILE_NAME.test(normalizePathSeparators(profile.relativePath))
-        || (profile.kind !== 'fixture' && profile.testTitles.length > 0);
+    return hasTestFileName(profile.relativePath) || (profile.kind !== 'fixture' && profile.testTitles.length > 0);
 }
 
 export function buildDocumentProfile(
@@ -617,31 +517,20 @@ export function buildDocumentProfile(
     const stemTokens = collectStemTokens(basename);
     const pathFamilyTokens = collectPathFamilyTokens(relativePath, text);
     const changedLines = collectChangedLines(diffText, relativePath, cwd, diffRoot);
-    const phraseTokens = collectPhraseTokens(text, relativePath);
-    const rareAnchorTokens = collectRareAnchorTokens(text, relativePath);
     const hasChangedLines = changedLines.added.length > 0 || changedLines.removed.length > 0;
-    const changeTokens = hasChangedLines
-        ? collectChangeTokens(changedLines)
-        : [];
-    const changePhraseTokens = hasChangedLines
-        ? collectChangePhraseTokens(changedLines, relativePath)
-        : [];
-    const kind = determineKind(relativePath);
+    const changeTokens = hasChangedLines ? collectChangeTokens(changedLines) : [];
+    const changePhraseTokens = hasChangedLines ? collectChangePhraseTokens(changedLines, relativePath) : [];
     const exports = collectExportedSymbols(text);
     const imports = collectImportedSymbols(text);
     const testNames = collectTestNames(text);
-    const testTitles = collectTestTitles(text);
     const commandTokens = collectCommandTokens(text);
     const optionTokens = collectOptionTokens(text);
-    const contentText = stripCommentsAndStrings(text);
-    const contentTokens = uniqueTokens(tokenizeText(contentText));
-    const boundedContentTokens = contentTokens.slice(0, MAX_CONTENT_TOKENS);
-    const lateCallTokens = collectLateCallTokens(contentText, boundedContentTokens);
+    const rareAnchorTokens = collectRareAnchorTokens(text, relativePath);
+    const code = stripCommentsAndStrings(text);
+    const allContentTokens = uniqueTokens(tokenizeText(code));
+    const contentTokens = allContentTokens.slice(0, MAX_CONTENT_TOKENS);
 
-    const changeSemanticTokens = uniqueTokens([
-        ...changeTokens,
-        ...changePhraseTokens,
-    ]).slice(0, MAX_CHANGE_SEMANTIC_TOKENS);
+    const changeSemanticTokens = uniqueTokens([...changeTokens, ...changePhraseTokens]).slice(0, MAX_CHANGE_SEMANTIC_TOKENS);
     const semanticTokens = [
         ...changeSemanticTokens,
         ...interleaveUniqueTokens(
@@ -655,40 +544,39 @@ export function buildDocumentProfile(
                 commandTokens,
                 optionTokens,
                 rareAnchorTokens,
-                contentTokens,
+                allContentTokens,
             ],
             MAX_SEMANTIC_TOKENS - changeSemanticTokens.length
         ),
     ];
 
-    const partialProfile = {
+    const profile = {
         absolutePath,
         relativePath,
         basename,
         basenameTokens,
         stemTokens,
         pathFamilyTokens,
-        phraseTokens,
+        phraseTokens: collectPhraseTokens(text, relativePath),
         rareAnchorTokens,
         changeTokens,
         changePhraseTokens,
-        kind,
+        kind: determineKind(relativePath),
         exports,
         imports,
         testNames,
-        testTitles,
+        testTitles: collectTestTitles(text),
         commandTokens,
         optionTokens,
-        contentTokens: boundedContentTokens,
-        lateCallTokens,
+        contentTokens,
+        lateCallTokens: collectLateCallTokens(code, contentTokens),
         semanticTokens,
         diffExcerpt: changedLines.hunks.join('\n'),
     };
-
-    const summary = createSummary(partialProfile);
+    const summary = createSummary(profile);
 
     return {
-        ...partialProfile,
+        ...profile,
         summary,
         preview: (summary.split('\n')[0] || relativePath).slice(0, MAX_PREVIEW_LENGTH),
     };

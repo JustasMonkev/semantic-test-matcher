@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { clamp, resolveConfig } from '../src/config.ts';
+import { resolveConfig } from '../src/config.ts';
+import { clamp } from '../src/utils/values.ts';
 import { isDebug } from '../src/utils/io.ts';
 
 const MANAGED_ENV_VARS = [
