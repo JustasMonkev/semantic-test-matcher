@@ -46,6 +46,15 @@ interface ModelUsage {
     models: Set<string>;
 }
 
+interface BenchmarkContext {
+    candidates: RankedMatchCandidate[];
+    scorer: ModelScorer | undefined;
+    usage: ModelUsage;
+    config: RuntimeConfig;
+    cwd: string;
+    diffRoot: string | undefined;
+}
+
 interface ObservedRanking {
     source: string;
     results: Array<Pick<MatchCandidate, 'file' | 'score' | 'modelScore' | 'structuralScore'>>;
@@ -184,12 +193,13 @@ async function runBenchmark(options: BenchmarkOptions, rootOptions: RootOptions)
     }
 
     const usage: ModelUsage = { requests: 0, cacheHits: 0, inputTokens: 0, outputTokens: 0, modelIdentity: 'reported', models: new Set() };
+    const context: BenchmarkContext = { candidates, scorer, usage, config, cwd, diffRoot: options.diffRoot };
     const tally = emptyTally();
     const observedRanking: ObservedRanking[] = [];
     const misses: BenchmarkMiss[] = [];
     try {
         for (const entry of cases) {
-            const matches = await rankCase(entry, candidates, scorer, usage, config, cwd, options.diffRoot);
+            const matches = await rankCase(entry, context);
             observedRanking.push({
                 source: entry.source,
                 results: matches.map(({ file, score, modelScore, structuralScore }) => ({ file, score, modelScore, structuralScore })),
@@ -235,12 +245,7 @@ async function runBenchmark(options: BenchmarkOptions, rootOptions: RootOptions)
 
 async function rankCase(
     entry: BenchmarkCase,
-    candidates: RankedMatchCandidate[],
-    scorer: ModelScorer | undefined,
-    usage: ModelUsage,
-    config: RuntimeConfig,
-    cwd: string,
-    diffRoot: string | undefined
+    { candidates, scorer, usage, config, cwd, diffRoot }: BenchmarkContext
 ): Promise<MatchCandidate[]> {
     const sourcePath = path.resolve(cwd, entry.source);
     const source = await readSourceDocument(sourcePath, cwd, entry.diffText, diffRoot);
