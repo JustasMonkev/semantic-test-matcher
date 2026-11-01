@@ -1,0 +1,30 @@
+name: Lean selector verification
+on:
+  push:
+    branches: [main, verify/lean-representative-selection]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - name: Install pinned Lean toolchain
+        shell: bash
+        run: |
+          version="$(sed 's/leanprover\/lean4:v//' verification/lean-toolchain)"
+          curl --fail --location --silent --show-error "https://github.com/leanprover/lean4/releases/download/v$version/lean-$version-linux.tar.zst" -o "$RUNNER_TEMP/lean.tar.zst"
+          tar --zstd -xf "$RUNNER_TEMP/lean.tar.zst" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/lean-$version-linux/bin" >> "$GITHUB_PATH"
+      - name: Check proofs and compare with TypeScript
+        run: node --experimental-strip-types verification/check.mjs
