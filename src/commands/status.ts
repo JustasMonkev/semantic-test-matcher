@@ -1,20 +1,20 @@
 import { Command } from 'commander';
-import { resolveConfig } from '../config.ts';
+import { resolveConfig, type RootOptions } from '../config.ts';
 import { getDecisionsCacheEntryCount, getOpenAIKey } from '../services/decisions.ts';
 import { getJevCacheEntryCount, getJevKey } from '../services/jev.ts';
-import { rootOptionsOf } from './shared.ts';
+import { acceptGlobalOptions, rootOptionsOf } from './shared.ts';
 
 function presence(value: unknown, present: string, absent: string): string {
     return value ? present : absent;
 }
 
 export function registerStatusCommand(program: Command): void {
-    program
-        .command('status')
+    acceptGlobalOptions(program.command('status'), '-c, --config <path>')
         .description('Show resolved runtime configuration')
+        .option('--cache-dir <path>', 'Directory used to store provider answer caches')
         .option('--json', 'Print machine-readable output')
-        .action(async (options: { json?: boolean }) => {
-            const config = await resolveConfig(rootOptionsOf(program), {});
+        .action(async (options: RootOptions & { json?: boolean }) => {
+            const config = await resolveConfig(rootOptionsOf(program, options), {});
             const cacheEntries = await getJevCacheEntryCount(config.cacheDir);
             const decisionsCacheEntries = await getDecisionsCacheEntryCount(config.cacheDir);
             const decisionsApiKey = presence(getOpenAIKey(), 'set', 'missing');

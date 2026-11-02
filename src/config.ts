@@ -4,10 +4,10 @@ import { REPRESENTATIVE_TOP_K_REQUIRED } from './services/representative-selecti
 import { mergeArrays } from './utils/arrays.ts';
 import { readFileIfExists, setDebugLogLevel } from './utils/io.ts';
 import { isWorkspaceContainedPath } from './utils/paths.ts';
-import { clamp, firstFiniteNumber, parseBoolean, parseChoice, parseLogLevel, readEnv, type LogLevel } from './utils/values.ts';
+import { clamp, firstNumberSetting, parseBoolean, parseChoice, parseLogLevel, readEnv, type LogLevel } from './utils/values.ts';
 
 const RANKERS = ['jev', 'decisions', 'heuristics'] as const;
-const FALLBACK_RANKERS = ['decisions', 'heuristics'] as const;
+const FALLBACK_RANKERS = ['decisions', 'heuristics', 'none'] as const;
 const SELECTION_POLICIES = ['adaptive', 'conservative', 'targeted', 'representative'] as const;
 const OPENAI_ALIAS = { openai: 'decisions' } as const;
 const MAX_TOP_K = 1000;
@@ -105,7 +105,7 @@ function parseRanker(value: unknown): Ranker {
 
 function parseFallbackRanker(value: unknown): FallbackRanker {
     return parseChoice(value, FALLBACK_RANKERS,
-        `Invalid fallback ranker "${value}". Expected "decisions" or "heuristics".`, OPENAI_ALIAS);
+        `Invalid fallback ranker "${value}". Expected "decisions", "heuristics", or "none".`, OPENAI_ALIAS);
 }
 
 function parseSelectionPolicy(value: unknown): SelectionPolicy {
@@ -135,6 +135,9 @@ export async function loadConfig(configPath?: string): Promise<LoadedConfig> {
         const raw = await readFileIfExists(filePath);
         if (raw !== undefined) {
             return { config: parseJsonConfig(raw, filePath), autoDiscovered, filePath };
+        }
+        if (!autoDiscovered) {
+            throw new Error(`Config file not found: ${filePath}`);
         }
     }
     return { config: {}, autoDiscovered: false };
@@ -166,7 +169,12 @@ function resolveFallbackRanker(ranker: Ranker, options: MatchCommandOptions, fil
 }
 
 function resolveTopK(options: MatchCommandOptions, fileMatch: Partial<MatchDefaults>): number | undefined {
-    const configured = firstFiniteNumber(options.topK, process.env.RBT_TOP_K, process.env.RBT_MATCH_TOP_K, fileMatch.topK);
+    const configured = firstNumberSetting([
+        ['--top-k', options.topK],
+        ['RBT_TOP_K', process.env.RBT_TOP_K],
+        ['RBT_MATCH_TOP_K', process.env.RBT_MATCH_TOP_K],
+        ['config match.topK', fileMatch.topK],
+    ]);
     return configured === undefined ? undefined : Math.floor(clamp(configured, 1, MAX_TOP_K));
 }
 
@@ -196,12 +204,22 @@ export async function resolveConfig(
     setDebugLogLevel(logLevel === 'debug');
 
     const threshold = clamp(
-        firstFiniteNumber(options.threshold, env.RBT_THRESHOLD, env.RBT_MATCH_THRESHOLD, fileMatch.threshold) ?? defaults.threshold,
+        firstNumberSetting([
+            ['--threshold', options.threshold],
+            ['RBT_THRESHOLD', env.RBT_THRESHOLD],
+            ['RBT_MATCH_THRESHOLD', env.RBT_MATCH_THRESHOLD],
+            ['config match.threshold', fileMatch.threshold],
+        ]) ?? defaults.threshold,
         0,
         1
     );
     const minScore = clamp(
-        firstFiniteNumber(options.minScore, env.RBT_MIN_SCORE, env.RBT_MATCH_MIN_SCORE, fileMatch.minScore) ?? threshold,
+        firstNumberSetting([
+            ['--min-score', options.minScore],
+            ['RBT_MIN_SCORE', env.RBT_MIN_SCORE],
+            ['RBT_MATCH_MIN_SCORE', env.RBT_MATCH_MIN_SCORE],
+            ['config match.minScore', fileMatch.minScore],
+        ]) ?? threshold,
         0,
         1
     );

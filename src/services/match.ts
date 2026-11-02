@@ -313,6 +313,14 @@ function providerLabel(ranker: Ranker): string {
     return ranker === 'decisions' ? 'Decisions' : 'Jev';
 }
 
+function strongEvidenceKinds(ranker: Ranker): string {
+    return ranker === 'heuristics' ? 'structural' : `${providerLabel(ranker)} or structural`;
+}
+
+function missingModelAnswer(ranker: Ranker): string {
+    return ranker === 'heuristics' ? 'No model ranker' : `No strong ${providerLabel(ranker)} answer`;
+}
+
 function usableModelScore(match: MatchCandidate): number | undefined {
     const score = match.modelScore ?? match.jevScore;
     return score !== undefined && Number.isFinite(score) && score >= 0 && score <= 1 ? score : undefined;
@@ -339,6 +347,9 @@ function capSelection(
 }
 
 function selectAdaptive(matches: MatchCandidate[], topK: number | undefined, ranker: Ranker): SelectionResult {
+    if (!matches.length) {
+        return capSelection(matches, topK);
+    }
     const structuralScores = matches.map((match) => match.structuralScore).sort((a, b) => b - a);
     const strongestStructural = structuralScores[0] ?? 0;
     const affirmative = ranker !== 'heuristics' ? matches.filter(isModelAffirmative) : [];
@@ -346,7 +357,7 @@ function selectAdaptive(matches: MatchCandidate[], topK: number | undefined, ran
     const modelUncertain = ranker === 'heuristics' || strongestModel < STRONG_MODEL_SCORE;
 
     if (modelUncertain && strongestStructural < MIN_STRUCTURAL_NEIGHBOR_SCORE) {
-        return capSelection(matches, topK, `No strong ${providerLabel(ranker)} or structural evidence; all candidates retained`, {
+        return capSelection(matches, topK, `No strong ${strongEvidenceKinds(ranker)} evidence; all candidates retained`, {
             affirmativeCount: affirmative.length,
             structuralNeighborCount: 0,
             structuralCutoff: 0,
@@ -361,7 +372,7 @@ function selectAdaptive(matches: MatchCandidate[], topK: number | undefined, ran
     const eligible = matches.filter((match) =>
         affirmativeFiles.has(match.file) || match.structuralScore >= structuralCutoff
     );
-    const reason = modelUncertain ? `No strong ${providerLabel(ranker)} answer; structural coverage widened` : undefined;
+    const reason = modelUncertain ? `${missingModelAnswer(ranker)}; structural coverage widened` : undefined;
     return capSelection(eligible, topK, reason, {
         affirmativeCount: affirmative.length,
         structuralNeighborCount: eligible.length - affirmative.length,
@@ -385,7 +396,7 @@ export function selectMatches(
     }
 
     if (ranker === 'heuristics') {
-        return capSelection(matches, limit, 'Jev is unavailable; conservative selection retained');
+        return capSelection(matches, limit, 'No model ranker; conservative selection retained');
     }
     const affirmative = matches.filter(isModelAffirmative);
     return affirmative.length

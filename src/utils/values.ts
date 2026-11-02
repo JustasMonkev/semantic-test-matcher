@@ -9,12 +9,16 @@ function isBlank(value: unknown): boolean {
     return value === null || (typeof value === 'string' && !value.trim());
 }
 
-export function firstFiniteNumber(...values: unknown[]): number | undefined {
-    for (const value of values) {
-        const parsed = isBlank(value) ? Number.NaN : Number(value);
-        if (Number.isFinite(parsed)) {
-            return parsed;
+export function firstNumberSetting(sources: Array<[source: string, value: unknown]>): number | undefined {
+    for (const [source, value] of sources) {
+        if (value === undefined || isBlank(value)) {
+            continue;
         }
+        const parsed = typeof value === 'number' || typeof value === 'string' ? Number(value) : Number.NaN;
+        if (!Number.isFinite(parsed)) {
+            throw new Error(`Invalid ${source} "${String(value)}". Expected a number.`);
+        }
+        return parsed;
     }
     return undefined;
 }

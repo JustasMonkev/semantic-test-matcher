@@ -205,6 +205,12 @@ describe('match command rankers', () => {
         ]);
     });
 
+    it('fails instead of falling back when --fallback-ranker none is set', async () => {
+        await assert.rejects(runMatch('--ranker', 'decisions', '--fallback-ranker', 'none'),
+            /decisions ranker unavailable \(OPENAI_API_KEY \(or OPEN_AI\) is required for the decisions ranker\); --fallback-ranker none forbids falling back/);
+        await assert.rejects(runMatch('--fallback-ranker', 'none'), /jev ranker unavailable/);
+    });
+
     it('reports both failed providers before the final local fallback', async () => {
         const { output, warnings } = await runMatch('--fallback-ranker', 'decisions');
         assert.equal(output.ranker, 'heuristics');
@@ -683,7 +689,7 @@ describe('match command rankers', () => {
             assert.equal(output.eligibleCount, 0);
             assert.equal(output.selectionObjective?.value, 0);
             assert.equal(output.selectionTruncated, false);
-            assert.match(output.eligibilityReason ?? '', /all candidates eligible/);
+            assert.equal(output.eligibilityReason, undefined);
             assert.equal(output.selectionFallback, undefined);
         });
 

@@ -108,6 +108,23 @@ describe('test selection policy', () => {
         assert.match(broadFallback.reason ?? '', /all candidates retained/);
     });
 
+    it('gives no fallback reason when nothing reached the minimum score', () => {
+        for (const ranker of ['jev', 'decisions', 'heuristics'] as const) {
+            const selection = selectMatches([], undefined, 'adaptive', ranker);
+            assert.equal(selection.results.length, 0);
+            assert.equal(selection.reason, undefined);
+        }
+    });
+
+    it('never blames Jev when ranking with heuristics only', () => {
+        const weak = [candidate('a.spec.ts', 0.3, undefined, 0.3), candidate('b.spec.ts', 0.1, undefined, 0.1)];
+        const widened = selectMatches(weak, undefined, 'adaptive', 'heuristics');
+        assert.match(widened.reason ?? '', /^No model ranker; structural coverage widened$/);
+        const lowEvidence = weak.map(x => ({ ...x, structuralScore: 0.1 }));
+        assert.match(selectMatches(lowEvidence, undefined, 'adaptive', 'heuristics').reason ?? '', /^No strong structural evidence; all candidates retained$/);
+        assert.match(selectMatches(weak, 2, 'targeted', 'heuristics').reason ?? '', /^No model ranker; conservative selection retained$/);
+    });
+
     it('uses Decisions model evidence for adaptive and targeted selection at the same boundaries', () => {
         const matches = [
             { ...candidate('neighbor.spec.ts', 0.95, undefined, 0.4), modelScore: 0.499 },

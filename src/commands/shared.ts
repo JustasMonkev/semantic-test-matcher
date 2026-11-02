@@ -17,9 +17,23 @@ export interface SourceDocument {
     missingWithoutDeletionDiff: boolean;
 }
 
-export function rootOptionsOf(program: Command): RootOptions {
-    const { config, cacheDir, logLevel, verbose, quiet } = program.opts<RootOptions>();
-    return { config, cacheDir, logLevel, verbose, quiet };
+export function acceptGlobalOptions(command: Command, configFlags = '--config <path>'): Command {
+    return command
+        .option(configFlags, 'Path to config file')
+        .option('--log-level <level>', 'debug | info | warn | error')
+        .option('-v, --verbose', 'Enable verbose output')
+        .option('-q, --quiet', 'Suppress non-essential output');
+}
+
+export function rootOptionsOf(program: Command, commandOptions: RootOptions): RootOptions {
+    const global = program.opts<RootOptions>();
+    return {
+        config: commandOptions.config ?? global.config,
+        cacheDir: commandOptions.cacheDir ?? global.cacheDir,
+        logLevel: commandOptions.logLevel ?? global.logLevel,
+        verbose: commandOptions.verbose ?? global.verbose,
+        quiet: commandOptions.quiet ?? global.quiet,
+    };
 }
 
 export async function loadCandidates(candidateFiles: string[], cwd: string): Promise<RankedMatchCandidate[]> {

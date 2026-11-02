@@ -305,6 +305,34 @@ describe('resolveConfig', () => {
         assert.equal(config.match.topK, 1);
     });
 
+    it('rejects a non-numeric threshold, min score, or top-k from any source instead of ignoring it', async () => {
+        await assert.rejects(resolveConfig({}, { topK: 'abc' }), /Invalid --top-k "abc"\. Expected a number\./);
+        await assert.rejects(resolveConfig({}, { threshold: 'high' }), /Invalid --threshold "high"/);
+        await assert.rejects(resolveConfig({}, { minScore: 'NaN' }), /Invalid --min-score "NaN"/);
+        process.env.RBT_TOP_K = 'five';
+        await assert.rejects(resolveConfig({}, {}), /Invalid RBT_TOP_K "five"/);
+        delete process.env.RBT_TOP_K;
+        const configFile = await writeTempConfig({ match: { threshold: 'loose' } });
+        await assert.rejects(resolveConfig({ config: configFile }, {}), /Invalid config match\.threshold "loose"/);
+    });
+
+    it('still treats blank numeric environment variables as unset', async () => {
+        process.env.RBT_TOP_K = ' ';
+        process.env.RBT_MATCH_TOP_K = '4';
+        assert.equal((await resolveConfig({}, {})).match.topK, 4);
+    });
+
+    it('rejects an explicit config file that does not exist', async () => {
+        const missing = path.join(os.tmpdir(), `rbt-missing-${process.pid}.json`);
+        await assert.rejects(resolveConfig({ config: missing }, {}), new RegExp(`Config file not found: ${missing.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    });
+
+    it('accepts --fallback-ranker none with any primary ranker', async () => {
+        for (const ranker of ['jev', 'decisions', 'heuristics']) {
+            assert.equal((await resolveConfig({}, { ranker, fallbackRanker: 'none' })).fallbackRanker, 'none');
+        }
+    });
+
     it('rejects an invalid log level', async () => {
         await assert.rejects(resolveConfig({ logLevel: 'loud' }, {}), /Invalid log level "loud"/);
     });

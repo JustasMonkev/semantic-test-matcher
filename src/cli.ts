@@ -17,6 +17,7 @@ program
     .option('--log-level <level>', 'debug | info | warn | error')
     .option('-v, --verbose', 'Enable verbose output')
     .option('-q, --quiet', 'Suppress non-essential output')
+    .enablePositionalOptions()
     .configureHelp({ sortSubcommands: true });
 
 registerCommands(program);

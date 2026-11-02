@@ -8,9 +8,9 @@ import { createScorerFromConfig } from '../services/model-scorer-factory.ts';
 import { addTokenCounts, type ModelScorer, type ModelScoreResult } from '../services/model-scorer.ts';
 import { collectCandidateFiles } from '../utils/files.ts';
 import { findPathsOutside, normalizePathSeparators } from '../utils/paths.ts';
-import { loadCandidates, RANKER_OPTION_DESCRIPTION, readSourceDocument, rootOptionsOf } from './shared.ts';
+import { acceptGlobalOptions, loadCandidates, RANKER_OPTION_DESCRIPTION, readSourceDocument, rootOptionsOf } from './shared.ts';
 
-interface BenchmarkOptions extends MatchCommandOptions {
+interface BenchmarkOptions extends MatchCommandOptions, Omit<RootOptions, 'cacheDir'> {
     cases: string;
     diffRoot?: string;
     json?: boolean;
@@ -61,8 +61,7 @@ interface ObservedRanking {
 }
 
 export function registerBenchmarkCommand(program: Command): void {
-    program
-        .command('benchmark')
+    acceptGlobalOptions(program.command('benchmark'))
         .description('Run benchmark cases against the current matcher')
         .requiredOption('--cases <file>', 'Benchmark case file')
         .option('-c, --candidates <patterns...>', 'Candidate file paths, directories, or file globs')
@@ -71,13 +70,13 @@ export function registerBenchmarkCommand(program: Command): void {
         .option('--ranker <name>', RANKER_OPTION_DESCRIPTION)
         .option('--jev-model <id>', 'TypeSafe Jev model id')
         .option('--decisions-model <id>', 'OpenAI Decisions model id')
-        .option('--fallback-ranker <name>', 'Only heuristics allowed; benchmark never falls back')
+        .option('--fallback-ranker <name>', 'heuristics or none; benchmark never falls back')
         .option('--cache-dir <path>', 'Directory used to cache provider answers')
         .option('--diff-root <path>', 'Base directory for relative paths in case diffs')
         .option('-t, --threshold <number>', 'Minimum similarity threshold')
         .option('--min-score <number>', 'Minimum similarity score override')
         .option('--json', 'Print machine-readable output')
-        .action((options: BenchmarkOptions) => runBenchmark(options, rootOptionsOf(program)));
+        .action((options: BenchmarkOptions) => runBenchmark(options, rootOptionsOf(program, options)));
 }
 
 async function loadBenchmarkCases(filePath: string): Promise<BenchmarkCase[]> {
@@ -171,7 +170,7 @@ function recordUsage(usage: ModelUsage, result: ModelScoreResult): void {
 async function runBenchmark(options: BenchmarkOptions, rootOptions: RootOptions): Promise<void> {
     const cwd = process.cwd();
     const config = await resolveConfig(rootOptions, options, cwd);
-    if (config.fallbackRanker !== 'heuristics') {
+    if (config.fallbackRanker === 'decisions') {
         throw new Error('Benchmark does not allow a remote fallback ranker; run each provider separately.');
     }
 

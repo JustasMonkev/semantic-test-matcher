@@ -25,9 +25,9 @@ import { collectCandidateFiles, isAllowedFile, MAX_CANDIDATE_FILES, readCandidat
 import { parseStdinList, readStdinText } from '../utils/io.ts';
 import { findPathsOutside } from '../utils/paths.ts';
 import { quoteShellArgument } from '../utils/shell.ts';
-import { loadCandidates, RANKER_OPTION_DESCRIPTION, readSourceDocument, rootOptionsOf, type SourceDocument } from './shared.ts';
+import { acceptGlobalOptions, loadCandidates, RANKER_OPTION_DESCRIPTION, readSourceDocument, rootOptionsOf, type SourceDocument } from './shared.ts';
 
-interface MatchOptions extends MatchCommandOptions {
+interface MatchOptions extends MatchCommandOptions, Omit<RootOptions, 'cacheDir'> {
     diffFile?: string;
     diffRoot?: string;
     json?: boolean;
@@ -79,8 +79,7 @@ function appendValue(value: string, previous: string[] = []): string[] {
 }
 
 export function registerMatchCommand(program: Command): void {
-    program
-        .command('match')
+    acceptGlobalOptions(program.command('match'))
         .description('Match code change to test cases')
         .argument('[files...]', 'Changed file paths (default: --diff-file changes, or local Git changes followed by a test-command prompt)')
         .option('-t, --threshold <number>', 'Minimum similarity threshold')
@@ -94,13 +93,13 @@ export function registerMatchCommand(program: Command): void {
         .option('--ranker <name>', RANKER_OPTION_DESCRIPTION)
         .option('--jev-model <id>', 'TypeSafe Jev model id')
         .option('--decisions-model <id>', 'OpenAI Decisions model id')
-        .option('--fallback-ranker <name>', 'heuristics (default), or decisions (only with jev)')
+        .option('--fallback-ranker <name>', 'heuristics (default), decisions (only with jev), or none (fail instead of falling back)')
         .option('--cache-dir <path>', 'Directory used to cache provider answers')
         .option('--diff-file <path>', 'Unified diff file used to enrich change-aware matching')
         .option('--diff-root <path>', 'Base directory for relative paths in --diff-file')
         .option('--json', 'Print machine-readable output')
         .option('--paths-only', 'Print only the selected test paths, one per line')
-        .action((files: string[], options: MatchOptions) => runMatch(files, options, rootOptionsOf(program)));
+        .action((files: string[], options: MatchOptions) => runMatch(files, options, rootOptionsOf(program, options)));
 }
 
 async function runMatch(files: string[], options: MatchOptions, rootOptions: RootOptions): Promise<void> {
@@ -257,6 +256,9 @@ async function scoreWithProviderChain(jobs: ChangeJob[], changes: ChangedFiles, 
         } catch (error) {
             if (!(error instanceof ModelScorerError)) {
                 throw error;
+            }
+            if (config.fallbackRanker === 'none') {
+                throw new Error(`${provider} ranker unavailable (${error.message}); --fallback-ranker none forbids falling back`);
             }
             failureReasons.push(error.message);
             attempts.push({ ranker: provider, status: 'failed', reason: error.message });
