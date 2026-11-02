@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { selectMatches, TARGETED_JEV_THRESHOLD, type MatchCandidate } from '../src/services/match.ts';
+import { selectMatches, TARGETED_MODEL_THRESHOLD, type MatchCandidate } from '../src/services/match.ts';
 
 function candidate(file: string, score: number, jevScore?: number, structuralScore = score): MatchCandidate {
     return {
@@ -25,7 +25,7 @@ describe('test selection policy', () => {
     });
 
     it('keeps all Jev-positive candidates, even those beyond the structural top-K', () => {
-        assert.equal(TARGETED_JEV_THRESHOLD, 0.5);
+        assert.equal(TARGETED_MODEL_THRESHOLD, 0.5);
         assert.deepEqual(selectMatches(ranked, 2, 'targeted', 'jev').results.map(x => x.file), [
             'direct.spec.ts', 'related-beyond-top-k.spec.ts',
         ]);
@@ -106,6 +106,23 @@ describe('test selection policy', () => {
         assert.equal(broadFallback.evidence?.structuralNeighborCount, 0);
         assert.equal(broadFallback.evidence?.uncertaintyRetainedCount, weak.length);
         assert.match(broadFallback.reason ?? '', /all candidates retained/);
+    });
+
+    it('gives no fallback reason when nothing reached the minimum score', () => {
+        for (const ranker of ['jev', 'decisions', 'heuristics'] as const) {
+            const selection = selectMatches([], undefined, 'adaptive', ranker);
+            assert.equal(selection.results.length, 0);
+            assert.equal(selection.reason, undefined);
+        }
+    });
+
+    it('never blames Jev when ranking with heuristics only', () => {
+        const weak = [candidate('a.spec.ts', 0.3, undefined, 0.3), candidate('b.spec.ts', 0.1, undefined, 0.1)];
+        const widened = selectMatches(weak, undefined, 'adaptive', 'heuristics');
+        assert.match(widened.reason ?? '', /^No model ranker; structural coverage widened$/);
+        const lowEvidence = weak.map(x => ({ ...x, structuralScore: 0.1 }));
+        assert.match(selectMatches(lowEvidence, undefined, 'adaptive', 'heuristics').reason ?? '', /^No strong structural evidence; all candidates retained$/);
+        assert.match(selectMatches(weak, 2, 'targeted', 'heuristics').reason ?? '', /^No model ranker; conservative selection retained$/);
     });
 
     it('uses Decisions model evidence for adaptive and targeted selection at the same boundaries', () => {

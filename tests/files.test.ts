@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { collectCandidateFilesDetailed, MAX_CANDIDATE_BYTES, readCandidateText } from '../src/utils/files.ts';
+import { collectCandidateFiles, MAX_CANDIDATE_BYTES, readCandidateText } from '../src/utils/files.ts';
 
 async function makeTree(files: string[]): Promise<string> {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-files-'));
@@ -19,7 +19,7 @@ function relativeSorted(root: string, files: string[]): string[] {
     return files.map((file) => path.relative(root, file).replace(/\\/g, '/')).sort();
 }
 
-describe('collectCandidateFilesDetailed', () => {
+describe('collectCandidateFiles', () => {
     it('collects allowed source files from seed directories', async () => {
         const root = await makeTree([
             'tests/a.test.ts',
@@ -28,7 +28,7 @@ describe('collectCandidateFilesDetailed', () => {
             'src/c.ts',
         ]);
 
-        const result = await collectCandidateFilesDetailed(['tests'], ['**/*'], [], root);
+        const result = await collectCandidateFiles(['tests'], ['**/*'], [], root);
         assert.deepEqual(relativeSorted(root, result.files), ['tests/a.test.ts', 'tests/nested/b.spec.tsx']);
         assert.equal(result.truncated, false);
     });
@@ -41,7 +41,7 @@ describe('collectCandidateFilesDetailed', () => {
             'tests/a.test.ts',
         ]);
 
-        const result = await collectCandidateFilesDetailed(['.'], ['**/*'], [], root);
+        const result = await collectCandidateFiles(['.'], ['**/*'], [], root);
         assert.deepEqual(relativeSorted(root, result.files), ['tests/a.test.ts']);
     });
 
@@ -52,14 +52,14 @@ describe('collectCandidateFilesDetailed', () => {
             'tests/helper.ts',
         ]);
 
-        const result = await collectCandidateFilesDetailed(['tests'], ['**/*.test.ts'], ['**/b.test.ts'], root);
+        const result = await collectCandidateFiles(['tests'], ['**/*.test.ts'], ['**/b.test.ts'], root);
         assert.deepEqual(relativeSorted(root, result.files), ['tests/a.test.ts']);
     });
 
     it('accepts individual files as seeds and ignores missing seeds', async () => {
         const root = await makeTree(['tests/a.test.ts']);
 
-        const result = await collectCandidateFilesDetailed(
+        const result = await collectCandidateFiles(
             ['tests/a.test.ts', 'does-not-exist'],
             ['**/*'],
             [],
@@ -71,7 +71,7 @@ describe('collectCandidateFilesDetailed', () => {
     it('deduplicates files reachable through multiple seeds', async () => {
         const root = await makeTree(['tests/a.test.ts']);
 
-        const result = await collectCandidateFilesDetailed(
+        const result = await collectCandidateFiles(
             ['tests', 'tests/a.test.ts'],
             ['**/*'],
             [],

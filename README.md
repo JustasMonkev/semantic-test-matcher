@@ -138,15 +138,17 @@ Useful flags:
 - `--threshold <number>`
 - `--min-score <number>`
 - `--top-k <number>` (optional cap on selected files)
+
+Numeric settings must be numbers wherever they are set (flag, environment variable, or config file); a value such as `--top-k abc` is an error. Blank environment variables still count as unset.
 - `--selection-policy <adaptive|conservative|targeted|representative>`
-- `--candidates <path>` (repeat for several, e.g. `--candidates tests --candidates e2e`)
+- `-c, --candidates <path>` (repeat for several, e.g. `-c tests -c e2e`)
 - `--include-file <glob>` (repeatable)
 - `--exclude-file <glob>` (repeatable)
 - `--candidates-from-stdin`
 - `--ranker <jev|decisions|heuristics>` (`openai` is an alias for `decisions`)
 - `--jev-model <id>`
 - `--decisions-model <id>`
-- `--fallback-ranker <heuristics|decisions>` (Decisions fallback requires Jev as primary)
+- `--fallback-ranker <heuristics|decisions|none>` (Decisions fallback requires Jev as primary; `none` fails instead of falling back)
 - `--cache-dir <path>`
 - `--diff-file <path>`
 - `--diff-root <path>` (set the base for relative diff paths, such as `.` for `git diff --relative`)
@@ -202,7 +204,7 @@ rbt match src/example.ts --ranker heuristics
 
 Decisions sends the same bounded change evidence and candidate paths/test titles described above to `https://api.openai.com/v1/decisions`. It does not send candidate file bodies. The default model is `gpt-6-luna`, configurable with `--decisions-model`. Source text is omitted when a diff is supplied. Source/diff excerpts and test titles are untrusted evidence, not instructions to execute.
 
-Direct Decisions runs fall back to local heuristics after an unavailable provider. The opt-in Jev fallback tries Jev, then Decisions, then heuristics. If any source fails, every source is rescored with the next provider before selection; one output never mixes providers. Valid low probabilities do not trigger provider fallback. Refusals and invalid or incomplete answers do.
+Direct Decisions runs fall back to local heuristics after an unavailable provider. Pass `--fallback-ranker none` (or `RBT_FALLBACK_RANKER=none`) to fail instead, for example in CI that must not silently lose model ranking. The opt-in Jev fallback tries Jev, then Decisions, then heuristics. If any source fails, every source is rescored with the next provider before selection; one output never mixes providers. Valid low probabilities do not trigger provider fallback. Refusals and invalid or incomplete answers do.
 
 An explicit `--ranker heuristics` stays local even if a Decisions fallback is inherited from the environment or config file. An explicit `--fallback-ranker decisions` with a non-Jev primary is still rejected.
 
@@ -270,9 +272,11 @@ The CLI resolves settings in this order:
 
 Config files are loaded from:
 
-- `--config <path>` if provided
+- `--config <path>` if provided (a missing explicit file is an error)
 - `.rbt/config.json`
 - `.rbtconfig`
+
+Global options (`--config`, `--log-level`, `-v`, `-q`, `--cache-dir`) work before or after the subcommand. Before the subcommand, `-c` is `--config`; after `match` or `benchmark`, `-c` is `--candidates`.
 
 Example config:
 

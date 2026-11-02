@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { firstFiniteNumber, isProbability, parseBoolean, parseLogLevel, readEnv } from '../src/utils/values.ts';
+import { firstNumberSetting, isProbability, parseBoolean, parseLogLevel, readEnv } from '../src/utils/values.ts';
 
 describe('parseBoolean', () => {
     it('accepts true and the supported string forms', () => {
@@ -25,19 +25,23 @@ describe('isProbability', () => {
     });
 });
 
-describe('firstFiniteNumber', () => {
-    it('skips unset, invalid, and non-finite values in precedence order', () => {
-        assert.equal(firstFiniteNumber(undefined, null, '', ' ', 'oops', NaN, Infinity, -Infinity, '0.4', 0.8), 0.4);
-        assert.equal(firstFiniteNumber(), undefined);
-        assert.equal(firstFiniteNumber(null, '', 'oops', Infinity), undefined);
+describe('firstNumberSetting', () => {
+    it('skips unset and blank sources in precedence order', () => {
+        assert.equal(firstNumberSetting([['a', undefined], ['b', null], ['c', ''], ['d', ' '], ['e', '0.4'], ['f', 0.8]]), 0.4);
+        assert.equal(firstNumberSetting([]), undefined);
+        assert.equal(firstNumberSetting([['a', undefined], ['b', '  ']]), undefined);
     });
 
-    it('preserves zero and existing numeric coercion', () => {
-        assert.equal(firstFiniteNumber(0, 5), 0);
-        assert.equal(firstFiniteNumber('0', 5), 0);
-        assert.equal(firstFiniteNumber(' 2 ', 5), 2);
-        assert.equal(firstFiniteNumber(false, 5), 0);
-        assert.equal(firstFiniteNumber(true, 5), 1);
+    it('preserves zero and trims numeric strings', () => {
+        assert.equal(firstNumberSetting([['a', 0], ['b', 5]]), 0);
+        assert.equal(firstNumberSetting([['a', '0'], ['b', 5]]), 0);
+        assert.equal(firstNumberSetting([['a', ' 2 '], ['b', 5]]), 2);
+    });
+
+    it('rejects a set value that is not a finite number, naming its source', () => {
+        for (const value of ['oops', 'Infinity', Number.NaN, true, false, {}]) {
+            assert.throws(() => firstNumberSetting([['--top-k', value], ['RBT_TOP_K', '3']]), /Invalid --top-k ".*"\. Expected a number\./);
+        }
     });
 });
 

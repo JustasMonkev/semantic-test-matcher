@@ -3,7 +3,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { detectTestCommand, quoteShellArgument, runSelectedTests } from '../src/services/test-runner.ts';
+import { detectTestCommand, runSelectedTests } from '../src/services/test-runner.ts';
+import { quoteShellArgument } from '../src/utils/shell.ts';
 
 describe('selected test execution', () => {
     let root: string;

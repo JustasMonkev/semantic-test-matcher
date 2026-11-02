@@ -19,8 +19,8 @@ describe('canonicalizeToken', () => {
         assert.equal(canonicalizeToken('function'), null);
     });
 
-    it('keeps stop words when skipStopWords is set', () => {
-        assert.equal(canonicalizeToken('function', { skipStopWords: true }), 'function');
+    it('keeps stop words when keepStopWords is set', () => {
+        assert.equal(canonicalizeToken('function', { keepStopWords: true }), 'function');
     });
 
     it('singularizes plural forms', () => {

@@ -33,7 +33,7 @@ const mutations = [
     },
     {
         name: 'count unrelated Jev cache after Decisions fallback', file: 'src/commands/match.ts',
-        from: "cacheRanker === 'decisions'", to: "reports[0]?.ranker === 'decisions'",
+        from: "cacheRanker === 'decisions'", to: "ranking.ranker === 'decisions'",
         testFile: 'tests/match-command.test.ts', test: 'reports persisted Decisions cache after decisions falls back to heuristics',
     },
     {
@@ -68,7 +68,7 @@ const mutations = [
     },
     {
         name: 'ignore cache expiry', file: 'src/services/decisions.ts',
-        from: 'age >= 0 && age < CACHE_TTL_MS', to: 'age >= 0',
+        from: 'ageMs >= 0 && ageMs < CACHE_TTL_MS', to: 'ageMs >= 0',
         testFile: 'tests/decisions.test.ts', test: 'reuses fresh cache entries, isolates Jev cache, and expires an alias after 24 hours',
     },
     {
@@ -77,8 +77,8 @@ const mutations = [
         testFile: 'tests/decisions.test.ts', test: 'honors diff-only disclosure even when no matching hunks exist',
     },
     {
-        name: 'stop retrying transient statuses', file: 'src/services/decisions.ts',
-        from: 'response.status === 408 || response.status === 429 || response.status >= 500', to: 'response.status === 408',
+        name: 'stop retrying transient statuses', file: 'src/services/model-scorer.ts',
+        from: 'status === 408 || status === 429 || status >= 500', to: 'status === 408',
         testFile: 'tests/decisions.test.ts', test: 'retries transient statuses, counting retry requests',
     },
     {
@@ -87,8 +87,8 @@ const mutations = [
         testFile: 'tests/jev.test.ts', test: 'never exposes an upstream error body in fallback reasons',
     },
     {
-        name: 'send an oversized Jev candidate', file: 'src/services/jev.ts',
-        from: 'if (size > tokenBudget) {', to: 'if (false) {',
+        name: 'send an oversized Jev candidate', file: 'src/services/model-scorer.ts',
+        from: 'if (!fits([item])) {', to: 'if (false) {',
         testFile: 'tests/jev.test.ts', test: 'rejects a single candidate that exceeds the remaining request budget before sending it',
     },
     {
@@ -98,7 +98,7 @@ const mutations = [
     },
     {
         name: 'retain inherited remote fallback for explicit local ranking', file: 'src/config.ts',
-        from: "fallbackRanker = 'heuristics';", to: "fallbackRanker = 'decisions';",
+        from: "return 'heuristics';", to: "return 'decisions';",
         testFile: 'tests/config.test.ts', test: 'lets an explicit local ranker override an inherited remote fallback',
     },
     {
@@ -108,18 +108,18 @@ const mutations = [
     },
     {
         name: 'mix partially completed providers in whole-run fallback', file: 'src/commands/match.ts',
-        from: 'const results: ModelScoreResult[] = [];', to: 'const results: ModelScoreResult[] = modelResults;',
+        from: 'const results: ModelScoreResult[] = [];', to: 'const results: ModelScoreResult[] = (globalThis.rbtPartialResults ??= []);',
         testFile: 'tests/match-command.test.ts', test: 'rescores every source with Decisions when Jev fails after partial success',
     },
     {
         name: 'swallow programming errors as fallback', file: 'src/commands/match.ts',
-        from: 'if (!(error instanceof ModelScorerError)) throw error;', to: '',
+        from: 'if (!(error instanceof ModelScorerError)) {\n                throw error;\n            }', to: '',
         testFile: 'tests/match-command.test.ts', test: 'propagates unrelated programming errors instead of disguising them as fallback',
     },
     {
         name: 'disable explicit Decisions fallback', file: 'src/commands/match.ts',
-        from: "ranker === 'jev' && config.fallbackRanker === 'decisions' ? ['jev', 'decisions'] : [ranker]",
-        to: "[ranker]",
+        from: "config.ranker === 'jev' && config.fallbackRanker === 'decisions' ? ['jev', 'decisions'] : [config.ranker]",
+        to: "[config.ranker]",
         testFile: 'tests/match-command.test.ts', test: 'falls back from unavailable Jev to Decisions only when explicitly configured',
     },
     {

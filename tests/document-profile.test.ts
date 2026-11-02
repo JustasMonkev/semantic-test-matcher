@@ -3,7 +3,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { buildDocumentProfile, isTestLike, listDiffFiles, listModeOnlyDiffFiles } from '../src/services/document-profile.ts';
+import { buildDocumentProfile, isTestLike } from '../src/services/document-profile.ts';
+import { listDiffFiles, listModeOnlyDiffFiles } from '../src/services/unified-diff.ts';
 
 describe('buildDocumentProfile', () => {
     it('keeps raw test titles, including describe blocks and modifiers', () => {

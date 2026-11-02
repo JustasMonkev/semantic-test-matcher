@@ -1,51 +1,42 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { hasErrorCode } from './errors.ts';
 
 export function normalizePathSeparators(value: string): string {
     return value.replace(/\\/g, '/');
 }
 
-export function isParentPath(base: string, target: string): boolean {
+export function isPathInside(base: string, target: string): boolean {
     const relative = path.relative(base, target);
-    // Only a `..` segment leaves base; a name such as `..foo.ts` stays inside it.
-    return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    const climbsOutOfBase = relative === '..' || relative.startsWith(`..${path.sep}`);
+    return !climbsOutOfBase && !path.isAbsolute(relative);
 }
 
 export async function resolveRealPath(targetPath: string): Promise<string> {
-    let current = path.resolve(targetPath);
-    const suffix: string[] = [];
-
-    while (true) {
-        try {
-            const realPath = await fs.realpath(current);
-            return suffix.length ? path.resolve(realPath, ...suffix.reverse()) : realPath;
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-                throw error;
-            }
-
-            const parent = path.dirname(current);
-            if (parent === current) {
-                return current;
-            }
-
-            suffix.push(path.basename(current));
-            current = parent;
+    const absolute = path.resolve(targetPath);
+    try {
+        return await fs.realpath(absolute);
+    } catch (error) {
+        if (!hasErrorCode(error, 'ENOENT')) {
+            throw error;
         }
+        const parent = path.dirname(absolute);
+        if (parent === absolute) {
+            return absolute;
+        }
+        return path.join(await resolveRealPath(parent), path.basename(absolute));
     }
 }
 
 export async function isWorkspaceContainedPath(targetPath: string, workspace: string): Promise<boolean> {
-    return isParentPath(workspace, targetPath) &&
-        isParentPath(workspace, await resolveRealPath(targetPath));
+    return isPathInside(workspace, targetPath) && isPathInside(workspace, await resolveRealPath(targetPath));
 }
 
-/** The files that leave root, directly or through a symlink. */
 export async function findPathsOutside(files: string[], root: string): Promise<string[]> {
     const realRoot = await resolveRealPath(root);
     const outside: string[] = [];
     for (const file of files) {
-        if (!isParentPath(root, file) || !isParentPath(realRoot, await resolveRealPath(file))) {
+        if (!isPathInside(root, file) || !isPathInside(realRoot, await resolveRealPath(file))) {
             outside.push(file);
         }
     }
