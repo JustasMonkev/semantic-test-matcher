@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -284,6 +285,35 @@ diff --git old/src/page.ts new/src/page.ts
             assert.deepEqual(unrelated.changeTokens, []);
         } finally {
             await fs.rm(root, { recursive: true, force: true });
+        }
+    });
+
+    it('keeps cwd-relative real directories inside a parent Git repository', async () => {
+        const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'semantic-profile-'));
+        execFileSync('git', ['init', '--quiet', parent]);
+        const root = path.join(parent, 'nested');
+        try {
+            await fs.mkdir(path.join(root, 'new/src'), { recursive: true });
+            await fs.mkdir(path.join(root, 'src'), { recursive: true });
+            await fs.writeFile(path.join(root, 'new/src/page.ts'), 'export const screenshot = true;');
+            await fs.writeFile(path.join(root, 'src/page.ts'), 'export const unrelated = true;');
+            const diff = `
+diff --git old/src/page.ts new/src/page.ts
+--- old/src/page.ts
++++ new/src/page.ts
+@@ -1 +1 @@
+-return capture();
++return screenshot();
+`;
+
+            const target = buildDocumentProfile(path.join(root, 'new/src/page.ts'), '', root, diff);
+            const unrelated = buildDocumentProfile(path.join(root, 'src/page.ts'), '', root, diff);
+
+            assert.deepEqual(listDiffFiles(diff, root), [path.join(root, 'new/src/page.ts')]);
+            assert.deepEqual(target.changeTokens, ['screenshot', 'capture']);
+            assert.deepEqual(unrelated.changeTokens, []);
+        } finally {
+            await fs.rm(parent, { recursive: true, force: true });
         }
     });
 
@@ -933,6 +963,33 @@ describe('listDiffFiles', () => {
         await fs.mkdir(path.join(root, 'a/src'), { recursive: true });
         assert.deepEqual(listDiffFiles(diff, root, '.'), [path.join(root, 'b/src/new.ts'), path.join(root, 'a/src/gone.ts')]);
         await fs.rm(root, { recursive: true, force: true });
+    });
+
+    it('resolves plain diff paths against nested cwd rather than the Git root', async (t) => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rbt-plain-nested-'));
+        t.after(() => fs.rm(root, { recursive: true, force: true }));
+        execFileSync('git', ['init', '--quiet', root]);
+        const cwd = path.join(root, 'nested');
+        await fs.mkdir(cwd);
+        await fs.writeFile(path.join(root, 'page.ts'), 'export const before = true;');
+        await fs.writeFile(path.join(cwd, 'page.ts'), 'export const after = true;');
+        const diff = [
+            '--- page.ts',
+            '+++ page.ts',
+            '@@ -1 +1 @@',
+            '-export const before = true;',
+            '+export const after = true;',
+        ].join('\n');
+
+        assert.deepEqual(listDiffFiles(diff, cwd), [path.join(cwd, 'page.ts')]);
+        assert.deepEqual(listDiffFiles(diff, cwd, '..'), [path.join(root, 'page.ts')]);
+        assert.ok(buildDocumentProfile(path.join(cwd, 'page.ts'), '', cwd, diff).diffExcerpt.includes('after'));
+        assert.equal(buildDocumentProfile(path.join(root, 'page.ts'), '', cwd, diff).diffExcerpt, '');
+
+        await fs.mkdir(path.join(cwd, 'b'), { recursive: true });
+        await fs.writeFile(path.join(cwd, 'b/page.ts'), 'export const after = true;');
+        const labeledDiff = diff.replace('--- page.ts', '--- a/page.ts').replace('+++ page.ts', '+++ b/page.ts');
+        assert.deepEqual(listDiffFiles(labeledDiff, cwd), [path.join(cwd, 'b/page.ts')]);
     });
 
     it('keeps plain unified diff paths and drops their timestamps', () => {

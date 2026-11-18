@@ -58,6 +58,12 @@ describe('resolveConfig', () => {
         assert.deepEqual(config.match.candidatePaths, ['test', 'tests']);
     });
 
+    it('preserves an explicit empty candidate list over configured defaults', async () => {
+        const configFile = await writeTempConfig({ match: { candidatePaths: ['tests'] } });
+        const config = await resolveConfig({ config: configFile }, { candidates: [] });
+        assert.deepEqual(config.match.candidatePaths, []);
+    });
+
     it('turns on debug diagnostics for a debug log level from a flag or the environment', async () => {
         await resolveConfig({ logLevel: 'debug' }, {});
         assert.equal(isDebug(), true);

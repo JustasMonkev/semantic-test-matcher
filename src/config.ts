@@ -231,7 +231,7 @@ export async function resolveConfig(
         : resolveTopK(options, fileMatch);
 
     const cacheDirOverride = options.cacheDir ?? rootOptions.cacheDir ?? readEnv('RBT_CACHE_DIR');
-    const cliCandidates = options.candidates?.length ? options.candidates : undefined;
+    const cliCandidates = options.candidates;
     if (autoDiscovered && cacheDirOverride === undefined && fileConfig.cacheDir) {
         await assertRepoConfigStaysInWorkspace([fileConfig.cacheDir], workspace, 'cacheDir');
     }

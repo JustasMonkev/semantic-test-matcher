@@ -141,10 +141,10 @@ Useful flags:
 
 Numeric settings must be numbers wherever they are set (flag, environment variable, or config file); a value such as `--top-k abc` is an error. Blank environment variables still count as unset.
 - `--selection-policy <adaptive|conservative|targeted|representative>`
-- `-c, --candidates <path>` (repeat for several, e.g. `-c tests -c e2e`)
+- `-c, --candidates <path>` (files or directories; repeat for several, e.g. `-c tests -c e2e`; use `--include-file` for glob patterns)
 - `--include-file <glob>` (repeatable)
 - `--exclude-file <glob>` (repeatable)
-- `--candidates-from-stdin`
+- `--candidates-from-stdin` (an empty list selects nothing, rather than falling back to configured paths)
 - `--ranker <jev|decisions|heuristics>` (`openai` is an alias for `decisions`)
 - `--jev-model <id>`
 - `--decisions-model <id>`
