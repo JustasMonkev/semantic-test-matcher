@@ -84,7 +84,8 @@ export async function collectCandidateFiles(
         }
     };
 
-    const visitSeed = async (absolute: string) => {
+    const visitSeed = async (seed: string) => {
+        const absolute = path.resolve(cwd, seed);
         try {
             const entry = await fs.lstat(absolute);
             if (entry.isDirectory()) {
@@ -93,17 +94,20 @@ export async function collectCandidateFiles(
                 await addFile(absolute);
             }
         } catch (error) {
+            if (hasErrorCode(error, 'ENOENT') && /[*?\[\]{}]/.test(seed)) {
+                throw new Error('Candidate paths must be files or directories; use --include-file for glob patterns');
+            }
             if (!hasErrorCode(error, 'ENOENT')) {
                 throw error;
             }
         }
     };
 
-    for (const seed of seeds.length ? seeds : [cwd]) {
+    for (const seed of seeds) {
         if (isFull()) {
             break;
         }
-        await visitSeed(path.resolve(cwd, seed));
+        await visitSeed(seed);
     }
 
     return { files: [...files], truncated: isFull() };

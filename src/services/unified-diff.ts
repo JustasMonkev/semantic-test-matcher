@@ -324,7 +324,8 @@ function stripGitPrefix(
     prefix: string | undefined,
     section: FileSection,
     diffBase: string,
-    isTargetPath: (diffPath: string) => boolean
+    isTargetPath: (diffPath: string) => boolean,
+    fallbackBase?: string
 ): string {
     if (!prefix || !diffPath.startsWith(prefix)) {
         return diffPath;
@@ -334,7 +335,10 @@ function stripGitPrefix(
     if (prefixIsSynthetic) {
         return diffPath.slice(prefix.length);
     }
-    const prefixedPathExists = section.prefixedGitPaths?.some((gitPath) => existsSync(path.resolve(diffBase, gitPath))) ?? false;
+    const prefixedPathExists = section.prefixedGitPaths?.some((gitPath) =>
+        existsSync(path.resolve(diffBase, gitPath))
+        || fallbackBase !== undefined && existsSync(path.resolve(fallbackBase, gitPath))
+    ) ?? false;
     return prefixedPathExists || isTargetPath(diffPath) ? diffPath : diffPath.slice(prefix.length);
 }
 
@@ -349,7 +353,7 @@ function readFileHeaderAndMatchTarget(
     const diffBase = isGitDiff || !target.allowCwdRelativeGitPaths ? target.rootPath : target.cwd;
     const isTargetPath = (diffPath: string) => matchesDiffPath(diffPath, target.absolutePath, diffBase);
     const prefix = section.gitPrefixes?.[isNewFileHeader ? 1 : 0];
-    let diffPath = stripGitPrefix(readFileHeaderPath(line), prefix, section, diffBase, isTargetPath);
+    let diffPath = stripGitPrefix(readFileHeaderPath(line), prefix, section, diffBase, isTargetPath, isGitDiff ? cwdFallbackBase(target) : undefined);
     let fileMatches = currentFileMatches;
     if (!isGitDiff) {
         if (!isNewFileHeader) {
@@ -393,7 +397,7 @@ function isDeletedTarget(section: FileSection, target: DiffTarget): boolean {
         return false;
     }
     const isTargetPath = (diffPath: string) => matchesDiffPath(diffPath, target.absolutePath, target.rootPath);
-    const diffPath = stripGitPrefix(oldGitPath, section.gitPrefixes?.[0], section, target.rootPath, isTargetPath);
+    const diffPath = stripGitPrefix(oldGitPath, section.gitPrefixes?.[0], section, target.rootPath, isTargetPath, cwdFallbackBase(target));
     return matchesDiffPath(
         diffPath,
         target.absolutePath,
@@ -514,14 +518,25 @@ interface DiffFileScan {
     modeOnly: Set<string>;
 }
 
-function scanDiffFiles(diffText: string, basePath: string): DiffFileScan {
+function resolveListedPath(diffPath: string, basePath: string, fallbackBase?: string): string {
+    const resolved = path.resolve(basePath, diffPath);
+    if (fallbackBase === undefined || fallbackBase === basePath) return resolved;
+    const fallback = path.resolve(fallbackBase, diffPath);
+    if (!existsSync(fallback)) return resolved;
+    if (existsSync(resolved) && resolved !== fallback) {
+        throw new Error(`Ambiguous diff path "${diffPath}"; use --diff-root to select its base directory`);
+    }
+    return fallback;
+}
+
+function scanDiffFiles(diffText: string, basePath: string, fallbackBase?: string): DiffFileScan {
     const scan: DiffFileScan = { changed: new Set(), modeOnly: new Set() };
     let section = emptyFileSection();
     let headerlessContentChanged = false;
     let deleted = false;
     let modeChanged = false;
     const headerlessPath = (side: 0 | 1) => section.prefixedGitPaths
-        && stripGitPrefix(section.prefixedGitPaths[side], section.gitPrefixes?.[side], section, basePath, () => false);
+        && stripGitPrefix(section.prefixedGitPaths[side], section.gitPrefixes?.[side], section, basePath, () => false, fallbackBase);
     const addHeaderlessTarget = () => {
         if (section.gitDiffLine === undefined) {
             return;
@@ -529,11 +544,11 @@ function scanDiffFiles(diffText: string, basePath: string): DiffFileScan {
         const targetPath = deleted ? headerlessPath(0)
             : section.unprefixedPaths[1] ?? (headerlessContentChanged ? headerlessPath(1) : undefined);
         if (targetPath) {
-            scan.changed.add(path.resolve(basePath, targetPath));
+            scan.changed.add(resolveListedPath(targetPath, basePath, fallbackBase));
         } else if (modeChanged) {
             const modePath = headerlessPath(1);
             if (modePath) {
-                scan.modeOnly.add(path.resolve(basePath, modePath));
+                scan.modeOnly.add(resolveListedPath(modePath, basePath, fallbackBase));
             }
         }
     };
@@ -577,15 +592,17 @@ function scanDiffFiles(diffText: string, basePath: string): DiffFileScan {
         }
         const isNewFileHeader = line.startsWith('+++ ');
         const prefix = section.gitPrefixes?.[isNewFileHeader ? 1 : 0];
-        const diffPath = stripGitPrefix(readFileHeaderPath(line), prefix, section, basePath, () => false);
+        const diffPath = stripGitPrefix(readFileHeaderPath(line), prefix, section, basePath, () => false, fallbackBase);
         if (!isNewFileHeader) {
             oldPath = diffPath;
             continue;
         }
-        const changedPath = section.gitDiffLine === undefined
-            ? plainChangedPath(oldPath, diffPath, basePath)
+        const isPlainDiff = section.gitDiffLine === undefined;
+        const headerBase = isPlainDiff ? fallbackBase ?? basePath : basePath;
+        const changedPath = isPlainDiff
+            ? plainChangedPath(oldPath, diffPath, headerBase)
             : diffPath === DEV_NULL ? oldPath : diffPath;
-        scan.changed.add(path.resolve(basePath, changedPath));
+        scan.changed.add(resolveListedPath(changedPath, headerBase, isPlainDiff ? undefined : fallbackBase));
         section = emptyFileSection();
     }
     addHeaderlessTarget();
@@ -593,10 +610,10 @@ function scanDiffFiles(diffText: string, basePath: string): DiffFileScan {
 }
 
 export function listDiffFiles(diffText: string, cwd: string, diffRoot?: string): string[] {
-    return [...scanDiffFiles(diffText, resolveDiffRoot(cwd, diffRoot)).changed];
+    return [...scanDiffFiles(diffText, resolveDiffRoot(cwd, diffRoot), diffRoot === undefined ? cwd : undefined).changed];
 }
 
 export function listModeOnlyDiffFiles(diffText: string, cwd: string, diffRoot?: string): string[] {
-    const { changed, modeOnly } = scanDiffFiles(diffText, resolveDiffRoot(cwd, diffRoot));
+    const { changed, modeOnly } = scanDiffFiles(diffText, resolveDiffRoot(cwd, diffRoot), diffRoot === undefined ? cwd : undefined);
     return [...modeOnly].filter((file) => !changed.has(file));
 }

@@ -86,7 +86,7 @@ export function registerMatchCommand(program: Command): void {
         .option('--min-score <number>', 'Minimum similarity score override')
         .option('--top-k <number>', 'Optional maximum number of selected tests')
         .option('--selection-policy <name>', 'adaptive (default), conservative, targeted, or representative (requires --top-k; may miss tests)')
-        .option('-c, --candidates <pattern>', 'Candidate file path, directory, or file glob (repeat for several)', appendValue)
+        .option('-c, --candidates <path>', 'Candidate file or directory (repeat for several; use --include-file for globs)', appendValue)
         .option('--include-file <pattern>', 'Include only matching files (glob pattern; repeat for several)', appendValue)
         .option('--exclude-file <pattern>', 'Exclude matching files (glob pattern; repeat for several)', appendValue)
         .option('--candidates-from-stdin', 'Read candidate file list (JSON array or newline list) from stdin')
@@ -241,7 +241,7 @@ async function scoreEveryChange(scorer: ModelScorer, jobs: ChangeJob[], diffOnly
 
 async function scoreWithProviderChain(jobs: ChangeJob[], changes: ChangedFiles, config: RuntimeConfig): Promise<RankingOutcome> {
     const diffOnly = !changes.isAutomatic && changes.diffText !== undefined;
-    const chain = remoteProviderChain(config);
+    const chain = jobs.some((job) => job.candidates.length) ? remoteProviderChain(config) : [];
     const attempts: RankerAttempt[] = [];
     const failureReasons: string[] = [];
     const rankerFallback = () => (failureReasons.length ? failureReasons.join('; ') : undefined);

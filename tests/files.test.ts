@@ -20,6 +20,21 @@ function relativeSorted(root: string, files: string[]): string[] {
 }
 
 describe('collectCandidateFiles', () => {
+    it('does not scan cwd for empty seeds and rejects unsupported glob seeds', async () => {
+        const root = await makeTree(['tests/a.test.ts']);
+        assert.deepEqual(await collectCandidateFiles([], ['**/*'], [], root), { files: [], truncated: false });
+        await assert.rejects(collectCandidateFiles(['tests/*.test.ts'], ['**/*'], [], root), /use --include-file/);
+    });
+
+    it('ignores missing literal seeds when cwd contains glob metacharacters', async (t) => {
+        const root = await makeTree(['project[1]/tests/a.test.ts']);
+        t.after(() => fs.rm(root, { recursive: true, force: true }));
+        const cwd = path.join(root, 'project[1]');
+
+        const result = await collectCandidateFiles(['missing.ts', 'tests/a.test.ts'], ['**/*'], [], cwd);
+        assert.deepEqual(relativeSorted(cwd, result.files), ['tests/a.test.ts']);
+    });
+
     it('collects allowed source files from seed directories', async () => {
         const root = await makeTree([
             'tests/a.test.ts',
