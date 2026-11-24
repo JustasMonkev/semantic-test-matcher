@@ -51,6 +51,17 @@ describe('rankMatches', () => {
     const sourceProfile = buildDocumentProfile(`${cwd}/src/price-engine.ts`, PRICE_ENGINE_SOURCE, cwd);
     const source = { profile: sourceProfile };
 
+    it('does not attribute a losing export/import overlap to a stronger anchor', () => {
+        const profile = buildDocumentProfile(`${cwd}/src/a.ts`,
+            'export const falcon = 1; export const maple = 2; getByTestId();', cwd);
+        const candidate = makeCandidate('tests/b.ts',
+            "import { falcon, cedar } from './other'; test('locator', () => getByTestId());", cwd);
+        const [match] = rankMatches({ profile }, [candidate], true);
+        assert.ok(match.anchorScore > 0.5); // Only one of the two exported tokens matches the imports.
+        assert.deepEqual(match.explanation?.exportImportTokens, []);
+        assert.ok(match.explanation.phraseTokens.includes('testid'));
+    });
+
     it('ranks the related test above an unrelated test', () => {
         const matches = rankMatches(source, [
             makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd),
