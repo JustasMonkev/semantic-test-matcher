@@ -28,7 +28,14 @@ interface MatchOutput {
     selectionWarning?: string;
     model?: string;
     jev?: { requests: number; cacheHits: number; models: string[] };
-    results: Array<{ file: string; score: number; structuralScore: number; modelScore?: number; jevScore?: number }>;
+    results: Array<{
+        file: string;
+        score: number;
+        structuralScore: number;
+        modelScore?: number;
+        jevScore?: number;
+        explanation?: { source: string; scoreBasis: string; exportImportTokens: string[]; phraseTokens: string[] };
+    }>;
 }
 
 describe('match command rankers', () => {
@@ -103,6 +110,52 @@ describe('match command rankers', () => {
         const output = JSON.parse(lines[lines.length - 1]) as MatchOutput & { file: string };
 
         assert.equal(output.file, path.join('src', 'price.ts'));
+    });
+
+    it('adds bounded scoring examples only on request, without changing the selection', async () => {
+        await fs.writeFile('tests/price.test.ts',
+            "import { applyDiscount as discount } from '../src/price'; test('applies the discount', () => discount(10));");
+        const flags = ['--ranker', 'heuristics', '--selection-policy', 'conservative'];
+        const plain = await runMatch(...flags);
+        const explained = await runMatch(...flags, '--explain');
+        const withoutExplanations = explained.output.results.map(({ explanation, ...match }) => match);
+        assert.deepEqual(withoutExplanations, plain.output.results);
+        const [price, socket] = explained.output.results.map(result => result.explanation);
+        assert.equal(price?.source, 'src/price.ts');
+        assert.equal(price.scoreBasis, 'structural');
+        assert.ok(price.exportImportTokens.includes('applydiscount'));
+        assert.ok(price.phraseTokens.includes('discount'));
+        assert.deepEqual(socket?.exportImportTokens, []);
+        assert.deepEqual(socket.phraseTokens, []);
+        const paths = await runCli('src/price.ts', ...flags, '--explain', '--paths-only');
+        assert.deepEqual(paths.lines, plain.output.results.map(match => match.file));
+    });
+
+    it('prints at most four examples per signal and omits oversized tokens rather than inventing shorter ones', async () => {
+        const names = ['a'.repeat(100), 'oranges', 'lemons', 'apples', 'peaches', 'melons', 'mangos'];
+        await fs.writeFile('src/price.ts', names.map(name => `export const ${name} = 1;`).join('\n'));
+        await fs.writeFile('tests/price.test.ts', `import { ${names.join(', ')} } from '../src/price'; test('basket', () => {});`);
+        const flags = ['--ranker', 'heuristics', '--explain', '--top-k', '1'];
+        const { output } = await runMatch(...flags);
+        const examples = output.results[0].explanation;
+        assert.ok(examples);
+        assert.equal(examples.exportImportTokens.length, 4);
+        assert.ok(examples.phraseTokens.length <= 4);
+        assert.ok([...examples.exportImportTokens, ...examples.phraseTokens].every(token => !/^a+$/.test(token) && token.length <= 80));
+        const { lines } = await runCli('src/price.ts', ...flags);
+        assert.ok(lines.includes(`  Export/import tokens: ${examples.exportImportTokens.join(', ')}`));
+    });
+
+    it('keeps the merged explanation with the source that supplied the winning score', async () => {
+        await fs.writeFile('src/socket.ts', 'export function reconnect() {}');
+        const { lines } = await runCli('src/socket.ts', 'src/price.ts', '--ranker', 'heuristics',
+            '--selection-policy', 'conservative', '--explain', '--json');
+        const output = JSON.parse(lines[0]) as MatchOutput & { changes: Array<MatchOutput & { file: string }> };
+        const price = output.results.find(match => match.file === 'tests/price.test.ts');
+        assert.equal(price?.explanation?.source, 'src/price.ts');
+        for (const change of output.changes) {
+            assert.ok(change.results.every(match => match.explanation?.source === change.file));
+        }
     });
 
     it('uses Jev by default and falls back to heuristics, saying so, without an API key', async () => {
@@ -222,8 +275,9 @@ describe('match command rankers', () => {
     it('does not fall back on valid low model probabilities', async () => {
         process.env.OPENAI_API_KEY = 'fixture-key';
         globalThis.fetch = async (_url, init) => decisionsResponse(init, 0);
-        const { output } = await runMatch('--ranker', 'decisions');
+        const { output } = await runMatch('--ranker', 'decisions', '--explain');
         assert.equal(output.ranker, 'decisions');
+        assert.ok(output.results.every(match => match.explanation?.scoreBasis === 'model-and-structural'));
         assert.equal(output.rankerFallback, undefined);
         assert.ok(output.results.every(result => result.modelScore === 0));
     });

@@ -19,6 +19,14 @@ export interface MatchCandidate {
     changeScore: number;
     modelScore?: number;
     jevScore?: number;
+    explanation?: MatchExplanation;
+}
+
+interface MatchExplanation {
+    source: string;
+    scoreBasis: 'structural' | 'model-and-structural';
+    exportImportTokens: string[];
+    phraseTokens: string[];
 }
 
 export interface RankedMatchSource {
@@ -240,7 +248,24 @@ function blendStructuralSignals(signals: StructuralSignals, sourceHasChangeEvide
     return clamp(weightedSum / weightTotal, 0, 1);
 }
 
-export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCandidate[]): MatchCandidate[] {
+function sharedExamples(left: string[], right: string[]): string[] {
+    const rightSet = new Set(right);
+    return left.filter(token => token.length <= 80 && rightSet.has(token)).slice(0, 4);
+}
+
+function explainMatch(source: DocumentProfile, candidate: DocumentProfile, anchorScore: number, modelScore?: number): MatchExplanation {
+    // Attribute the anchor only when the export/import comparison attains its reported score.
+    const importAnchor = Math.min(MAX_ANCHOR_SCORE, overlapCoefficient(source.exports, candidate.imports));
+    return {
+        source: source.relativePath,
+        scoreBasis: modelScore === undefined ? 'structural' : 'model-and-structural',
+        exportImportTokens: importAnchor > 0 && importAnchor === anchorScore
+            ? sharedExamples(source.exports, candidate.imports) : [],
+        phraseTokens: sharedExamples(source.phraseTokens, candidate.phraseTokens),
+    };
+}
+
+export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCandidate[], explain = false): MatchCandidate[] {
     const sourceHasChangeEvidence = hasChangeEvidence(source.profile);
     return candidates
         .map((item) => {
@@ -266,6 +291,7 @@ export function rankMatches(source: RankedMatchSource, candidates: RankedMatchCa
                 changeScore: signals.changeScore,
                 modelScore,
                 jevScore: item.jevScore,
+                ...(explain && { explanation: explainMatch(source.profile, item.profile, signals.anchorScore, modelScore) }),
             };
         })
         .sort(byScoreThenFile);

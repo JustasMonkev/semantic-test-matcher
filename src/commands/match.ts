@@ -32,6 +32,7 @@ interface MatchOptions extends MatchCommandOptions, Omit<RootOptions, 'cacheDir'
     diffRoot?: string;
     json?: boolean;
     pathsOnly?: boolean;
+    explain?: boolean;
     candidatesFromStdin?: boolean;
 }
 
@@ -98,6 +99,7 @@ export function registerMatchCommand(program: Command): void {
         .option('--diff-file <path>', 'Unified diff file used to enrich change-aware matching')
         .option('--diff-root <path>', 'Base directory for relative paths in --diff-file')
         .option('--json', 'Print machine-readable output')
+        .option('--explain', 'Show normalized token examples behind each match score')
         .option('--paths-only', 'Print only the selected test paths, one per line')
         .action((files: string[], options: MatchOptions) => runMatch(files, options, rootOptionsOf(program, options)));
 }
@@ -122,7 +124,7 @@ async function runMatch(files: string[], options: MatchOptions, rootOptions: Roo
     const jobs = await prepareChangeJobs(changes, candidates, cwd);
     const ranking = await scoreWithProviderChain(jobs, changes, config);
     const reports = jobs.map((job, index) =>
-        buildChangeReport(job, ranking, ranking.modelResults[index], config, candidateScan.truncated)
+        buildChangeReport(job, ranking, ranking.modelResults[index], config, candidateScan.truncated, options.explain && (options.json || !options.pathsOnly))
     );
     const cacheEntries = await countProviderCacheEntries(ranking, config);
     const final = finalizeSelection(reports, candidates, config);
@@ -295,12 +297,13 @@ function buildChangeReport(
     { ranker, rankerFallback, attempts }: RankingOutcome,
     modelResult: ModelScoreResult | undefined,
     config: RuntimeConfig,
-    candidateLimitReached: boolean
+    candidateLimitReached: boolean,
+    explain = false
 ) {
     const { selectionPolicy, topK, minScore, threshold } = config.match;
     const isRepresentative = selectionPolicy === 'representative';
     const isTargeted = selectionPolicy === 'targeted';
-    const matches = rankMatches({ profile: job.source.profile }, attachModelScores(job.candidates, modelResult, ranker));
+    const matches = rankMatches({ profile: job.source.profile }, attachModelScores(job.candidates, modelResult, ranker), explain);
     const selection = selectMatches(
         filterMatches(matches, minScore),
         isRepresentative ? undefined : topK,
@@ -465,6 +468,13 @@ function printText(final: FinalSelection, config: RuntimeConfig, candidateLimitR
     }
     for (const match of final.selected) {
         console.log(`${match.score.toFixed(4)} ${match.file}`);
+        if (match.explanation) {
+            const { source, scoreBasis, exportImportTokens, phraseTokens } = match.explanation;
+            console.log(`  Source: ${source}; score: ${scoreBasis}`);
+            if (exportImportTokens.length) console.log(`  Export/import tokens: ${exportImportTokens.join(', ')}`);
+            if (phraseTokens.length) console.log(`  Shared phrases: ${phraseTokens.join(', ')}`);
+            if (!exportImportTokens.length && !phraseTokens.length) console.log('  No export/import or phrase examples.');
+        }
         if (config.verbose && match.preview) {
             console.log(`  ${match.preview}`);
         }
