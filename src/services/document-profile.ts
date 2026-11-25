@@ -86,8 +86,8 @@ const TEST_TITLE_PATTERN = new RegExp(
     'g'
 );
 // Recognize the context parameter of common inline Node test callbacks, not arbitrary .test() receivers.
-const CONTEXT_CALLBACK = /\s*,\s*(?:async(?:\s+|(?=\()))?(?:function(?:\s+[\w$]+)?\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*(?:=>|\{)/y;
-const SUBTEST_ARGUMENT = /\s*,\s*[^\s)]/y;
+const CONTEXT_CALLBACK = /\s*,\s*(?:(?:\{[^{}]*\}|[A-Za-z_$][\w$]*)\s*,\s*)?(?:async(?:\s+|(?=\()))?(?:function(?:\s+[\w$]+)?\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*(?:=>|\{)/y;
+const SUBTEST_ARGUMENT = /\s*,\s*[A-Za-z_$({]/y;
 
 const TEST_FILE_NAME = /(?:\.(?:test|spec)|_test)\.[cm]?[jt]sx?$/i;
 const FIXTURE_PATH = /(^|\/)(fixture|fixtures|__fixtures__)\//i;
@@ -244,7 +244,8 @@ function maskNonCode(text: string): string {
 function collectTestTitles(text: string): string[] {
     const code = maskNonCode(text);
     const titles: string[] = [];
-    const contexts = new Set<string>();
+    const calls: Array<{ parameter: string; bodyStart: number } | undefined> = [];
+    let cursor = 0;
     for (const match of text.matchAll(TEST_TITLE_PATTERN)) {
         const { title, receiver } = match.groups!;
         const trimmedTitle = title.trim();
@@ -252,8 +253,18 @@ function collectTestTitles(text: string): string[] {
             continue;
         }
         const afterTitle = match.index + match[0].length;
+        // Parentheses in literals and comments are masked. A context expires when its test call closes.
+        while (cursor < afterTitle) {
+            const character = code[cursor++];
+            if (character === '(') {
+                calls.push(undefined);
+            } else if (character === ')') {
+                calls.pop();
+            }
+        }
         SUBTEST_ARGUMENT.lastIndex = afterTitle;
-        if (receiver && (!contexts.has(receiver) || !SUBTEST_ARGUMENT.test(code))) {
+        if (receiver && (!calls.some(call => call?.parameter === receiver && call.bodyStart <= match.index)
+            || !SUBTEST_ARGUMENT.test(code))) {
             continue;
         }
 
@@ -261,7 +272,7 @@ function collectTestTitles(text: string): string[] {
         CONTEXT_CALLBACK.lastIndex = afterTitle;
         const context = CONTEXT_CALLBACK.exec(code)?.[1];
         if (context) {
-            contexts.add(context);
+            calls[calls.length - 1] = { parameter: context, bodyStart: CONTEXT_CALLBACK.lastIndex };
         }
     }
     return uniqueTokens(titles);

@@ -90,6 +90,25 @@ describe('rankMatches', () => {
         assert.equal(matches[1].anchorScore, 0);
     });
 
+    it('keeps the Node context local to the callback even when the parent takes options', () => {
+        const source = { profile: buildDocumentProfile('src.ts', 'export const ledger = 1;', cwd) };
+        const real = makeCandidate('b.test.ts', [
+            "test('suite', { concurrency: 2 }, async ctx => {",
+            "  await ctx.test('nested', child => child.test('leaf', () => {}));",
+            "  await ctx.test('ledger', () => {});",
+            "});",
+        ].join('\n'), cwd);
+        const other = makeCandidate('a.test.ts', [
+            "test('suite', async ctx => {});",
+            "function check(ctx) { return ctx.test('ledger', 42); }",
+            "check(/x/);",
+            "function validate(ctx) { return ctx.test('outside', () => false); }",
+        ].join('\n'), cwd);
+        assert.deepEqual(real.profile.testTitles, ['suite', 'nested', 'leaf', 'ledger']);
+        assert.deepEqual(other.profile.testTitles, ['suite']);
+        assert.deepEqual(rankMatches(source, [other, real]).map(match => match.file), [real.file, other.file]);
+    });
+
     it('ranks the related test above an unrelated test', () => {
         const matches = rankMatches(source, [
             makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd),
