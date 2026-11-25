@@ -173,13 +173,6 @@ function collectImportedPaths(text: string): string[] {
     );
 }
 
-function collectTestNames(text: string): string[] {
-    return collectCaptures(text, /(?:describe|it|test)\s*\(\s*['"`]([^'"`]{1,160})['"`]/g, (name) => {
-        const trimmed = name.trim();
-        return trimmed ? identifierTokens(trimmed) : [];
-    });
-}
-
 function maskNonCode(text: string): string {
     let masked = '';
     let previousCodeCharacter = '';
@@ -522,7 +515,8 @@ export function buildDocumentProfile(
     const changePhraseTokens = hasChangedLines ? collectChangePhraseTokens(changedLines, relativePath) : [];
     const exports = collectExportedSymbols(text);
     const imports = collectImportedSymbols(text);
-    const testNames = collectTestNames(text);
+    const testTitles = collectTestTitles(text);
+    const testNames = uniqueTokens(testTitles.flatMap(identifierTokens));
     const commandTokens = collectCommandTokens(text);
     const optionTokens = collectOptionTokens(text);
     const rareAnchorTokens = collectRareAnchorTokens(text, relativePath);
@@ -565,7 +559,7 @@ export function buildDocumentProfile(
         exports,
         imports,
         testNames,
-        testTitles: collectTestTitles(text),
+        testTitles,
         commandTokens,
         optionTokens,
         contentTokens,

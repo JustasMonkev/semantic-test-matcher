@@ -62,6 +62,18 @@ describe('rankMatches', () => {
         assert.ok(match.explanation.phraseTokens.includes('testid'));
     });
 
+    it('credits a declared parameterized title rather than a commented-out test', () => {
+        const profile = buildDocumentProfile(`${cwd}/src.ts`, 'export const mint = 1;', cwd);
+        const matches = rankMatches({ profile }, [
+            makeCandidate('a.test.ts', "// test('mint', () => {});\ntest('leaf', () => {});", cwd),
+            makeCandidate('b.test.ts', "test.each([1])('mint', () => {});", cwd),
+        ]);
+
+        assert.deepEqual(matches.map(match => match.file), ['b.test.ts', 'a.test.ts']);
+        assert.ok(matches[0].anchorScore > 0);
+        assert.equal(matches[1].anchorScore, 0);
+    });
+
     it('ranks the related test above an unrelated test', () => {
         const matches = rankMatches(source, [
             makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd),
