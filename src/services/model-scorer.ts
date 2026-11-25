@@ -80,7 +80,7 @@ export function buildCandidateEvidence(source: ModelSource, candidate: ModelCand
     // Keep the first witness for each source term, then fill unused slots in declaration order.
     const selected = new Set<number>();
     for (const [index, title] of titles.entries()) {
-        for (const token of tokenizeText(title)) {
+        for (const token of tokenizeText(title.replace(/[^a-z0-9]+/gi, ' '))) {
             if (uncovered.delete(token)) {
                 selected.add(index);
             }

@@ -9,12 +9,12 @@ it('reserves title slots for distinct changed terms in both provider requests', 
     const source = { text: '', profile: buildDocumentProfile('/repo/src.ts', '', '/repo', diff) };
     const titles = [
         ...Array.from({ length: 40 }, (_, index) => `mint example ${index}`),
-        'covers the ledger', 'unrelated tail',
+        'verifies mint(ledger)', 'unrelated tail',
     ];
     const file = 'suite.test.ts';
     const code = titles.map(title => `test('${title}', () => {});`).join('\n');
     const candidate = { file, profile: buildDocumentProfile(file, code, '/repo') };
-    const expected = [...titles.slice(0, 39), 'covers the ledger'];
+    const expected = [...titles.slice(0, 39), 'verifies mint(ledger)'];
 
     assert.deepEqual(buildJevQuestion(source, candidate).instructions.test_file.test_titles, expected);
     assert.ok(buildDecisionQuestion(source, candidate, 0).instructions.endsWith(
