@@ -72,6 +72,24 @@ function singleMedoid(tokenSets: Set<string>[]): Medoids {
     return { selected: [best], objective: costs[best] };
 }
 
+function groupProfiles(tokenSets: Set<string>[]) {
+    const uniqueSets: Set<string>[] = [];
+    const indexByKey = new Map<string, number>();
+    const groupOf = tokenSets.map(tokens => {
+        const key = JSON.stringify([...tokens].sort());
+        const known = indexByKey.get(key);
+        if (known !== undefined) {
+            return known;
+        }
+        const group = uniqueSets.length;
+        uniqueSets.push(tokens);
+        indexByKey.set(key, group);
+        return group;
+    });
+
+    return { groupOf, uniqueSets };
+}
+
 function greedyMedoids(tokenSets: Set<string>[], budget: number): Medoids {
     const count = tokenSets.length;
     if (budget >= count) {
@@ -80,18 +98,20 @@ function greedyMedoids(tokenSets: Set<string>[], budget: number): Medoids {
     if (budget === 1) {
         return singleMedoid(tokenSets);
     }
-    const distances = tokenSets.map(() => new Float64Array(count));
-    forEachPairDistance(tokenSets, (left, right, distance) => {
+    const { groupOf, uniqueSets } = groupProfiles(tokenSets);
+    const distances = uniqueSets.map(() => new Float64Array(uniqueSets.length));
+    forEachPairDistance(uniqueSets, (left, right, distance) => {
         distances[left][right] = distance;
         distances[right][left] = distance;
     });
-    const nearest = new Float64Array(count).fill(1);
+    const nearest = new Float64Array(uniqueSets.length).fill(1);
     const selected: number[] = [];
     const chosen = new Set<number>();
-    const costIfAdded = (candidate: number) => {
+    const costIfAdded = (group: number) => {
         let cost = 0;
-        for (let target = 0; target < count; target += 1) {
-            cost += Math.min(nearest[target], distances[candidate][target]);
+        // Keep duplicates and target order: a weighted group sum can change floating-point ties.
+        for (const target of groupOf) {
+            cost += Math.min(nearest[target], distances[group][target]);
         }
         return cost;
     };
@@ -99,11 +119,14 @@ function greedyMedoids(tokenSets: Set<string>[], budget: number): Medoids {
     while (selected.length < budget) {
         let best = -1;
         let bestCost = Infinity;
-        for (let candidate = 0; candidate < count; candidate += 1) {
-            if (chosen.has(candidate)) {
+        const evaluated = new Set<number>();
+        for (let candidate = 0; candidate < groupOf.length; candidate += 1) {
+            const group = groupOf[candidate];
+            if (chosen.has(candidate) || evaluated.has(group)) {
                 continue;
             }
-            const cost = costIfAdded(candidate);
+            evaluated.add(group);
+            const cost = costIfAdded(group);
             if (cost < bestCost) {
                 best = candidate;
                 bestCost = cost;
@@ -111,11 +134,11 @@ function greedyMedoids(tokenSets: Set<string>[], budget: number): Medoids {
         }
         chosen.add(best);
         selected.push(best);
-        for (let target = 0; target < count; target += 1) {
-            nearest[target] = Math.min(nearest[target], distances[best][target]);
+        for (let target = 0; target < nearest.length; target += 1) {
+            nearest[target] = Math.min(nearest[target], distances[groupOf[best]][target]);
         }
     }
-    return { selected, objective: nearest.reduce((sum, distance) => sum + distance, 0) };
+    return { selected, objective: groupOf.reduce((sum, group) => sum + nearest[group], 0) };
 }
 
 export function selectRepresentatives(
