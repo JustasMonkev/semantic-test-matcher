@@ -40,6 +40,17 @@ const HUNK_HEADER_PATTERN = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/;
 const HEADER_TIMESTAMP_PATTERN = /\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?: [+-]\d{4})?$/;
 const RENAME_OR_COPY_PATTERN = /^(?:rename|copy) (?:from|to) /;
 
+export function stripFormatPatchPreambles(diffText: string): string {
+    if (!diffText.startsWith('From ')) return diffText;
+    const messages = diffText.split(/^From (?:[0-9a-f]{40}|[0-9a-f]{64}) Mon Sep 17 00:00:00 2001\r?\n/gm);
+    if (messages[0] !== '') return diffText;
+    return messages.slice(1).map(message => {
+        // Git separates its message from the diffstat with "---". The body can itself quote a patch.
+        const boundary = /^---\r?\n(?: [^\n]*\n)*\r?\n(?=diff --git )/m.exec(message);
+        return boundary ? message.slice(boundary.index + boundary[0].length) : message;
+    }).join('\n');
+}
+
 const GIT_ESCAPE_BYTES: Record<string, number> = {
     a: 0x07,
     b: 0x08,

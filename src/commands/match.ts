@@ -20,7 +20,7 @@ import { createScorerFromConfig } from '../services/model-scorer-factory.ts';
 import { ModelScorerError, type ModelScorer, type ModelScoreResult } from '../services/model-scorer.ts';
 import { selectRepresentatives, type RepresentativeSelection } from '../services/representative-selection.ts';
 import { detectTestCommand, promptAndRunTests } from '../services/test-runner.ts';
-import { listDiffFiles, resolveDiffRoot } from '../services/unified-diff.ts';
+import { listDiffFiles, resolveDiffRoot, stripFormatPatchPreambles } from '../services/unified-diff.ts';
 import { collectCandidateFiles, isAllowedFile, MAX_CANDIDATE_FILES, readCandidateText } from '../utils/files.ts';
 import { parseStdinList, readStdinText } from '../utils/io.ts';
 import { findPathsOutside } from '../utils/paths.ts';
@@ -151,7 +151,9 @@ async function resolveMatchConfig(rootOptions: RootOptions, options: MatchOption
 }
 
 async function resolveChangedFiles(files: string[], options: MatchOptions, cwd: string): Promise<ChangedFiles> {
-    const diffText = options.diffFile ? await fs.readFile(path.resolve(cwd, options.diffFile), 'utf8') : undefined;
+    const diffText = options.diffFile
+        ? stripFormatPatchPreambles(await fs.readFile(path.resolve(cwd, options.diffFile), 'utf8'))
+        : undefined;
     if (files.length) {
         return { isAutomatic: false, paths: files.map((file) => path.resolve(cwd, file)), diffText, diffRoot: options.diffRoot };
     }

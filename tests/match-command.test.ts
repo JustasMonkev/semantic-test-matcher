@@ -807,6 +807,24 @@ describe('match command rankers', () => {
             await execFileAsync('git', ['-c', 'user.name=RBT test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false', 'commit', '-m', 'initial']);
         });
 
+        it('ignores example patches quoted in a git format-patch commit message', async () => {
+            await fs.appendFile('src/price.ts', '\nexport const discountRate = 0.2;\n');
+            const message = [
+                'Reduce the discount', '', 'Example we declined:',
+                '@@ -1 +1 @@', '-previous behavior', '+reconnects after a timeout',
+                'diff --git a/src/absent.ts b/src/absent.ts',
+                '--- a/src/absent.ts', '+++ b/src/absent.ts', '@@ -1 +1 @@', '-old', '+new',
+            ].join('\n');
+            await execFileAsync('git', ['-c', 'user.name=RBT test', '-c', 'user.email=test@example.com',
+                '-c', 'commit.gpgsign=false', 'commit', '-am', message]);
+            const bare = await execFileAsync('git', ['diff', 'HEAD^', 'HEAD']);
+            const mail = await execFileAsync('git', ['format-patch', '-1', '--stdout']);
+            await fs.writeFile('bare.diff', bare.stdout);
+            await fs.writeFile('mail.diff', mail.stdout);
+            const flags = ['--ranker', 'heuristics', '--json', '--diff-file'];
+            assert.deepEqual((await runCli(...flags, 'mail.diff')).lines, (await runCli(...flags, 'bare.diff')).lines);
+        });
+
         it('detects changes without file arguments and keeps JSON and paths-only non-interactive', async () => {
             await fs.appendFile('src/price.ts', '\nexport const discountRate = 0.2;');
             const { lines } = await runCli('--ranker', 'heuristics', '--json');
