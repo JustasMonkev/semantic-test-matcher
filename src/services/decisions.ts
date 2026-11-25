@@ -114,10 +114,6 @@ function tokenCount(value: unknown): number | undefined {
     return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
-function payloadBytes(body: DecisionBody): number {
-    return Buffer.byteLength(JSON.stringify(body));
-}
-
 function isTransportError(error: unknown): boolean {
     return error instanceof TypeError || error instanceof DOMException;
 }
@@ -212,7 +208,10 @@ export class DecisionsScorer implements ModelScorer {
             input,
             questions: indices.map((index) => questions[index]),
         });
-        const batches = packBatches(missing, (batch) => batch.length <= MAX_QUESTIONS && payloadBytes(bodyFor(batch)) <= MAX_PAYLOAD_BYTES);
+        // Charge one comma per question; a nonempty JSON array needs one fewer comma.
+        const questionBudget = MAX_PAYLOAD_BYTES - Buffer.byteLength(JSON.stringify(bodyFor([]))) + 1;
+        const batches = packBatches(missing, MAX_QUESTIONS, questionBudget,
+            (index) => Buffer.byteLength(JSON.stringify(questions[index])) + 1);
         if (!batches) {
             throw new DecisionsError('Decisions candidate evidence exceeds the local request budget');
         }

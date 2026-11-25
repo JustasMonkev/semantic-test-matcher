@@ -201,11 +201,8 @@ export class JevScorer implements ModelScorer {
     private batchQuestions(state: JevState, questions: JevNoulQuestion[], indices: number[]): number[][] {
         const emptyPayload = JSON.stringify({ model: this.options.model, state, questions: {} });
         const tokenBudget = JEV_TOKEN_LIMIT_WITH_HEADROOM - estimateTokensUpperBound(emptyPayload);
-        const tokensOf = new Map(indices.map((index) => [index, questionTokens(questions[index], index)]));
-        const fits = (batch: number[]) => batch.length <= MAX_QUESTIONS_PER_REQUEST
-            && batch.reduce((sum, index) => sum + tokensOf.get(index)!, 0) <= tokenBudget;
-
-        const batches = packBatches(indices, fits);
+        const batches = packBatches(indices, MAX_QUESTIONS_PER_REQUEST, tokenBudget,
+            (index) => questionTokens(questions[index], index));
         if (!batches) {
             throw new JevError('Jev candidate evidence exceeds the local request budget');
         }
