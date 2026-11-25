@@ -112,6 +112,29 @@ describe('rankMatches', () => {
         }
     });
 
+    it('does not treat framework data or a shadowing callback parameter as a Node context', () => {
+        const profile = (code: string) => makeCandidate('example.test.ts', code, cwd).profile;
+        for (const declaration of ["test.each([/foo/])", "it.for([/foo/])", "Deno.test", "describe"]) {
+            assert.deepEqual(profile(`${declaration}('patterns', pattern => pattern.test('ledger'));`).testTitles, ['patterns']);
+        }
+        for (const runner of ["import { test } from 'vitest';", "import test from 'ava';", "const { test } = require('@playwright/test');"]) {
+            assert.deepEqual(profile(`${runner} test('patterns', pattern => pattern.test('ledger'));`).testTitles, ['patterns']);
+        }
+        const candidate = profile([
+            "import { test } from 'node:test';",
+            "import { expect } from 'vitest';",
+            "test('parent', t => {",
+            "  const rules = [/foo/];",
+            "  rules.some(t => t.test('ledger'));",
+            "  rules.filter(function (t) { return t.test('receipt'); });",
+            "  rules.map((t, index) => { t.test('pricelist'); });",
+            "  rules.forEach(rule => t.test('real nested'));",
+            "  t.test('real sibling');",
+            "});",
+        ].join('\n'));
+        assert.deepEqual(candidate.testTitles, ['parent', 'real nested', 'real sibling']);
+    });
+
     it('keeps the Node context local to the callback even when the parent takes options', () => {
         const source = { profile: buildDocumentProfile('src.ts', 'export const ledger = 1;', cwd) };
         const real = makeCandidate('b.test.ts', [
