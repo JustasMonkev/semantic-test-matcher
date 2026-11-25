@@ -154,6 +154,15 @@ Numeric settings must be numbers wherever they are set (flag, environment variab
 - `--diff-root <path>` (set the base for relative diff paths, such as `.` for `git diff --relative`)
 - `--json`
 - `--paths-only` (print only the selected test paths, one per line)
+- `--explain` (show the changed source, score basis, and shared token examples in text or JSON; paths-only output stays unchanged)
+
+For example, run `rbt match src/price.ts --candidates tests --ranker heuristics --explain --json`.
+Each result's `explanation` reports up to four normalized tokens (at most 80 characters each) per signal:
+`exportImportTokens` when source export and candidate import overlap attains the anchor score, and
+`phraseTokens` from both scoring profiles. These are search clues, not a resolved import edge or proof
+that a test covers the change. Empty arrays mean there are no reportable examples for those signals;
+other signals can still select the test. In multi-source output, the merged result explains its
+highest-scoring change; `changes` retains the explanations for each source.
 
 A deleted file can still be matched: pass a `--diff-file` that contains its deletion. Every path a `--diff-file` changes must stay inside its diff root (`--diff-root`, else the Git root); a diff that names a file outside it is rejected. Candidate files larger than 1 MB are skipped with a warning. In text output, a `Why:` line explains fallback selections, such as widening coverage when neither the model nor the structural score is confident.
 
