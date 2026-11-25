@@ -2,6 +2,7 @@ import path from 'node:path';
 import { interleaveUniqueTokens } from '../utils/arrays.ts';
 import { normalizePathSeparators } from '../utils/paths.ts';
 import { canonicalizeToken, splitIntoParts, tokenizeText, uniqueTokens } from './text-utils.ts';
+import { collectNodeSubtestTitles } from './node-subtest-titles.ts';
 import { collectChangedLines, type ChangedLines } from './unified-diff.ts';
 
 export type DocumentKind = 'source' | 'test' | 'fixture' | 'unknown';
@@ -80,7 +81,7 @@ const TEST_MODIFIERS = '(?:\\.(?:describe|only|skip|ignore|todo|fixme|fail|faili
 const TAGGED_TEMPLATE_TABLE = '`[^`]{0,4000}`';
 const BOUNDED_CALL_ARGUMENTS = '\\((?:[^()]|\\([^()]{0,400}\\)){0,4000}\\)';
 const PARAMETRIZED_CALL = `(?:\\.(?:each|for|skipIf|runIf)(?:${TAGGED_TEMPLATE_TABLE}|${BOUNDED_CALL_ARGUMENTS}))?`;
-const QUOTED_TITLE_ARGUMENT = '\\(\\s*([\'"`])((?:\\\\.|(?!\\1|\\\\).)+)\\1';
+const QUOTED_TITLE_ARGUMENT = /\s*\(\s*(?<quote>['"`])(?<title>(?:\\.|(?!\k<quote>|\\).)+)\k<quote>/.source;
 const TEST_TITLE_PATTERN = new RegExp(
     NOT_AFTER_IDENTIFIER_OR_DOT + TEST_FUNCTION + TEST_MODIFIERS + PARAMETRIZED_CALL + QUOTED_TITLE_ARGUMENT,
     'g'
@@ -173,13 +174,6 @@ function collectImportedPaths(text: string): string[] {
     );
 }
 
-function collectTestNames(text: string): string[] {
-    return collectCaptures(text, /(?:describe|it|test)\s*\(\s*['"`]([^'"`]{1,160})['"`]/g, (name) => {
-        const trimmed = name.trim();
-        return trimmed ? identifierTokens(trimmed) : [];
-    });
-}
-
 function maskNonCode(text: string): string {
     let masked = '';
     let previousCodeCharacter = '';
@@ -245,17 +239,27 @@ function maskNonCode(text: string): string {
     return masked;
 }
 
-function collectTestTitles(text: string): string[] {
+function collectTestTitles(text: string, filePath: string): string[] {
+    if (!/\b(?:test|describe|it)\b/.test(text) || !/['"`]/.test(text)) return [];
     const code = maskNonCode(text);
-    const titles: string[] = [];
+    const titles: Array<{ index: number; title: string }> = [];
     for (const match of text.matchAll(TEST_TITLE_PATTERN)) {
-        const callIsCode = code[match.index] === text[match.index];
-        const title = match[2].trim().slice(0, MAX_TITLE_LENGTH);
-        if (callIsCode && title) {
-            titles.push(title);
-        }
+        const title = match.groups!.title.trim();
+        if (!title || code[match.index] !== text[match.index]) continue;
+        // A member split across lines is not a bare global test call.
+        let previous = match.index - 1;
+        while (previous >= 0 && /\s/.test(code[previous])) previous--;
+        if (code[previous] !== '.') titles.push({ index: match.index, title });
     }
-    return uniqueTokens(titles);
+    // Only a potential parent AND a receiver call require scope resolution.
+    // The mask already removed comments/literals without disturbing source positions.
+    const possibleSubtest = /(?<![\w$])[A-Za-z_$][\w$]*\s*\.\s*test\s*\(/;
+    const possibleParent = /(?<![\w$.])(?:test|it)\s*(?:\.\s*(?:only|skip|todo)\s*)?\(/;
+    if (possibleSubtest.test(code) && possibleParent.test(code)) {
+        titles.push(...collectNodeSubtestTitles(text, filePath));
+        titles.sort((a, b) => a.index - b.index);
+    }
+    return uniqueTokens(titles.map(({ title }) => title.slice(0, MAX_TITLE_LENGTH)));
 }
 
 function collectStemTokens(basename: string): string[] {
@@ -496,7 +500,7 @@ function hasTestFileName(relativePath: string): boolean {
 
 export function isTestLikeSource(relativePath: string, text: string): boolean {
     return hasTestFileName(relativePath)
-        || (determineKind(relativePath) !== 'fixture' && collectTestTitles(text).length > 0);
+        || (determineKind(relativePath) !== 'fixture' && collectTestTitles(text, relativePath).length > 0);
 }
 
 export function isTestLike(profile: DocumentProfile): boolean {
@@ -522,7 +526,8 @@ export function buildDocumentProfile(
     const changePhraseTokens = hasChangedLines ? collectChangePhraseTokens(changedLines, relativePath) : [];
     const exports = collectExportedSymbols(text);
     const imports = collectImportedSymbols(text);
-    const testNames = collectTestNames(text);
+    const testTitles = collectTestTitles(text, relativePath);
+    const testNames = uniqueTokens(testTitles.flatMap(identifierTokens));
     const commandTokens = collectCommandTokens(text);
     const optionTokens = collectOptionTokens(text);
     const rareAnchorTokens = collectRareAnchorTokens(text, relativePath);
@@ -565,7 +570,7 @@ export function buildDocumentProfile(
         exports,
         imports,
         testNames,
-        testTitles: collectTestTitles(text),
+        testTitles,
         commandTokens,
         optionTokens,
         contentTokens,

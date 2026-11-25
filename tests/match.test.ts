@@ -62,6 +62,98 @@ describe('rankMatches', () => {
         assert.ok(match.explanation.phraseTokens.includes('testid'));
     });
 
+    it('credits a declared parameterized title rather than a commented-out test', () => {
+        const profile = buildDocumentProfile(`${cwd}/src.ts`, 'export const mint = 1;', cwd);
+        const matches = rankMatches({ profile }, [
+            makeCandidate('a.test.ts', "// test('mint', () => {});\ntest('leaf', () => {});", cwd),
+            makeCandidate('b.test.ts', "test.each([1])('mint', () => {});", cwd),
+        ]);
+
+        assert.deepEqual(matches.map(match => match.file), ['b.test.ts', 'a.test.ts']);
+        assert.ok(matches[0].anchorScore > 0);
+        assert.equal(matches[1].anchorScore, 0);
+    });
+
+    it('credits Node subtests, not tests against regular expressions', () => {
+        const profile = buildDocumentProfile(`${cwd}/src.ts`, 'export const ledger = 1;', cwd);
+        const real = makeCandidate('b.test.ts', "test('suite', async t => { await t.test('ledger', () => {}); });", cwd);
+        const other = makeCandidate('a.test.ts', [
+            "test('suite', () => { const pattern = /foo/; pattern.test('ledger'); });",
+            "/foo/.test('ledger');",
+        ].join('\n'), cwd);
+        const matches = rankMatches({ profile }, [other, real]);
+
+        assert.deepEqual(real.profile.testTitles, ['suite', 'ledger']);
+        assert.deepEqual(other.profile.testTitles, ['suite']);
+        assert.deepEqual(matches.map(match => match.file), [real.file, other.file]);
+        assert.ok(matches[0].anchorScore > 0);
+        assert.equal(matches[1].anchorScore, 0);
+    });
+
+    it('keeps ranking evidence when whitespace separates a test declaration from its arguments', () => {
+        const source = { profile: buildDocumentProfile('src.ts', 'export const ledger = 1;', cwd) };
+        for (const declaration of ["test ('ledger', () => {});", "it\n('ledger', () => {});"]) {
+            const candidate = makeCandidate('example.test.ts', declaration, cwd);
+            assert.deepEqual(candidate.profile.testTitles, ['ledger']);
+            assert.ok(rankMatches(source, [candidate])[0].anchorScore > 0);
+        }
+    });
+
+    it('recognizes callback-less subtests only on the active Node context', () => {
+        for (const callback of ['async t =>', '( t ) =>', 'async ( t ) =>', 'function (t)', 'async function suite(t)']) {
+            const candidate = makeCandidate('example.test.ts', [
+                `test('parent', /* options */ { concurrency: 1 }, /* callback */ ${callback} {`,
+                "    t.test('ledger'); t.test('receipt',);",
+                "    pattern.test('unrelated');",
+                "});",
+                "t.test('outside');",
+            ].join('\n'), cwd);
+            assert.deepEqual(candidate.profile.testTitles, ['parent', 'ledger', 'receipt'], callback);
+        }
+    });
+
+    it('does not treat framework data or a shadowing callback parameter as a Node context', () => {
+        const profile = (code: string) => makeCandidate('example.test.ts', code, cwd).profile;
+        for (const declaration of ["test.each([/foo/])", "it.for([/foo/])", "Deno.test", "describe"]) {
+            assert.deepEqual(profile(`${declaration}('patterns', pattern => pattern.test('ledger'));`).testTitles, ['patterns']);
+        }
+        for (const runner of ["import { test } from 'vitest';", "import test from 'ava';", "const { test } = require('@playwright/test');"]) {
+            assert.deepEqual(profile(`${runner} test('patterns', pattern => pattern.test('ledger'));`).testTitles, ['patterns']);
+        }
+        const candidate = profile([
+            "import { test } from 'node:test';",
+            "import { expect } from 'vitest';",
+            "test('parent', t => {",
+            "  const rules = [/foo/];",
+            "  rules.some(t => t.test('ledger'));",
+            "  rules.filter(function (t) { return t.test('receipt'); });",
+            "  rules.map((t, index) => { t.test('pricelist'); });",
+            "  rules.forEach(rule => t.test('real nested'));",
+            "  t.test('real sibling');",
+            "});",
+        ].join('\n'));
+        assert.deepEqual(candidate.testTitles, ['parent', 'real nested', 'real sibling']);
+    });
+
+    it('keeps the Node context local to the callback even when the parent takes options', () => {
+        const source = { profile: buildDocumentProfile('src.ts', 'export const ledger = 1;', cwd) };
+        const real = makeCandidate('b.test.ts', [
+            "test('suite', { concurrency: 2 }, async ctx => {",
+            "  await ctx.test('nested', child => child.test('leaf', () => {}));",
+            "  await ctx.test('ledger', () => {});",
+            "});",
+        ].join('\n'), cwd);
+        const other = makeCandidate('a.test.ts', [
+            "test('suite', async ctx => {});",
+            "function check(ctx) { return ctx.test('ledger', 42); }",
+            "check(/x/);",
+            "function validate(ctx) { return ctx.test('outside', () => false); }",
+        ].join('\n'), cwd);
+        assert.deepEqual(real.profile.testTitles, ['suite', 'nested', 'leaf', 'ledger']);
+        assert.deepEqual(other.profile.testTitles, ['suite']);
+        assert.deepEqual(rankMatches(source, [other, real]).map(match => match.file), [real.file, other.file]);
+    });
+
     it('ranks the related test above an unrelated test', () => {
         const matches = rankMatches(source, [
             makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd),

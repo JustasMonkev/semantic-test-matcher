@@ -745,10 +745,31 @@ diff --git a/src/page.ts a/src/page.ts
         assert.deepEqual(profile.testTitles, ['applies discount %i', 'works concurrently', 'adds $a', 'skips on CI', 'runs case %s']);
     });
 
+    it('distinguishes Node context uses from local bindings in a partial TypeScript test', () => {
+        const snippet = [
+            "import { test } from 'node:test';",
+            "test({ concurrency: 1 }, (t: TestContext) => {",
+            "    rules.forEach(({ pattern: t }) => t.test('regexp argument'));",
+            "    { const t = /x/; t.test('block-local regexp'); }",
+            "    rules.forEach(({ t: value }) => t /* comment */ .test('nested'));",
+            "    t.test('sibling');",
+            // An editor snippet need not include the parent's closing brace.
+        ].join('\n');
+        const profile = buildDocumentProfile('/repo/tests/example.test.ts', snippet, '/repo');
+        assert.deepEqual(profile.testTitles, ['nested', 'sibling']);
+    });
+
     it('keeps escaped quotes inside test titles', () => {
         const profile = buildDocumentProfile('/workspace/tests/a.spec.ts', 'test("says \\"hi\\"", () => {});', '/workspace');
 
         assert.deepEqual(profile.testTitles, ['says \\"hi\\"']);
+    });
+
+    it('does not treat a local require function as the Node module loader', () => {
+        const body = "const test = require('node:test'); test('parent', t => t.test('ledger'));";
+        const titles = (source: string) => buildDocumentProfile('/repo/example.test.cjs', source, '/repo').testTitles;
+        assert.deepEqual(titles(body), ['parent', 'ledger']);
+        assert.deepEqual(titles('const require = () => (name, fn) => fn(/x/); ' + body), ['parent']);
     });
 
     // Each payload took seconds, or hung, when a regex could backtrack over it.
