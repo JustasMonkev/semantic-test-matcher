@@ -745,6 +745,20 @@ diff --git a/src/page.ts a/src/page.ts
         assert.deepEqual(profile.testTitles, ['applies discount %i', 'works concurrently', 'adds $a', 'skips on CI', 'runs case %s']);
     });
 
+    it('distinguishes Node context uses from local bindings in a partial TypeScript test', () => {
+        const snippet = [
+            "import { test } from 'node:test';",
+            "test({ concurrency: 1 }, (t: TestContext) => {",
+            "    rules.forEach(({ pattern: t }) => t.test('regexp argument'));",
+            "    { const t = /x/; t.test('block-local regexp'); }",
+            "    rules.forEach(({ t: value }) => t /* comment */ .test('nested'));",
+            "    t.test('sibling');",
+            // An editor snippet need not include the parent's closing brace.
+        ].join('\n');
+        const profile = buildDocumentProfile('/repo/tests/example.test.ts', snippet, '/repo');
+        assert.deepEqual(profile.testTitles, ['nested', 'sibling']);
+    });
+
     it('keeps escaped quotes inside test titles', () => {
         const profile = buildDocumentProfile('/workspace/tests/a.spec.ts', 'test("says \\"hi\\"", () => {});', '/workspace');
 

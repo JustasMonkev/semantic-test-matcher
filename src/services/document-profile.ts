@@ -2,6 +2,7 @@ import path from 'node:path';
 import { interleaveUniqueTokens } from '../utils/arrays.ts';
 import { normalizePathSeparators } from '../utils/paths.ts';
 import { canonicalizeToken, splitIntoParts, tokenizeText, uniqueTokens } from './text-utils.ts';
+import { collectNodeSubtestTitles } from './node-subtest-titles.ts';
 import { collectChangedLines, type ChangedLines } from './unified-diff.ts';
 
 export type DocumentKind = 'source' | 'test' | 'fixture' | 'unknown';
@@ -81,18 +82,10 @@ const TAGGED_TEMPLATE_TABLE = '`[^`]{0,4000}`';
 const BOUNDED_CALL_ARGUMENTS = '\\((?:[^()]|\\([^()]{0,400}\\)){0,4000}\\)';
 const PARAMETRIZED_CALL = `(?:\\.(?:each|for|skipIf|runIf)(?:${TAGGED_TEMPLATE_TABLE}|${BOUNDED_CALL_ARGUMENTS}))?`;
 const QUOTED_TITLE_ARGUMENT = /\s*\(\s*(?<quote>['"`])(?<title>(?:\\.|(?!\k<quote>|\\).)+)\k<quote>/.source;
-const CONTEXT_TEST = /(?<receiver>[A-Za-z_$][\w$]*)\.test/.source;
 const TEST_TITLE_PATTERN = new RegExp(
-    NOT_AFTER_IDENTIFIER_OR_DOT + `(?:${TEST_FUNCTION}${TEST_MODIFIERS}${PARAMETRIZED_CALL}|${CONTEXT_TEST})` + QUOTED_TITLE_ARGUMENT,
+    NOT_AFTER_IDENTIFIER_OR_DOT + TEST_FUNCTION + TEST_MODIFIERS + PARAMETRIZED_CALL + QUOTED_TITLE_ARGUMENT,
     'g'
 );
-// Recognize the context parameter of common inline Node test callbacks, not arbitrary .test() receivers.
-const CALLBACK_PREFIX = /\s*,\s*(?:(?:\{[^{}]*\}|[A-Za-z_$][\w$]*)\s*,\s*)?(?:async\b\s*)?(?:function\b(?:\s+[\w$]+)?\s*)?/.source;
-const CALLBACK_PARAMETER = /(?:\(\s*([A-Za-z_$][\w$]*)\s*\)|([A-Za-z_$][\w$]*))\s*(?:=>\s*|(?=\{))/.source;
-const CONTEXT_CALLBACK = new RegExp(CALLBACK_PREFIX + CALLBACK_PARAMETER, 'y');
-const NODE_TEST_CALL = /^(test|it)(?:\.(?:only|skip|todo))?\s*\(/;
-const INLINE_FUNCTION = /\bfunction\b(?:\s+[\w$]+)?\s*\(([^()]*)\)\s*(?=\{)|(?:\(([^()]*)\)|(?<![\w$])([A-Za-z_$][\w$]*))\s*=>\s*/g;
-const SUBTEST_ARGUMENT = /\s*(?:\)|,\s*(?:\)|[A-Za-z_$({]))/y;
 
 const TEST_FILE_NAME = /(?:\.(?:test|spec)|_test)\.[cm]?[jt]sx?$/i;
 const FIXTURE_PATH = /(^|\/)(fixture|fixtures|__fixtures__)\//i;
@@ -246,87 +239,27 @@ function maskNonCode(text: string): string {
     return masked;
 }
 
-// A test imported from another runner can declare titles, but its callback does not imply a Node TestContext.
-function nonNodeTestImports(text: string, code: string): Set<string> {
-    const names = new Set<string>();
-    const imports = /\b(?:import\b\s*(?<esm>\{[^{}]*\}|test\b|it\b)\s*from|(?:const|let|var)\b\s*(?<cjs>\{[^{}]*\}|test\b|it\b)\s*=\s*require\s*\()\s*['"](?<module>[^'"\n]+)['"]/g;
-    for (const match of text.matchAll(imports)) {
-        const { esm, cjs, module } = match.groups!;
-        if (code[match.index] !== text[match.index] || module === 'node:test') {
-            continue;
-        }
-        for (const entry of (esm ?? cjs).replace(/[{}]/g, '').split(',')) {
-            const local = entry.trim().split(/\s+as\s+|\s*:\s*/).pop();
-            if (local === 'test' || local === 'it') {
-                names.add(local);
-            }
-        }
-    }
-    return names;
-}
-
-function collectTestTitles(text: string): string[] {
+function collectTestTitles(text: string, filePath: string): string[] {
+    if (!/\b(?:test|describe|it)\b/.test(text) || !/['"`]/.test(text)) return [];
     const code = maskNonCode(text);
-    const titles: string[] = [];
-    // Scope ends at the closing brace of a block or at the end of a concise arrow's expression.
-    // Non-test callbacks participate too: their parameters can shadow an outer TestContext.
-    const bindings: Array<{ names: string[]; context?: string; depth: number; block: boolean }> = [];
-    const contexts = new Map<number, string>();
-    const foreignTests = nonNodeTestImports(text, code);
-    const callbacks = code.matchAll(INLINE_FUNCTION);
-    let callback = callbacks.next().value;
-    let depth = 0;
-    let cursor = 0;
+    const titles: Array<{ index: number; title: string }> = [];
     for (const match of text.matchAll(TEST_TITLE_PATTERN)) {
-        const { title, receiver } = match.groups!;
-        const trimmedTitle = title.trim();
-        if (code[match.index] !== text[match.index] || !trimmedTitle) {
-            continue;
-        }
-        while (cursor <= match.index) {
-            const character = code[cursor];
-            if (callback && callback.index + callback[0].length === cursor) {
-                const names = (callback[1] ?? callback[2] ?? callback[3]).match(/[A-Za-z_$][\w$]*/g) ?? [];
-                const block = character === '{';
-                bindings.push({ names, context: contexts.get(cursor), depth: block ? depth + 1 : depth, block });
-                callback = callbacks.next().value;
-            }
-            if ('([{'.includes(character)) {
-                depth += 1;
-            } else if (')]},;'.includes(character)) {
-                const closesGroup = ')]}'.includes(character);
-                let last = bindings[bindings.length - 1];
-                while (last && last.depth === depth && (closesGroup || !last.block)) {
-                    bindings.pop();
-                    last = bindings[bindings.length - 1];
-                }
-                if (closesGroup) {
-                    depth -= 1;
-                }
-            }
-            cursor += 1;
-        }
-        const afterTitle = match.index + match[0].length;
-        if (receiver) {
-            SUBTEST_ARGUMENT.lastIndex = afterTitle;
-            const nearest = bindings.filter(binding => binding.names.includes(receiver)).pop();
-            if (nearest?.context !== receiver || !SUBTEST_ARGUMENT.test(code)) {
-                continue;
-            }
-        }
-
-        titles.push(trimmedTitle.slice(0, MAX_TITLE_LENGTH));
-        const root = NODE_TEST_CALL.exec(match[0])?.[1];
-        if (receiver || (root && !foreignTests.has(root))) {
-            CONTEXT_CALLBACK.lastIndex = afterTitle;
-            const header = CONTEXT_CALLBACK.exec(code);
-            const parameter = header?.[1] ?? header?.[2];
-            if (parameter) {
-                contexts.set(CONTEXT_CALLBACK.lastIndex, parameter);
-            }
-        }
+        const title = match.groups!.title.trim();
+        if (!title || code[match.index] !== text[match.index]) continue;
+        // A member split across lines is not a bare global test call.
+        let previous = match.index - 1;
+        while (previous >= 0 && /\s/.test(code[previous])) previous--;
+        if (code[previous] !== '.') titles.push({ index: match.index, title });
     }
-    return uniqueTokens(titles);
+    // Only a potential parent AND a receiver call require scope resolution.
+    // The mask already removed comments/literals without disturbing source positions.
+    const possibleSubtest = /(?<![\w$])[A-Za-z_$][\w$]*\s*\.\s*test\s*\(/;
+    const possibleParent = /(?<![\w$.])(?:test|it)\s*(?:\.\s*(?:only|skip|todo)\s*)?\(/;
+    if (possibleSubtest.test(code) && possibleParent.test(code)) {
+        titles.push(...collectNodeSubtestTitles(text, filePath));
+        titles.sort((a, b) => a.index - b.index);
+    }
+    return uniqueTokens(titles.map(({ title }) => title.slice(0, MAX_TITLE_LENGTH)));
 }
 
 function collectStemTokens(basename: string): string[] {
@@ -567,7 +500,7 @@ function hasTestFileName(relativePath: string): boolean {
 
 export function isTestLikeSource(relativePath: string, text: string): boolean {
     return hasTestFileName(relativePath)
-        || (determineKind(relativePath) !== 'fixture' && collectTestTitles(text).length > 0);
+        || (determineKind(relativePath) !== 'fixture' && collectTestTitles(text, relativePath).length > 0);
 }
 
 export function isTestLike(profile: DocumentProfile): boolean {
@@ -593,7 +526,7 @@ export function buildDocumentProfile(
     const changePhraseTokens = hasChangedLines ? collectChangePhraseTokens(changedLines, relativePath) : [];
     const exports = collectExportedSymbols(text);
     const imports = collectImportedSymbols(text);
-    const testTitles = collectTestTitles(text);
+    const testTitles = collectTestTitles(text, relativePath);
     const testNames = uniqueTokens(testTitles.flatMap(identifierTokens));
     const commandTokens = collectCommandTokens(text);
     const optionTokens = collectOptionTokens(text);

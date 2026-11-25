@@ -43,6 +43,8 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@lezer/common": "^1.5.7",
+    "@lezer/javascript": "^1.5.7",
     "commander": "^15.0.0",
     "cross-spawn": "^7.0.6"
   }

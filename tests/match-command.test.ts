@@ -32,6 +32,7 @@ interface MatchOutput {
         file: string;
         score: number;
         structuralScore: number;
+        anchorScore: number;
         modelScore?: number;
         jevScore?: number;
         explanation?: { source: string; scoreBasis: string; exportImportTokens: string[]; phraseTokens: string[] };
@@ -103,6 +104,29 @@ describe('match command rankers', () => {
         // SAFETY: --json makes the command's last log line its serialized result.
         return { output: JSON.parse(lines[lines.length - 1]) as MatchOutput, warnings };
     }
+
+    it('ranks literal Node subtests by the declarations the runner actually executes', async () => {
+        const cases = [
+            ["test('parent', async t => {", "  const run = ({t: value}) => t.test('ledger');", "  await run({t: 1});", "});"],
+            ["test('parent', async t => { await t", "  .test('ledger'); });"],
+            ["test(async t => { await t.test('ledger'); });"],
+            ["test({ concurrency: 1 }, async t => { await t.test('ledger'); });"],
+        ];
+        await fs.writeFile('src/module.ts', 'export const ledger = 1;');
+        await fs.writeFile('tests/rule.test.mjs', "import test from 'node:test'; test('parent', () => /x/.test('ledger'));");
+        const runnerEnv = { ...process.env };
+        delete runnerEnv.NODE_TEST_CONTEXT; // Start an independent runner, not a worker of this test.
+        for (const [index, lines] of cases.entries()) {
+            const file = 'tests/subtest.test.mjs';
+            await fs.writeFile(file, ["import test from 'node:test';", ...lines].join('\n'));
+            const { stdout } = await execFileAsync(process.execPath, ['--test', '--test-reporter=tap', file], { env: runnerEnv });
+            assert.match(stdout, /ok \d+ - ledger/);
+
+            const { output } = await runMatchOn('src/module.ts', '--ranker', 'heuristics', '--top-k', '1');
+            assert.equal(output.results[0]?.file, file, lines.join('\n'));
+            assert.ok(output.results[0].anchorScore > 0, `missing title evidence for Node case ${index + 1}`);
+        }
+    });
 
     it('keeps a changed file given after a candidate option', async () => {
         const { lines } = await runCli('--candidates', 'tests', 'src/price.ts', '--ranker', 'heuristics', '--json');
