@@ -522,6 +522,29 @@ describe('match command rankers', () => {
         await assert.rejects(runMatchOn('src', '--ranker', 'heuristics'), { code: 'EISDIR' });
     });
 
+    it('ranks the patch, not its commit message or diffstat', async () => {
+        const patch = [
+            'diff --git a/src/price.ts b/src/price.ts',
+            '--- a/src/price.ts',
+            '+++ b/src/price.ts',
+            '@@ -1 +1 @@',
+            '-export default 1;',
+            '+export default 2;',
+        ].join('\n');
+        const preamble = [
+            'Subject: [PATCH] Tune the default', '',
+            'Next time:', '- reconnects after a timeout', '---',
+            ' src/price.ts | 2 +-', ' 1 file changed, 1 insertion(+), 1 deletion(-)', '',
+        ].join('\n');
+        await fs.writeFile('bare.diff', patch);
+        await fs.writeFile('mail.diff', preamble + patch);
+        const flags = ['--ranker', 'heuristics', '--selection-policy', 'conservative', '--json', '--diff-file'];
+        const bare = await runCli(...flags, 'bare.diff');
+        const mail = await runCli(...flags, 'mail.diff');
+        assert.deepEqual(mail.lines, bare.lines);
+        await assert.rejects(runCli('src/absent.ts', ...flags, 'mail.diff'), /Changed file not found/);
+    });
+
     describe('several changed files', () => {
         const priceDiff = [
             'diff --git a/src/price.ts b/src/price.ts',
