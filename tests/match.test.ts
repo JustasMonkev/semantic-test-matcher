@@ -74,6 +74,22 @@ describe('rankMatches', () => {
         assert.equal(matches[1].anchorScore, 0);
     });
 
+    it('credits Node subtests, not tests against regular expressions', () => {
+        const profile = buildDocumentProfile(`${cwd}/src.ts`, 'export const ledger = 1;', cwd);
+        const real = makeCandidate('b.test.ts', "test('suite', async t => { await t.test('ledger', () => {}); });", cwd);
+        const other = makeCandidate('a.test.ts', [
+            "test('suite', () => { const pattern = /foo/; pattern.test('ledger'); });",
+            "/foo/.test('ledger');",
+        ].join('\n'), cwd);
+        const matches = rankMatches({ profile }, [other, real]);
+
+        assert.deepEqual(real.profile.testTitles, ['suite', 'ledger']);
+        assert.deepEqual(other.profile.testTitles, ['suite']);
+        assert.deepEqual(matches.map(match => match.file), [real.file, other.file]);
+        assert.ok(matches[0].anchorScore > 0);
+        assert.equal(matches[1].anchorScore, 0);
+    });
+
     it('ranks the related test above an unrelated test', () => {
         const matches = rankMatches(source, [
             makeCandidate('tests/socket-client.test.ts', UNRELATED_TEST, cwd),

@@ -75,16 +75,19 @@ const MAX_TITLE_LENGTH = 160;
 const MAX_PREVIEW_LENGTH = 160;
 
 const NOT_AFTER_IDENTIFIER_OR_DOT = '(?<![\\w$.])';
-const TEST_FUNCTION = '(?:Deno\\.test|test|it|describe)';
+const TEST_FUNCTION = '(?:Deno\\.test|test|it|describe|(?<receiver>[A-Za-z_$][\\w$]*)\\.test)';
 const TEST_MODIFIERS = '(?:\\.(?:describe|only|skip|ignore|todo|fixme|fail|failing|slow|serial|parallel|concurrent|sequential))*';
 const TAGGED_TEMPLATE_TABLE = '`[^`]{0,4000}`';
 const BOUNDED_CALL_ARGUMENTS = '\\((?:[^()]|\\([^()]{0,400}\\)){0,4000}\\)';
 const PARAMETRIZED_CALL = `(?:\\.(?:each|for|skipIf|runIf)(?:${TAGGED_TEMPLATE_TABLE}|${BOUNDED_CALL_ARGUMENTS}))?`;
-const QUOTED_TITLE_ARGUMENT = '\\(\\s*([\'"`])((?:\\\\.|(?!\\1|\\\\).)+)\\1';
+const QUOTED_TITLE_ARGUMENT = /\(\s*(?<quote>['"`])(?<title>(?:\\.|(?!\k<quote>|\\).)+)\k<quote>/.source;
 const TEST_TITLE_PATTERN = new RegExp(
     NOT_AFTER_IDENTIFIER_OR_DOT + TEST_FUNCTION + TEST_MODIFIERS + PARAMETRIZED_CALL + QUOTED_TITLE_ARGUMENT,
     'g'
 );
+// Recognize the context parameter of common inline Node test callbacks, not arbitrary .test() receivers.
+const CONTEXT_CALLBACK = /\s*,\s*(?:async(?:\s+|(?=\()))?(?:function(?:\s+[\w$]+)?\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*(?:=>|\{)/y;
+const SUBTEST_ARGUMENT = /\s*,\s*[^\s)]/y;
 
 const TEST_FILE_NAME = /(?:\.(?:test|spec)|_test)\.[cm]?[jt]sx?$/i;
 const FIXTURE_PATH = /(^|\/)(fixture|fixtures|__fixtures__)\//i;
@@ -241,11 +244,24 @@ function maskNonCode(text: string): string {
 function collectTestTitles(text: string): string[] {
     const code = maskNonCode(text);
     const titles: string[] = [];
+    const contexts = new Set<string>();
     for (const match of text.matchAll(TEST_TITLE_PATTERN)) {
-        const callIsCode = code[match.index] === text[match.index];
-        const title = match[2].trim().slice(0, MAX_TITLE_LENGTH);
-        if (callIsCode && title) {
-            titles.push(title);
+        const { title, receiver } = match.groups!;
+        const trimmedTitle = title.trim();
+        if (code[match.index] !== text[match.index] || !trimmedTitle) {
+            continue;
+        }
+        const afterTitle = match.index + match[0].length;
+        SUBTEST_ARGUMENT.lastIndex = afterTitle;
+        if (receiver && (!contexts.has(receiver) || !SUBTEST_ARGUMENT.test(code))) {
+            continue;
+        }
+
+        titles.push(trimmedTitle.slice(0, MAX_TITLE_LENGTH));
+        CONTEXT_CALLBACK.lastIndex = afterTitle;
+        const context = CONTEXT_CALLBACK.exec(code)?.[1];
+        if (context) {
+            contexts.add(context);
         }
     }
     return uniqueTokens(titles);
