@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { candidateModuleCache, findImportWitnesses, isNativeModule } from '../services/import-witnesses.ts';
 import { resolveConfig, type MatchCommandOptions, type Ranker, type RootOptions, type RuntimeConfig } from '../config.ts';
 import { getDecisionsCacheEntryCount } from '../services/decisions.ts';
 import { isTestLike, isTestLikeSource } from '../services/document-profile.ts';
@@ -120,12 +121,19 @@ async function runMatch(files: string[], options: MatchOptions, rootOptions: Roo
         cwd,
         changes.isAutomatic ? (file) => isRunnableCandidate(file, cwd) : undefined
     );
-    const candidates = await loadCandidates(candidateScan.files, cwd);
+    const adaptive = config.match.selectionPolicy === 'adaptive' || config.match.selectionPolicy === 'representative';
+    const modules = adaptive && changes.paths.some(isNativeModule) ? candidateModuleCache() : undefined;
+    const candidates = await loadCandidates(candidateScan.files, cwd, modules?.remember);
     const jobs = await prepareChangeJobs(changes, candidates, cwd);
+    const witnesses = modules
+        ? await findImportWitnesses(cwd, candidates.map(candidate => candidate.file), changes.paths, modules.texts)
+        : undefined;
     const ranking = await scoreWithProviderChain(jobs, changes, config);
-    const reports = jobs.map((job, index) =>
-        buildChangeReport(job, ranking, ranking.modelResults[index], config, candidateScan.truncated, options.explain && (options.json || !options.pathsOnly))
-    );
+    const explain = options.explain && (options.json || !options.pathsOnly);
+    const reports = jobs.map((job, index) => buildChangeReport(
+        job, ranking, ranking.modelResults[index], config, candidateScan.truncated,
+        explain, witnesses?.get(job.source.profile.absolutePath)
+    ));
     const cacheEntries = await countProviderCacheEntries(ranking, config);
     const final = finalizeSelection(reports, candidates, config);
 
@@ -298,17 +306,25 @@ function buildChangeReport(
     modelResult: ModelScoreResult | undefined,
     config: RuntimeConfig,
     candidateLimitReached: boolean,
-    explain = false
+    explain = false,
+    witnesses?: ReadonlyMap<string, string[]>
 ) {
     const { selectionPolicy, topK, minScore, threshold } = config.match;
     const isRepresentative = selectionPolicy === 'representative';
     const isTargeted = selectionPolicy === 'targeted';
     const matches = rankMatches({ profile: job.source.profile }, attachModelScores(job.candidates, modelResult, ranker), explain);
+    if (explain && witnesses) {
+        for (const match of matches) {
+            const chain = witnesses.get(match.file);
+            if (match.explanation && chain) match.explanation.importChain = chain;
+        }
+    }
     const selection = selectMatches(
         filterMatches(matches, minScore),
         isRepresentative ? undefined : topK,
         isRepresentative ? 'adaptive' : selectionPolicy,
-        ranker
+        ranker,
+        witnesses
     );
 
     return {
@@ -471,6 +487,7 @@ function printText(final: FinalSelection, config: RuntimeConfig, candidateLimitR
         if (match.explanation) {
             const { source, scoreBasis, exportImportTokens, phraseTokens } = match.explanation;
             console.log(`  Source: ${source}; score: ${scoreBasis}`);
+            if (match.explanation.importChain) console.log(`  Static import chain: ${match.explanation.importChain.join(' -> ')}`);
             if (exportImportTokens.length) console.log(`  Export/import tokens: ${exportImportTokens.join(', ')}`);
             if (phraseTokens.length) console.log(`  Shared phrases: ${phraseTokens.join(', ')}`);
             if (!exportImportTokens.length && !phraseTokens.length) console.log('  No export/import or phrase examples.');

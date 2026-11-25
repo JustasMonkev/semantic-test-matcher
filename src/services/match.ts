@@ -25,6 +25,7 @@ export interface MatchCandidate {
 interface MatchExplanation {
     source: string;
     scoreBasis: 'structural' | 'model-and-structural';
+    importChain?: string[];
     exportImportTokens: string[];
     phraseTokens: string[];
 }
@@ -324,6 +325,7 @@ interface SelectionEvidence {
     structuralNeighborCount: number;
     structuralCutoff: number;
     uncertaintyRetainedCount?: number;
+    importOnlyCount?: number;
 }
 
 export interface SelectionResult {
@@ -372,7 +374,7 @@ function capSelection(
     };
 }
 
-function selectAdaptive(matches: MatchCandidate[], topK: number | undefined, ranker: Ranker): SelectionResult {
+function selectAdaptive(matches: MatchCandidate[], topK: number | undefined, ranker: Ranker, witnesses?: ReadonlyMap<string, string[]>): SelectionResult {
     if (!matches.length) {
         return capSelection(matches, topK);
     }
@@ -395,13 +397,18 @@ function selectAdaptive(matches: MatchCandidate[], topK: number | undefined, ran
     const neighborRank = Math.max(0, Math.ceil(structuralScores.length * neighborShare) - 1);
     const structuralCutoff = Math.max(MIN_STRUCTURAL_NEIGHBOR_SCORE, structuralScores[neighborRank] ?? 1);
     const affirmativeFiles = new Set(affirmative.map((match) => match.file));
-    const eligible = matches.filter((match) =>
-        affirmativeFiles.has(match.file) || match.structuralScore >= structuralCutoff
-    );
+    let importOnlyCount = 0;
+    const eligible = matches.filter(match => {
+        if (affirmativeFiles.has(match.file) || match.structuralScore >= structuralCutoff) return true;
+        if (!witnesses?.has(match.file)) return false;
+        importOnlyCount++;
+        return true;
+    });
     const reason = modelUncertain ? `${missingModelAnswer(ranker)}; structural coverage widened` : undefined;
     return capSelection(eligible, topK, reason, {
         affirmativeCount: affirmative.length,
-        structuralNeighborCount: eligible.length - affirmative.length,
+        structuralNeighborCount: eligible.length - affirmative.length - importOnlyCount,
+        ...(importOnlyCount && { importOnlyCount }),
         structuralCutoff,
     });
 }
@@ -410,10 +417,11 @@ export function selectMatches(
     matches: MatchCandidate[],
     topK: number | undefined,
     policy: Exclude<SelectionPolicy, 'representative'>,
-    ranker: Ranker
+    ranker: Ranker,
+    witnesses?: ReadonlyMap<string, string[]>
 ): SelectionResult {
     if (policy === 'adaptive') {
-        return selectAdaptive(matches, topK, ranker);
+        return selectAdaptive(matches, topK, ranker, witnesses);
     }
 
     const limit = topK ?? DEFAULT_CAPPED_SELECTION_SIZE;

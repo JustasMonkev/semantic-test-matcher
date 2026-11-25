@@ -17,6 +17,7 @@ interface MatchOutput {
     modelScorer?: { provider: string; requests: number; cacheHits: number };
     rankerFallback?: string;
     selectionPolicy?: string;
+    selectionEvidence?: { importOnlyCount?: number };
     selectionFallback?: string;
     selectionLimit?: number | null;
     eligibleCount?: number;
@@ -34,7 +35,7 @@ interface MatchOutput {
         structuralScore: number;
         modelScore?: number;
         jevScore?: number;
-        explanation?: { source: string; scoreBasis: string; exportImportTokens: string[]; phraseTokens: string[] };
+        explanation?: { importChain?: string[]; source: string; scoreBasis: string; exportImportTokens: string[]; phraseTokens: string[] };
     }>;
 }
 
@@ -103,6 +104,43 @@ describe('match command rankers', () => {
         // SAFETY: --json makes the command's last log line its serialized result.
         return { output: JSON.parse(lines[lines.length - 1]) as MatchOutput, warnings };
     }
+
+    it('retains the test of a transitive importer without confusing same-named modules or overriding score limits', async () => {
+        await fs.mkdir('src/billing');
+        await fs.mkdir('src/shipping');
+        const changed = 'src/billing/ceiling.mjs';
+        await fs.writeFile(changed, 'export const ceiling = price => Math.min(100, price);');
+        await fs.writeFile('src/shipping/ceiling.mjs', 'export const ceiling = price => Math.min(50, price);');
+        await fs.writeFile('src/checkout.mjs', "export { ceiling as total } from './billing/ceiling.mjs';");
+        const imports = "import test from 'node:test'; import assert from 'node:assert/strict';\n";
+        await fs.writeFile('tests/order.test.mjs', imports
+            + "import {total} from '../src/checkout.mjs'; test('large order',()=>assert.equal(total(150),100));");
+        await fs.writeFile('tests/shipping.test.mjs', imports
+            + "import {ceiling} from '../src/shipping/ceiling.mjs'; test('shipping ceiling',()=>assert.equal(ceiling(150),50));");
+        const env = { ...process.env };
+        delete env.NODE_TEST_CONTEXT;
+        const run = (file: string) => promisify(execFile)(process.execPath, ['--test', file], { env });
+        await run('tests/order.test.mjs');
+        await fs.writeFile(changed, 'export const ceiling = price => Math.max(100, price);');
+        await assert.rejects(run('tests/order.test.mjs'), { code: 1 });
+        await run('tests/shipping.test.mjs');
+        const match = (...flags: string[]) => runMatchOn(changed, '--ranker', 'heuristics', ...flags);
+
+        const all = (await match('--explain')).output;
+        const order = all.results.find(row => row.file === 'tests/order.test.mjs');
+        assert.ok(order);
+        assert.deepEqual(order.explanation?.importChain, ['tests/order.test.mjs', 'src/checkout.mjs', changed]);
+        const shipping = all.results.find(row => row.file === 'tests/shipping.test.mjs');
+        assert.ok(shipping && shipping.score > order.score);
+        assert.equal(shipping.explanation?.importChain, undefined);
+        assert.equal(all.selectionEvidence?.importOnlyCount, 1);
+        const capped = (await match('--top-k', '1')).output;
+        assert.equal(capped.results[0].file, shipping.file);
+        assert.equal(capped.selectionTruncated, true);
+        const filtered = (await match('--min-score', '0.1')).output;
+        assert.ok(!filtered.results.some(row => row.file === order.file));
+        assert.ok(!(await match()).output.results.some(row => row.explanation));
+    });
 
     it('keeps a changed file given after a candidate option', async () => {
         const { lines } = await runCli('--candidates', 'tests', 'src/price.ts', '--ranker', 'heuristics', '--json');
