@@ -90,6 +90,28 @@ describe('rankMatches', () => {
         assert.equal(matches[1].anchorScore, 0);
     });
 
+    it('keeps ranking evidence when whitespace separates a test declaration from its arguments', () => {
+        const source = { profile: buildDocumentProfile('src.ts', 'export const ledger = 1;', cwd) };
+        for (const declaration of ["test ('ledger', () => {});", "it\n('ledger', () => {});"]) {
+            const candidate = makeCandidate('example.test.ts', declaration, cwd);
+            assert.deepEqual(candidate.profile.testTitles, ['ledger']);
+            assert.ok(rankMatches(source, [candidate])[0].anchorScore > 0);
+        }
+    });
+
+    it('recognizes callback-less subtests only on the active Node context', () => {
+        for (const callback of ['async t =>', '( t ) =>', 'async ( t ) =>', 'function (t)', 'async function suite(t)']) {
+            const candidate = makeCandidate('example.test.ts', [
+                `test('parent', /* options */ { concurrency: 1 }, /* callback */ ${callback} {`,
+                "    t.test('ledger'); t.test('receipt',);",
+                "    pattern.test('unrelated');",
+                "});",
+                "t.test('outside');",
+            ].join('\n'), cwd);
+            assert.deepEqual(candidate.profile.testTitles, ['parent', 'ledger', 'receipt'], callback);
+        }
+    });
+
     it('keeps the Node context local to the callback even when the parent takes options', () => {
         const source = { profile: buildDocumentProfile('src.ts', 'export const ledger = 1;', cwd) };
         const real = makeCandidate('b.test.ts', [

@@ -80,14 +80,16 @@ const TEST_MODIFIERS = '(?:\\.(?:describe|only|skip|ignore|todo|fixme|fail|faili
 const TAGGED_TEMPLATE_TABLE = '`[^`]{0,4000}`';
 const BOUNDED_CALL_ARGUMENTS = '\\((?:[^()]|\\([^()]{0,400}\\)){0,4000}\\)';
 const PARAMETRIZED_CALL = `(?:\\.(?:each|for|skipIf|runIf)(?:${TAGGED_TEMPLATE_TABLE}|${BOUNDED_CALL_ARGUMENTS}))?`;
-const QUOTED_TITLE_ARGUMENT = /\(\s*(?<quote>['"`])(?<title>(?:\\.|(?!\k<quote>|\\).)+)\k<quote>/.source;
+const QUOTED_TITLE_ARGUMENT = /\s*\(\s*(?<quote>['"`])(?<title>(?:\\.|(?!\k<quote>|\\).)+)\k<quote>/.source;
 const TEST_TITLE_PATTERN = new RegExp(
     NOT_AFTER_IDENTIFIER_OR_DOT + TEST_FUNCTION + TEST_MODIFIERS + PARAMETRIZED_CALL + QUOTED_TITLE_ARGUMENT,
     'g'
 );
 // Recognize the context parameter of common inline Node test callbacks, not arbitrary .test() receivers.
-const CONTEXT_CALLBACK = /\s*,\s*(?:(?:\{[^{}]*\}|[A-Za-z_$][\w$]*)\s*,\s*)?(?:async(?:\s+|(?=\()))?(?:function(?:\s+[\w$]+)?\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*(?:=>|\{)/y;
-const SUBTEST_ARGUMENT = /\s*,\s*[A-Za-z_$({]/y;
+const CALLBACK_PREFIX = /\s*,\s*(?:(?:\{[^{}]*\}|[A-Za-z_$][\w$]*)\s*,\s*)?(?:async\b\s*)?(?:function\b(?:\s+[\w$]+)?\s*)?/.source;
+const CALLBACK_PARAMETER = /(?:\(\s*([A-Za-z_$][\w$]*)\s*\)|([A-Za-z_$][\w$]*))\s*(?:=>|\{)/.source;
+const CONTEXT_CALLBACK = new RegExp(CALLBACK_PREFIX + CALLBACK_PARAMETER, 'y');
+const SUBTEST_ARGUMENT = /\s*(?:\)|,\s*(?:\)|[A-Za-z_$({]))/y;
 
 const TEST_FILE_NAME = /(?:\.(?:test|spec)|_test)\.[cm]?[jt]sx?$/i;
 const FIXTURE_PATH = /(^|\/)(fixture|fixtures|__fixtures__)\//i;
@@ -270,7 +272,8 @@ function collectTestTitles(text: string): string[] {
 
         titles.push(trimmedTitle.slice(0, MAX_TITLE_LENGTH));
         CONTEXT_CALLBACK.lastIndex = afterTitle;
-        const context = CONTEXT_CALLBACK.exec(code)?.[1];
+        const callback = CONTEXT_CALLBACK.exec(code);
+        const context = callback?.[1] ?? callback?.[2];
         if (context) {
             calls[calls.length - 1] = { parameter: context, bodyStart: CONTEXT_CALLBACK.lastIndex };
         }
