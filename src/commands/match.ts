@@ -126,11 +126,10 @@ async function runMatch(files: string[], options: MatchOptions, rootOptions: Roo
     const reports = jobs.map((job, index) =>
         buildChangeReport(job, ranking, ranking.modelResults[index], config, candidateScan.truncated, options.explain && (options.json || !options.pathsOnly))
     );
-    const cacheEntries = await countProviderCacheEntries(ranking, config);
     const final = finalizeSelection(reports, candidates, config);
 
     if (options.json) {
-        printJson(final, cacheEntries);
+        printJson(final, await countProviderCacheEntries(ranking, config));
         return;
     }
     if (options.pathsOnly) {
