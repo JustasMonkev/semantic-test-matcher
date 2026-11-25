@@ -104,6 +104,22 @@ describe('match command rankers', () => {
         return { output: JSON.parse(lines[lines.length - 1]) as MatchOutput, warnings };
     }
 
+    it('only reads the provider cache for its entry count when JSON will display it', async t => {
+        await fs.mkdir('.cache');
+        await fs.writeFile('.cache/jev.json', JSON.stringify({ previous: { model: 'jev-1.13.0', noul: 0.9 } }));
+        const read = t.mock.method(fs, 'readFile');
+        const cacheReads = () => read.mock.calls.filter(call => path.basename(String(call.arguments[0])) === 'jev.json');
+
+        const flags = ['src/price.ts', '--ranker', 'heuristics'];
+        await runCli(...flags, '--paths-only');
+        await runCli(...flags);
+        assert.equal(cacheReads().length, 0);
+
+        const { lines } = await runCli(...flags, '--json');
+        assert.equal(JSON.parse(lines[lines.length - 1]).cacheEntries, 1);
+        assert.equal(cacheReads().length, 1);
+    });
+
     it('keeps a changed file given after a candidate option', async () => {
         const { lines } = await runCli('--candidates', 'tests', 'src/price.ts', '--ranker', 'heuristics', '--json');
         // SAFETY: --json makes the command's last log line its serialized result.
