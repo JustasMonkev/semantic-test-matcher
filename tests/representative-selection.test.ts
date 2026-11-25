@@ -53,6 +53,19 @@ describe('representative selection', () => {
         }
     });
 
+    it('preserves target multiplicity and file tie order across equal token sets', () => {
+        const select = fixture([
+            ['a.test.ts', 1, ['other']],
+            ['b.test.ts', 0.9, ['ledger', 'mint']],
+            ['c.test.ts', 0.8, ['mint', 'ledger']],
+            ['d.test.ts', 0.7, ['ledger', 'mint']],
+        ]);
+        const first = select(1);
+        assert.deepEqual(first.results.map(match => match.file), ['b.test.ts']);
+        assert.equal(first.selectionObjective.value, 1);
+        assert.deepEqual(select(3).results.map(match => match.file), ['b.test.ts', 'a.test.ts', 'c.test.ts']);
+    });
+
     it('treats two empty token sets as distance zero and an empty/nonempty pair as one', () => {
         const select = fixture([
             ['a.test.ts', 1, []], ['b.test.ts', 0.9, []], ['c.test.ts', 0.8, ['value']],
