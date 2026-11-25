@@ -56,7 +56,7 @@ function resolveBinding(scopes: NodeWeakMap<Map<string, SyntaxNode>>, reference:
 
 // An unbound test/it is also accepted for snippets without an import. An explicitly bound
 // runner must come from node:test, not a framework whose first parameter may be test data.
-function isNodeRunner(definition: SyntaxNode | undefined, text: string): boolean {
+function isNodeRunner(definition: SyntaxNode | undefined, text: string, scopes: NodeWeakMap<Map<string, SyntaxNode>>): boolean {
     if (!definition) return true;
     let pattern = definition;
     while (pattern.parent && ['ImportGroup', 'PatternProperty', 'ObjectPattern'].includes(pattern.parent.name)) {
@@ -69,8 +69,10 @@ function isNodeRunner(definition: SyntaxNode | undefined, text: string): boolean
     if (declaration?.name !== 'VariableDeclaration') return false;
     const equals = nextToken(pattern);
     const initializer = nextToken(equals);
+    const loader = initializer?.firstChild;
     return equals?.name === 'Equals' && initializer?.name === 'CallExpression'
-        && spelling(initializer.firstChild, text) === 'require'
+        && loader?.name === 'VariableName' && spelling(loader, text) === 'require'
+        && !resolveBinding(scopes, loader, text)
         && literal(initializer.getChild('ArgList')?.getChild('String') ?? null, text) === 'node:test';
 }
 
@@ -95,7 +97,7 @@ export function collectNodeSubtestTitles(text: string, filePath: string): Array<
         } else {
             const root = spelling(receiver, text);
             if (root !== 'test' && root !== 'it') return;
-            if ((member && !NODE_MODIFIERS.has(method)) || !isNodeRunner(binding, text)) return;
+            if ((member && !NODE_MODIFIERS.has(method)) || !isNodeRunner(binding, text, scopes)) return;
         }
 
         const args = call.getChild('ArgList')?.getChildren('Expression') ?? [];

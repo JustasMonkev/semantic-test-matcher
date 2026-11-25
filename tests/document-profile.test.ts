@@ -765,6 +765,13 @@ diff --git a/src/page.ts a/src/page.ts
         assert.deepEqual(profile.testTitles, ['says \\"hi\\"']);
     });
 
+    it('does not treat a local require function as the Node module loader', () => {
+        const body = "const test = require('node:test'); test('parent', t => t.test('ledger'));";
+        const titles = (source: string) => buildDocumentProfile('/repo/example.test.cjs', source, '/repo').testTitles;
+        assert.deepEqual(titles(body), ['parent', 'ledger']);
+        assert.deepEqual(titles('const require = () => (name, fn) => fn(/x/); ' + body), ['parent']);
+    });
+
     // Each payload took seconds, or hung, when a regex could backtrack over it.
     for (const [name, text, diffText] of [
         ['an unterminated test title of backslashes', `test("${'\\'.repeat(40)}`, undefined],
