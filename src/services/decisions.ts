@@ -98,7 +98,7 @@ export function buildDecisionsInput(source: ModelSource): string {
 
 export function buildDecisionQuestion(source: ModelSource, candidate: ModelCandidate, index: number): DecisionQuestion {
     const question = source.profile.diffExcerpt ? QUESTION_WITH_DIFF : QUESTION_WITHOUT_DIFF;
-    const candidateMetadata = JSON.stringify(buildCandidateEvidence(candidate));
+    const candidateMetadata = JSON.stringify(buildCandidateEvidence(source, candidate));
     return {
         type: 'predicate',
         name: `t${index}`,

@@ -1,3 +1,4 @@
+import { tokenizeText } from './text-utils.ts';
 import type { DocumentProfile } from './document-profile.ts';
 
 export type ModelProvider = 'jev' | 'decisions';
@@ -68,8 +69,30 @@ export function buildModelEvidence(source: ModelSource): { changed_file: Record<
     return { changed_file: changedFile };
 }
 
-export function buildCandidateEvidence(candidate: ModelCandidate): { path: string; test_titles: string[] } {
-    return { path: candidate.file, test_titles: candidate.profile.testTitles.slice(0, MAX_TEST_TITLES) };
+export function buildCandidateEvidence(source: ModelSource, candidate: ModelCandidate): { path: string; test_titles: string[] } {
+    const titles = candidate.profile.testTitles;
+    const { changeTokens, exports } = source.profile;
+    const uncovered = new Set(changeTokens.length ? changeTokens : exports);
+    if (titles.length <= MAX_TEST_TITLES || !uncovered.size) {
+        return { path: candidate.file, test_titles: titles.slice(0, MAX_TEST_TITLES) };
+    }
+
+    // Keep the first witness for each source term, then fill unused slots in declaration order.
+    const selected = new Set<number>();
+    for (const [index, title] of titles.entries()) {
+        for (const token of tokenizeText(title)) {
+            if (uncovered.delete(token)) {
+                selected.add(index);
+            }
+        }
+        if (!uncovered.size || selected.size === MAX_TEST_TITLES) {
+            break;
+        }
+    }
+    for (let index = 0; selected.size < MAX_TEST_TITLES; index += 1) {
+        selected.add(index);
+    }
+    return { path: candidate.file, test_titles: [...selected].sort((a, b) => a - b).map(index => titles[index]) };
 }
 
 export function isRetryableStatus(status: number): boolean {
