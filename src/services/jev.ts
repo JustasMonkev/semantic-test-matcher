@@ -131,7 +131,8 @@ export class JevScorer implements ModelScorer {
             throw new JevError('TYPESAFE_API_KEY (or JEF) is required for the jev ranker');
         }
         this.options = options;
-        this.cache = new BufferedCache(getJevCacheFile(options.cacheDir), 'Jev', !options.skipCache);
+        const cacheEnabled = !options.skipCache && options.model !== 'jev-latest';
+        this.cache = new BufferedCache(getJevCacheFile(options.cacheDir), 'Jev', cacheEnabled);
         this.fetchImpl = options.fetch ?? fetch;
     }
 
