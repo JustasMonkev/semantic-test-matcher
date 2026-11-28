@@ -36,12 +36,15 @@ export function rootOptionsOf(program: Command, commandOptions: RootOptions): Ro
     };
 }
 
-export async function loadCandidates(candidateFiles: string[], cwd: string): Promise<RankedMatchCandidate[]> {
+export async function loadCandidates(
+    candidateFiles: string[], cwd: string, onRead?: (file: string, text: string) => void
+): Promise<RankedMatchCandidate[]> {
     const candidates = await mapWithConcurrency(candidateFiles, READ_CONCURRENCY, async (candidatePath) => {
         const text = await readCandidateText(candidatePath);
         if (text === undefined) {
             return undefined;
         }
+        onRead?.(candidatePath, text);
         const profile = buildDocumentProfile(candidatePath, text, cwd);
         return { file: profile.relativePath, preview: profile.preview, profile };
     });
