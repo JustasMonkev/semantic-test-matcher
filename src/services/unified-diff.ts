@@ -40,6 +40,17 @@ const HUNK_HEADER_PATTERN = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/;
 const HEADER_TIMESTAMP_PATTERN = /\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?: [+-]\d{4})?$/;
 const RENAME_OR_COPY_PATTERN = /^(?:rename|copy) (?:from|to) /;
 
+export function stripFormatPatchPreambles(diffText: string): string {
+    if (!diffText.startsWith('From ')) return diffText;
+    const messages = diffText.split(/^From (?:[0-9a-f]{40}|[0-9a-f]{64}) Mon Sep 17 00:00:00 2001\r?\n/gm);
+    if (messages[0] !== '') return diffText;
+    return messages.slice(1).map(message => {
+        // Git separates its message from the diffstat with "---". The body can itself quote a patch.
+        const boundary = /^---\r?\n(?: [^\n]*\n)*\r?\n(?=diff --git )/m.exec(message);
+        return boundary ? message.slice(boundary.index + boundary[0].length) : message;
+    }).join('\n');
+}
+
 const GIT_ESCAPE_BYTES: Record<string, number> = {
     a: 0x07,
     b: 0x08,
@@ -311,6 +322,10 @@ function readRenameOrCopyLine(line: string, section: FileSection): void {
     section.gitPrefixes = applyGitPathMetadata(section.prefixedGitPaths, section.unprefixedPaths, section.gitPrefixes);
 }
 
+function isFileHeader(line: string): boolean {
+    return line.startsWith('--- ') || line.startsWith('+++ ');
+}
+
 function readFileHeaderPath(line: string): string {
     return decodeGitPath(
         line.slice(FILE_HEADER_PREFIX_LENGTH).split('\t', 1)[0]
@@ -427,7 +442,11 @@ export function collectChangedLines(
     let section = emptyFileSection();
     let fileMatches = true;
     let hunk: HunkCounts | undefined;
-    let hasDiffHeaders = false;
+    const lines = diffText.split(/\r?\n/);
+    // Raw snippets have no headers. In a structured patch, leading prose is not part of any hunk.
+    const firstHeader = lines.findIndex(line =>
+        line.startsWith(GIT_DIFF_LINE_PREFIX) || isFileHeader(line) || HUNK_HEADER_PATTERN.test(line)
+    );
     let hunklessChange: { metadataLines: string[]; pathWhoseImportsBreak?: string } | undefined;
     const recordHunklessChange = () => {
         if (hunklessChange) {
@@ -438,13 +457,13 @@ export function collectChangedLines(
             hunklessChange = undefined;
         }
     };
-    for (const line of diffText.split(/\r?\n/)) {
+    for (let index = Math.max(0, firstHeader); index < lines.length; index++) {
+        const line = lines[index];
         if (line.startsWith(GIT_DIFF_LINE_PREFIX)) {
             recordHunklessChange();
             section = startGitSection(line, relativePath, rootRelativePath);
             fileMatches = false;
             hunk = undefined;
-            hasDiffHeaders = true;
             continue;
         }
         if (!hunk && RENAME_OR_COPY_PATTERN.test(line)) {
@@ -463,27 +482,25 @@ export function collectChangedLines(
             hunklessChange = { metadataLines: [line] };
             continue;
         }
-        if (!hunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
+        if (!hunk && isFileHeader(line)) {
             hunklessChange = undefined;
             fileMatches = readFileHeaderAndMatchTarget(line, section, target, fileMatches);
             if (line.startsWith('+++ ')) {
                 section = emptyFileSection();
             }
-            hasDiffHeaders = true;
             continue;
         }
         if (line.startsWith('@@')) {
             const hunkHeader = parseHunkHeader(line);
             if (hunkHeader) {
                 hunk = hunkHeader;
-                hasDiffHeaders = true;
                 if (fileMatches) {
                     changedLines.hunks.push(line);
                 }
             }
             continue;
         }
-        if (!line || (!hunk && hasDiffHeaders)) {
+        if (!line || (!hunk && firstHeader !== -1)) {
             continue;
         }
         if (fileMatches) {
@@ -587,7 +604,7 @@ function scanDiffFiles(diffText: string, basePath: string, fallbackBase?: string
         headerlessContentChanged ||= CONTENT_CHANGE_WITHOUT_HUNKS.test(line);
         deleted ||= line.startsWith(DELETED_FILE_PREFIX);
         modeChanged ||= line.startsWith('old mode ');
-        if (!line.startsWith('--- ') && !line.startsWith('+++ ')) {
+        if (!isFileHeader(line)) {
             continue;
         }
         const isNewFileHeader = line.startsWith('+++ ');

@@ -560,6 +560,29 @@ describe('match command rankers', () => {
         await assert.rejects(runMatchOn('src', '--ranker', 'heuristics'), { code: 'EISDIR' });
     });
 
+    it('ranks the patch, not its commit message or diffstat', async () => {
+        const patch = [
+            'diff --git a/src/price.ts b/src/price.ts',
+            '--- a/src/price.ts',
+            '+++ b/src/price.ts',
+            '@@ -1 +1 @@',
+            '-export default 1;',
+            '+export default 2;',
+        ].join('\n');
+        const preamble = [
+            'Subject: [PATCH] Tune the default', '',
+            'Next time:', '- reconnects after a timeout', '---',
+            ' src/price.ts | 2 +-', ' 1 file changed, 1 insertion(+), 1 deletion(-)', '',
+        ].join('\n');
+        await fs.writeFile('bare.diff', patch);
+        await fs.writeFile('mail.diff', preamble + patch);
+        const flags = ['--ranker', 'heuristics', '--selection-policy', 'conservative', '--json', '--diff-file'];
+        const bare = await runCli(...flags, 'bare.diff');
+        const mail = await runCli(...flags, 'mail.diff');
+        assert.deepEqual(mail.lines, bare.lines);
+        await assert.rejects(runCli('src/absent.ts', ...flags, 'mail.diff'), /Changed file not found/);
+    });
+
     describe('several changed files', () => {
         const priceDiff = [
             'diff --git a/src/price.ts b/src/price.ts',
@@ -820,6 +843,24 @@ describe('match command rankers', () => {
             await execFileAsync('git', ['init']);
             await execFileAsync('git', ['add', '.']);
             await execFileAsync('git', ['-c', 'user.name=RBT test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false', 'commit', '-m', 'initial']);
+        });
+
+        it('ignores example patches quoted in a git format-patch commit message', async () => {
+            await fs.appendFile('src/price.ts', '\nexport const discountRate = 0.2;\n');
+            const message = [
+                'Reduce the discount', '', 'Example we declined:',
+                '@@ -1 +1 @@', '-previous behavior', '+reconnects after a timeout',
+                'diff --git a/src/absent.ts b/src/absent.ts',
+                '--- a/src/absent.ts', '+++ b/src/absent.ts', '@@ -1 +1 @@', '-old', '+new',
+            ].join('\n');
+            await execFileAsync('git', ['-c', 'user.name=RBT test', '-c', 'user.email=test@example.com',
+                '-c', 'commit.gpgsign=false', 'commit', '-am', message]);
+            const bare = await execFileAsync('git', ['diff', 'HEAD^', 'HEAD']);
+            const mail = await execFileAsync('git', ['format-patch', '-1', '--stdout']);
+            await fs.writeFile('bare.diff', bare.stdout);
+            await fs.writeFile('mail.diff', mail.stdout);
+            const flags = ['--ranker', 'heuristics', '--json', '--diff-file'];
+            assert.deepEqual((await runCli(...flags, 'mail.diff')).lines, (await runCli(...flags, 'bare.diff')).lines);
         });
 
         it('detects changes without file arguments and keeps JSON and paths-only non-interactive', async () => {

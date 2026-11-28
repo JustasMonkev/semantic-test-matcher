@@ -8,6 +8,15 @@ import { buildDocumentProfile, isTestLike } from '../src/services/document-profi
 import { listDiffFiles, listModeOnlyDiffFiles } from '../src/services/unified-diff.ts';
 
 describe('buildDocumentProfile', () => {
+    it('drops unscoped prose before plain headers or a hunk without dropping raw snippets', () => {
+        const changes = '-return capture();\n+return screenshot();';
+        const hunk = '@@ -1 +1 @@\n' + changes;
+        const excerpt = (diff: string) => buildDocumentProfile('/repo/src/page.ts', '', '/repo', diff, '.').diffExcerpt;
+        assert.equal(excerpt('Change summary:\n- ignore this bullet\n--- src/page.ts\n+++ src/page.ts\n' + hunk), hunk);
+        assert.equal(excerpt('Change summary:\n- ignore this bullet\n' + hunk), hunk);
+        assert.equal(excerpt(changes), changes);
+    });
+
     it('keeps raw test titles, including describe blocks and modifiers', () => {
         const profile = buildDocumentProfile(
             '/workspace/tests/tabs.spec.ts',
