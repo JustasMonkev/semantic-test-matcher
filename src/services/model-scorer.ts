@@ -85,18 +85,24 @@ export function addTokenCounts(total: number | undefined, added: number | undefi
     return total === undefined || added === undefined ? undefined : total + added;
 }
 
-export function packBatches<T>(items: readonly T[], fits: (batch: T[]) => boolean): T[][] | undefined {
+export function packBatches<T>(
+    items: readonly T[], maxItems: number, budget: number, costOf: (item: T) => number
+): T[][] | undefined {
     const batches: T[][] = [];
     let current: T[] = [];
+    let used = 0;
     for (const item of items) {
-        if (!fits([item])) {
+        const cost = costOf(item);
+        if (cost > budget) {
             return undefined;
         }
-        if (current.length && !fits([...current, item])) {
+        if (current.length === maxItems || used + cost > budget) {
             batches.push(current);
             current = [];
+            used = 0;
         }
         current.push(item);
+        used += cost;
     }
     if (current.length) {
         batches.push(current);

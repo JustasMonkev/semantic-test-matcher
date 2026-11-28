@@ -131,6 +131,23 @@ describe('DecisionsScorer', () => {
         assert.ok(calls.every(call => call.body.questions.length <= 64 && Buffer.byteLength(String(call.init?.body)) <= 60_000));
     });
 
+    it('packs escaped multibyte evidence at the exact serialized request boundary', async () => {
+        const { impl, calls } = fakeFetch(body => answer(body));
+        const instance = scorer(impl, { skipCache: true });
+        const first = candidate('tests/雪"column.spec.ts');
+        const last = candidates[1];
+        await instance.score(source(), [first, last]);
+        const remaining = 60_000 - Buffer.byteLength(String(calls[0].init?.body));
+        const padded = { ...last, file: last.file + 'x'.repeat(remaining) };
+
+        await instance.score(source(), [first, padded]);
+        assert.equal(Buffer.byteLength(String(calls[1].init?.body)), 60_000);
+        await instance.score(source(), [first, { ...padded, file: padded.file + 'x' }]);
+        assert.deepEqual(calls.map(call => call.body.questions.map(q => q.name)), [
+            ['t0', 't1'], ['t0', 't1'], ['t0'], ['t1'],
+        ]);
+    });
+
     it('rejects oversized candidate metadata without making a request', async () => {
         const { impl, calls } = fakeFetch(body => answer(body));
         await assert.rejects(scorer(impl).score(source(), [candidate(`tests/${'x'.repeat(61_000)}.spec.ts`)]), /request budget/);
