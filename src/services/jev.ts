@@ -82,7 +82,7 @@ export function buildJevQuestion(source: ModelSource, candidate: ModelCandidate)
     return {
         type: 'noul',
         instructions: {
-            test_file: buildCandidateEvidence(candidate),
+            test_file: buildCandidateEvidence(source, candidate),
             question: source.profile.diffExcerpt ? QUESTION_WITH_DIFF : QUESTION_WITHOUT_DIFF,
         },
         criteria: CRITERIA,
