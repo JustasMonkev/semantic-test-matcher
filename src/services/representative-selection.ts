@@ -46,20 +46,45 @@ function jaccardDistance(left: Set<string>, right: Set<string>): number {
     return union === 0 ? 0 : 1 - shared / union;
 }
 
-function distanceMatrix(tokenSets: Set<string>[]): Float64Array[] {
-    const distances = tokenSets.map(() => new Float64Array(tokenSets.length));
+function forEachPairDistance(tokenSets: Set<string>[], visit: (left: number, right: number, distance: number) => void): void {
     for (let left = 0; left < tokenSets.length; left += 1) {
         for (let right = left + 1; right < tokenSets.length; right += 1) {
-            const distance = jaccardDistance(tokenSets[left], tokenSets[right]);
-            distances[left][right] = distance;
-            distances[right][left] = distance;
+            visit(left, right, jaccardDistance(tokenSets[left], tokenSets[right]));
         }
     }
-    return distances;
 }
 
-function greedyMedoids(distances: Float64Array[], budget: number): { selected: number[]; nearest: Float64Array } {
-    const count = distances.length;
+type Medoids = { selected: number[]; objective: number };
+
+function singleMedoid(tokenSets: Set<string>[]): Medoids {
+    const costs = new Float64Array(tokenSets.length);
+    // Each row receives its distances in target order, just as in the dense sum below.
+    forEachPairDistance(tokenSets, (left, right, distance) => {
+        costs[left] += distance;
+        costs[right] += distance;
+    });
+    let best = 0;
+    for (let candidate = 1; candidate < costs.length; candidate += 1) {
+        if (costs[candidate] < costs[best]) {
+            best = candidate;
+        }
+    }
+    return { selected: [best], objective: costs[best] };
+}
+
+function greedyMedoids(tokenSets: Set<string>[], budget: number): Medoids {
+    const count = tokenSets.length;
+    if (budget >= count) {
+        return { selected: Array.from({ length: count }, (_, index) => index), objective: 0 };
+    }
+    if (budget === 1) {
+        return singleMedoid(tokenSets);
+    }
+    const distances = tokenSets.map(() => new Float64Array(count));
+    forEachPairDistance(tokenSets, (left, right, distance) => {
+        distances[left][right] = distance;
+        distances[right][left] = distance;
+    });
     const nearest = new Float64Array(count).fill(1);
     const selected: number[] = [];
     const chosen = new Set<number>();
@@ -90,11 +115,7 @@ function greedyMedoids(distances: Float64Array[], budget: number): { selected: n
             nearest[target] = Math.min(nearest[target], distances[best][target]);
         }
     }
-    return { selected, nearest };
-}
-
-function selectAll(count: number): { selected: number[]; nearest: Float64Array } {
-    return { selected: Array.from({ length: count }, (_, index) => index), nearest: new Float64Array(count) };
+    return { selected, objective: nearest.reduce((sum, distance) => sum + distance, 0) };
 }
 
 export function selectRepresentatives(
@@ -114,9 +135,7 @@ export function selectRepresentatives(
         return behaviourTokens(profile);
     });
     const tokenSets = tokenLists.map((tokens) => new Set(tokens.slice(0, BEHAVIOUR_TOKEN_LIMIT)));
-    const { selected, nearest } = topK < candidates.length
-        ? greedyMedoids(distanceMatrix(tokenSets), topK)
-        : selectAll(candidates.length);
+    const { selected, objective } = greedyMedoids(tokenSets, topK);
 
     return {
         results: selected.map((index) => candidates[index]),
@@ -128,7 +147,7 @@ export function selectRepresentatives(
         selectionMethod: 'greedy-medoid',
         selectionObjective: {
             metric: 'jaccard',
-            value: nearest.reduce((sum, distance) => sum + distance, 0),
+            value: objective,
             tokenLimit: BEHAVIOUR_TOKEN_LIMIT,
             truncatedProfileCount: tokenLists.filter((tokens) => tokens.length > BEHAVIOUR_TOKEN_LIMIT).length,
             emptyProfileCount: tokenSets.filter((tokens) => tokens.size === 0).length,
