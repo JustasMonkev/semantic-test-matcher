@@ -3,12 +3,14 @@ import { beforeEach, describe, it } from 'node:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { buildCacheKey } from '../src/services/cache.ts';
 import { buildDocumentProfile } from '../src/services/document-profile.ts';
 import {
     estimateTokensUpperBound,
     getJevCacheEntryCount,
     getJevCacheFile,
     JEV_ENDPOINT,
+    JEV_PROVIDER,
     JevError,
     JevScorer,
 } from '../src/services/jev.ts';
@@ -175,6 +177,32 @@ describe('JevScorer', () => {
             assert.deepEqual(result.models, ['jev-1.14.0']);
         }
         assert.equal(await getJevCacheEntryCount(cacheDir), 0);
+    });
+
+    it('neither stores an echoed jev-latest alias nor trusts one persisted by an older release', async () => {
+        const model = 'jev-latest';
+        const source = makeSource(TABS_DIFF);
+        const { impl, calls } = fakeFetch((body, call) => Response.json({
+            model: body.model,
+            answers: { t0: { type: 'noul', noul: call === 0 ? 0.9 : 0.1 } },
+        }));
+        const first = makeScorer(impl, { model });
+        assert.equal((await first.score(source, [TABS_TEST])).scores.get(TABS_TEST.file), 0.9);
+        await first.flush();
+        assert.equal(await getJevCacheEntryCount(cacheDir), 0);
+
+        const { state, questions } = calls[0].body;
+        const key = buildCacheKey(JEV_PROVIDER, model, JSON.stringify({ state, question: questions.t0 }));
+        const previous = JSON.stringify({ [key]: { provider: JEV_PROVIDER, model, createdAt: new Date().toISOString(), noul: 0.9 } });
+        const file = getJevCacheFile(cacheDir);
+        await fs.writeFile(file, previous);
+        const next = makeScorer(impl, { model });
+        const result = await next.score(source, [TABS_TEST]);
+        await next.flush();
+        assert.equal(result.cacheHits, 0);
+        assert.equal(result.requests, 1);
+        assert.equal(result.scores.get(TABS_TEST.file), 0.1);
+        assert.equal(await fs.readFile(file, 'utf8'), previous);
     });
 
     it('treats a different change as a cache miss', async () => {
